@@ -27,6 +27,18 @@ final class TmuxOutputRouter {
     private var backlog = [String: Data]()
     private let backlogLimitPerPane = 256 * 1024
 
+    /// How many `%output` chunks each pane has produced, counted whether or
+    /// not there was a surface to hand them to.
+    ///
+    /// Exists to answer one question for the repaint pass: has this pane
+    /// written anything since its geometry changed? A pane that has is one
+    /// whose program already redrew itself at the new size, and painting a
+    /// `capture-pane` snapshot over it is then all risk and no benefit. Kept
+    /// here rather than on the surface because this is the only place that
+    /// sees every chunk, and it already holds the lock that makes the count
+    /// safe to read from the main thread.
+    private var deliveryCounts = [String: UInt64]()
+
     /// Attach a surface to a pane and hand it whatever arrived first.
     ///
     /// Returns true if there was buffered output. The caller uses that to
@@ -38,11 +50,13 @@ final class TmuxOutputRouter {
     @discardableResult
     func register(paneID: String, session: InMemoryTerminalSession) -> Bool {
         lock.lock()
+        defer { lock.unlock() }
         sessions[paneID] = session
-        let pending = backlog.removeValue(forKey: paneID)
-        lock.unlock()
-
-        guard let pending, !pending.isEmpty else { return false }
+        guard let pending = backlog.removeValue(forKey: paneID), !pending.isEmpty else { return false }
+        // Handed over while the lock is still held. Releasing it first leaves a
+        // window in which the reader queue delivers a live chunk to the session
+        // that was just registered, and the backlog then arrives behind output
+        // that came after it.
         session.receive(pending)
         return true
     }
@@ -63,11 +77,22 @@ final class TmuxOutputRouter {
 
     /// True if the pane had somewhere to go — used by metrics to tell whether
     /// bytes belong to a visible pane or one we are only counting.
+    ///
+    /// The hand-off happens under the lock. That is what lets `deliverSnapshot`
+    /// mean anything: counting a chunk and enqueuing it have to be one step, or
+    /// a snapshot can be enqueued between them and land on top of output it was
+    /// supposed to defer to. It costs nothing on this path —
+    /// `InMemoryTerminalSession.receive` is a `DispatchQueue.async` onto the
+    /// session's own serial queue, so the lock is held for an enqueue and never
+    /// for a parse, and every `%output` for one session arrives on that
+    /// session's single reader queue anyway, so there is nothing here to
+    /// contend with.
     @discardableResult
     func deliver(paneID: String, data: Data) -> Bool {
         lock.lock()
+        defer { lock.unlock() }
+        deliveryCounts[paneID, default: 0] &+= 1
         if let session = sessions[paneID] {
-            lock.unlock()
             session.receive(data)
             return true
         }
@@ -76,13 +101,42 @@ final class TmuxOutputRouter {
             pending.append(data)
             backlog[paneID] = pending
         }
-        lock.unlock()
         return false
+    }
+
+    /// Paint a `capture-pane` snapshot over a pane, but only if the pane has
+    /// produced nothing since `count`.
+    ///
+    /// The comparison and the enqueue are one step, under the same lock
+    /// `deliver` takes. Doing it as two — read the count, then hand the bytes
+    /// to the session — leaves exactly the window this whole mechanism exists
+    /// to close: the reader queue enqueues a live chunk in between, and the
+    /// stale snapshot is queued behind it and wins.
+    ///
+    /// Returns false when the pane spoke, so the caller can decide whether to
+    /// wait for it to fall quiet.
+    func deliverSnapshot(paneID: String, data: Data, ifDeliveryCountIs count: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard deliveryCounts[paneID] ?? 0 == count, let session = sessions[paneID] else { return false }
+        session.receive(data)
+        return true
     }
 
     func isRegistered(paneID: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         return sessions[paneID] != nil
+    }
+
+    /// Chunks delivered for a pane so far. Only ever compared against an
+    /// earlier reading of itself — the absolute value means nothing, and it is
+    /// deliberately not reset by `unregister`, so a reading taken before a
+    /// surface was released still compares as "changed" afterwards rather than
+    /// as "quiet".
+    func deliveryCount(paneID: String) -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return deliveryCounts[paneID] ?? 0
     }
 }

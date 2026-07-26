@@ -113,28 +113,81 @@ not read it, which made it pure cost here.
       notifies. With a window whose size already matches, tmux sends nothing
       and the pane grid stays empty until something else happens to change.
       Found while fixing the font relayout, pre-existing and unrelated to it.
-- [ ] **Teardown runs twice per shown session.** `MainViewController.stop()`
-      stops each `SessionViewController`, then `server.stop()` stops every
-      connection again, so a session that was ever displayed gets
-      `detach-client` and `SIGTERM` twice. Visible in the log at shutdown. No
-      damage observed — but "the close path runs twice" is the shape of a bug
-      that only bites at a boundary.
-- [ ] **Probe report blocks the run loop.** It appears in
-      `NSAlert.runModal()`, and main-queue work queues up behind the modal run
-      loop while it is open — the window title stops updating. Use a non-modal
-      panel.
-- [ ] **The stall figure inflates when a pane is idle.** Gaps between output are
-      not stalls if there was nothing to send. Either gate the readout on recent
-      activity or drop it from the footer and leave the A/B probe as the number
-      that means something.
-- [ ] **`capture-pane` replies decode as `String`.** Invalid UTF-8 becomes
-      U+FFFD. Only affects snapshots — live `%output` takes the byte path — but
-      the reply block should be handled on bytes for the same reason `%output`
-      is.
-- [ ] **Repaint after resize can overwrite live output.** A busy pane gets a
-      snapshot painted over it 150ms after a geometry change. Harmless in
-      practice so far, but a pane that is mid-escape-sequence when the snapshot
-      lands would garble.
+- [ ] **A vanished session leaves its controller behind.**
+      `TmuxServer.refreshSessions()` stops the connection of a session that is
+      gone, but `MainViewController.controllers[name]` keeps the controller and
+      its surfaces, still registered to a router nobody feeds.
+- [ ] **A superseded repaint batch is never repainted.** `scheduleRepaint`
+      cancels one shared work item, so panes from the cancelled batch are
+      skipped entirely — and their `paintedFrames` were already updated, so
+      nothing comes back to them. The per-pane retry added for busy panes does
+      not cover this.
+- [ ] **`TmuxMetrics.Snapshot.report` is dead code** that still prints the gap
+      statistics as though they were a general-purpose readout. They mean
+      something only inside the A/B probe.
+
+The probe's modal is gone too — it was fixed by the settings work rather than
+here, and the bullet outlived it. The report renders inline on the About page;
+the only `runModal` calls left are the fatal "no tmux" startup alert and the
+confirmation before killing a window, and both should stay.
+
+Five others are fixed. None of them was quite what its bullet said, so what
+each turned out to be:
+
+**Teardown ran twice per shown session.** `TmuxServer` owns every connection
+and is now the only thing that stops one; `SessionViewController.stop()` became
+`releaseSurfaces()`, which gives up its surfaces and unregisters its panes and
+nothing else. The log is the oracle: a shutdown that used to print two
+`detach-client` lines for the session that had been on screen now prints one
+line per session, five sessions, five lines, with all five having been
+displayed during the run.
+
+**The stall figure** was dropped from the footer rather than gated. A gap
+between chunks is only a stall if the pane had something to send, and nothing
+on this side of the pipe can tell that apart from a program with nothing to
+print — so gating on recent activity still reports a pane's own silence as
+latency. The footer now carries byte rates over the last two seconds, and the
+word `idle` when nothing is arriving. The gap statistics are still measured and
+still mean something in the one place that constructs a source emitting at a
+known rate: the A/B probe.
+
+**`capture-pane` replies** are accumulated as `[Data]`. `runBytes` is the byte
+path; `run` decodes on top of it for `list-windows` and the probe, which ask
+tmux for its own format output. Worth recording what tmux 3.6a actually does,
+because it explains why the defect had never been seen: a reply block is
+*unescaped*, so it can carry any byte — verified by driving `tmux -C attach`
+over a pipe and watching `show-buffer` return `41 e9 ff 80 42` inside a
+`%begin`/`%end` block — but tmux replaces invalid UTF-8 with U+FFFD in its own
+grid before `capture-pane` can see it, and escapes format output as `\351`. The
+transport was unsafe and the two commands this app sends happened not to
+exercise it.
+
+**A fifth, found while fixing the fourth and belonging to the same subsystem:
+`isBlockTerminator` matched reply *content*.** It accepted any line beginning
+`%end ` or `%error ` as the end of a reply block — including a line of the pane
+screen the block was carrying. The trigger is this project's own subject matter,
+not hostile input: a pane showing a captured control mode transcript has such
+lines on it. Measured against the pre-fix code on a scratch `-L` server, with a
+pane displaying `%end 999999 999999 0`: the `capture-pane` reply came back
+**truncated to zero lines**, and every command after it received the *previous*
+command's reply — the completion FIFO shifted by one and stayed shifted. Silent,
+and permanent for that connection. The fix is that a terminator must carry the
+number tmux stamped on the matching `%begin`; that number is a per-server command
+counter a pane's contents cannot know. The same test passes on the fixed code
+with the line carried through as content, and a mismatch is logged rather than
+ignored, so a future tmux that stopped matching the numbers would be diagnosable
+instead of looking like a hang.
+
+**Repaint after resize** waits for the pane instead of painting over it. A pane
+that has written since the geometry changed has redrawn itself, so its snapshot
+is deferred 400ms and retried up to four times; a pane that never falls quiet is
+left to its own redraw. Skipping outright was the first version of this and it
+was wrong — one chunk is not proof the program repainted the whole viewport, so
+a pane that echoed a prompt and then went quiet would have kept its old wrapping
+until its next resize. The final check and the hand-off now happen together
+inside `TmuxOutputRouter`, under the lock the reader queue takes: as two steps
+there was still a window for live output to be enqueued between them and the
+snapshot to land on top of it.
 
 ---
 

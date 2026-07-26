@@ -154,11 +154,11 @@ protecting, how to verify a change, and the traps already paid for.
 ## Known limits
 
 - Pane content is re-snapshotted with `capture-pane` after a geometry change:
-  tmux reflows on resize but does not make the program inside repaint.
-- The probe result appears in `NSAlert.runModal()`; main-queue work queues up
-  behind the modal run loop while it is open.
-- The stall figure in the sidebar footer only means something while a pane is
-  producing output. An idle pane inflates it. The A/B probe is the real number.
-- `capture-pane` replies are decoded as `String`, so invalid UTF-8 becomes
-  U+FFFD. This affects snapshots only; live `%output` takes the byte path.
-- Not built yet: search, copy mode, a settings UI, multiple app windows.
+  tmux reflows on resize but does not make the program inside repaint. Only
+  while the pane is quiet — a pane still writing has redrawn itself, and the
+  snapshot waits for it rather than landing on top of live output. A pane that
+  never stops writing is left to its own redraw.
+- The sidebar footer's byte rates cover the last two seconds, so they read low
+  for the first two seconds of a connection. The A/B probe is the number to
+  trust about throughput; the footer only says whether anything is arriving.
+- Not built yet: search, copy mode, multiple app windows.

@@ -257,8 +257,19 @@ final class MainViewController: NSSplitViewController {
         show(sessionNamed: names[(index + offset + names.count) % names.count])
     }
 
+    /// Shut the app's tmux side down, once.
+    ///
+    /// Two things need releasing and they have different owners. The surfaces
+    /// belong to the session controllers, which built them; the connections
+    /// belong to `TmuxServer`, which created every one of them and is the only
+    /// thing that stops one. Session controllers used to stop their connection
+    /// as well, so every session that had ever been displayed got
+    /// `detach-client` and SIGTERM twice about a millisecond apart — visible in
+    /// the log as two DESTRUCTIVE lines per session. Nothing was ever observed
+    /// to break, but a teardown that runs twice is a teardown whose order
+    /// nobody can reason about.
     func stop() {
-        for controller in controllers.values { controller.stop() }
+        for controller in controllers.values { controller.releaseSurfaces() }
         server.stop()
     }
 }

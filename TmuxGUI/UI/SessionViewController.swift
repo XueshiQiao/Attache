@@ -72,6 +72,10 @@ final class SessionViewController: NSViewController {
     /// it — which for an idle shell can be never.
     private var paintedFrames = [String: TmuxLayoutFrame]()
     private var repaintWorkItem: DispatchWorkItem?
+    /// Per pane, because the panes that were still writing when the snapshot
+    /// came due are re-checked on their own schedule — one shared item would
+    /// let the second pane to be skipped cancel the first one's retry.
+    private var repaintRetryItems = [String: DispatchWorkItem]()
     private var syncScheduled = false
 
     var onStatusChange: ((String) -> Void)?
@@ -318,6 +322,16 @@ final class SessionViewController: NSViewController {
         guard !panes.isEmpty else { return }
         for pane in panes { paintedFrames[pane.id] = pane.frame }
 
+        // What each pane had written as of the geometry change, to compare
+        // against when the snapshot comes due. The snapshot exists for a pane
+        // that will not repaint itself; painting one over a pane that is
+        // actively writing is a stale screen landing on a live one, and it can
+        // land in the middle of an escape sequence the pane is halfway through
+        // emitting. See `repaintWhenQuiet` for what happens when it has.
+        let outputBefore = panes.reduce(into: [String: UInt64]()) {
+            $0[$1.id] = connection.router.deliveryCount(paneID: $1.id)
+        }
+
         repaintWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -341,21 +355,117 @@ final class SessionViewController: NSViewController {
                         lines: AppSettings.scrollbackPrimeLines
                     ) { lines in
                         guard !lines.isEmpty else { return }
-                        surface.terminalSession.receive(lines.joined(separator: "\r\n"))
+                        surface.terminalSession.receive(Self.replayPayload(lines, clearingScreen: false))
                     }
                     continue
                 }
 
-                self.connection.capturePane(paneID: pane.id) { lines in
-                    guard !lines.isEmpty else { return }
-                    surface.terminalSession.receive(
-                        "\u{1b}[H\u{1b}[2J" + lines.joined(separator: "\r\n")
-                    )
-                }
+                self.repaintWhenQuiet(
+                    paneID: pane.id,
+                    since: outputBefore[pane.id] ?? 0,
+                    attemptsLeft: Self.repaintRetryLimit
+                )
             }
         }
         repaintWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    /// How many times a pane that was still writing gets re-checked, and how
+    /// long between tries.
+    ///
+    /// A pane that has produced output since the resize has redrawn itself and
+    /// wants no snapshot — but one chunk is not proof that the program
+    /// repainted the whole viewport at the new width, and a snapshot that is
+    /// merely skipped would leave that pane wrapped for its old width until its
+    /// geometry changed again. So a skip waits rather than ending it. A pane
+    /// that is still going after four tries is one that redraws continuously,
+    /// which is the case where a snapshot has nothing to add.
+    private static let repaintRetryLimit = 4
+    private static let repaintRetryDelay: TimeInterval = 0.4
+
+    /// Snapshot a pane over its own screen, once it has stopped writing.
+    ///
+    /// `since` is what the pane had produced when this attempt's quiet window
+    /// opened. Unchanged at the end of it means the pane said nothing and the
+    /// snapshot is safe to paint; changed means the program is redrawing itself
+    /// and painting a captured screen over it would be a stale screen landing
+    /// on a live one — possibly in the middle of an escape sequence.
+    private func repaintWhenQuiet(paneID: String, since: UInt64, attemptsLeft: Int) {
+        guard surfaces[paneID] != nil else { return }
+        guard connection.router.deliveryCount(paneID: paneID) == since else {
+            retryRepaint(paneID: paneID, attemptsLeft: attemptsLeft, reason: "it is still writing")
+            return
+        }
+
+        connection.capturePane(paneID: paneID) { [weak self] lines in
+            guard let self, !lines.isEmpty else { return }
+            // Through the router, not straight at the surface: the check and
+            // the hand-off have to happen under the lock the reader queue
+            // takes, or live output can be enqueued between them.
+            let painted = self.connection.router.deliverSnapshot(
+                paneID: paneID,
+                data: Self.replayPayload(lines, clearingScreen: true),
+                ifDeliveryCountIs: since
+            )
+            guard !painted else { return }
+            self.retryRepaint(paneID: paneID, attemptsLeft: attemptsLeft,
+                              reason: "it started writing while the capture was in flight")
+        }
+    }
+
+    private func retryRepaint(paneID: String, attemptsLeft: Int, reason: String) {
+        repaintRetryItems[paneID]?.cancel()
+        repaintRetryItems[paneID] = nil
+
+        guard attemptsLeft > 0 else {
+            TmuxLog.lifecycle(
+                "not repainting \(paneID) — \(reason), and it has not stopped;"
+                    + " a pane redrawing continuously does not need a snapshot",
+                session: connection.sessionName
+            )
+            return
+        }
+
+        TmuxLog.lifecycle(
+            "deferring the repaint of \(paneID) — \(reason);"
+                + " \(attemptsLeft) more \(attemptsLeft == 1 ? "try" : "tries")",
+            session: connection.sessionName
+        )
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.repaintRetryItems[paneID] = nil
+            // A fresh baseline each time: the question is whether the pane is
+            // quiet *now*, not whether it has been quiet since the resize.
+            self.repaintWhenQuiet(
+                paneID: paneID,
+                since: self.connection.router.deliveryCount(paneID: paneID),
+                attemptsLeft: attemptsLeft - 1
+            )
+        }
+        repaintRetryItems[paneID] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.repaintRetryDelay, execute: work)
+    }
+
+    /// Join reply lines into something a terminal surface can be fed.
+    ///
+    /// Assembled as bytes rather than as a `String`, because that is what
+    /// `capture-pane` returns and the point of taking it as bytes is that
+    /// nothing between tmux and libghostty's parser reinterprets it. CR LF
+    /// between rows, since the surface is a terminal and a bare LF would step
+    /// down a row without returning to column one.
+    private static func replayPayload(_ lines: [Data], clearingScreen: Bool) -> Data {
+        var payload = Data()
+        // Home, then erase: a repaint is replacing the screen, not adding to
+        // it. Omitted for the first paint of a pane, which is appending
+        // history to an empty buffer and has nothing to erase.
+        if clearingScreen { payload.append(contentsOf: Array("\u{1b}[H\u{1b}[2J".utf8)) }
+        for (index, line) in lines.enumerated() {
+            if index > 0 { payload.append(contentsOf: [0x0d, 0x0a]) }
+            payload.append(line)
+        }
+        return payload
     }
 
     private func makeSurface(for paneID: String) {
@@ -403,9 +513,22 @@ final class SessionViewController: NSViewController {
 
     // MARK: - Teardown
 
-    func stop() {
-        connection.stop()
-        for surface in surfaces.values { surface.setVisible(false) }
+    /// Give up the GPU surfaces this controller built, and nothing else.
+    ///
+    /// Deliberately does *not* stop the connection. `TmuxServer` created it and
+    /// is the only thing that stops it; when this method did both, a session
+    /// that had ever been on screen was detached twice. Unregistering each pane
+    /// is what makes the two halves independent rather than order-dependent —
+    /// the router stops holding a surface the moment that surface is released,
+    /// whether or not the connection has been torn down yet.
+    func releaseSurfaces() {
+        repaintWorkItem?.cancel()
+        for item in repaintRetryItems.values { item.cancel() }
+        repaintRetryItems.removeAll()
+        for (paneID, surface) in surfaces {
+            connection.router.unregister(paneID: paneID)
+            surface.setVisible(false)
+        }
         surfaces.removeAll()
     }
 }
