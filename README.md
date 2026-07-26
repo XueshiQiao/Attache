@@ -1,10 +1,16 @@
 # TmuxGUI
 
-把 tmux 的 session / window / pane 映射到原生 macOS 界面上的实验。底层完全是真正的
+把 tmux 的 session / window / pane 映射到原生 macOS 界面上。底层完全是真正的
 tmux——从任何普通终端 `tmux attach` 上去，看到的还是原来的 tmux，进程照跑。
 
-目前是**可行性验证阶段**：一个窗口显示一个 tmux 窗格，能看能打字能改大小，
-并测量控制模式的吞吐和卡顿。
+```
+tmux session  →  左侧竖排的一级 tab
+tmux window   →  顶部横排的二级 tab
+tmux pane     →  内容区的分屏
+```
+
+界面不持有任何状态。点击、换序、改名、拆分全部翻译成 tmux 命令，等 tmux 回报了
+才生效——所以在别的终端里敲 `prefix + c`，这边照样会多出一个 tab，走的是同一条路。
 
 ## 它是怎么工作的
 
@@ -21,40 +27,20 @@ tmux 自带一个叫**控制模式**的开关（`tmux -C`）。打开后 tmux �
 | 输入 | `send-keys -t %42 -H <十六进制>` | `write` 回调 |
 | 尺寸 | `refresh-client -C 宽x高` | `resize` 回调 |
 
-代码在 [`TmuxGUI/Tmux/`](TmuxGUI/Tmux/)：
+## 功能
 
-- `TmuxOctal.swift` — 字节层编解码（tmux 把控制字符和反斜杠转成 `\ooo` 八进制，
-  但 UTF-8 多字节原样透传，所以不能用 `String` 解码）
-- `TmuxNotification.swift` — 控制模式消息解析
-- `TmuxControlClient.swift` — 子进程 + 读写循环 + 命令应答配对
-- `TmuxPaneSession.swift` — 把一个窗格接到一个 libghostty 表面上
-- `TmuxMetrics.swift` — 吞吐与卡顿测量
-
-## 构建
-
-需要 Xcode 和 tmux。
-
-```sh
-git clone --recurse-submodules <repo> && cd tmux-gui
-xcodebuild -project TmuxGUI.xcodeproj -scheme TmuxGUI -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
-```
-
-已经 clone 过了：`git submodule update --init --recursive`。
-
-**app sandbox 必须关着。** 沙盒里既起不了 tmux 子进程，也读不到
-`/private/tmp/tmux-<uid>/` 下的 socket。示例工程默认是开着沙盒的，本工程已改成关闭。
-
-## 运行
-
-默认连上 tmux 报的第一个 session。指定别的：
-
-```sh
-TMUX_GUI_SESSION=dev open -a TmuxGUI     # 或直接跑 .app 里的可执行文件
-```
-
-窗口标题显示当前跟着哪个窗格，副标题是实时吞吐和卡顿 p99。
+- **三层映射**，双向同步。在 tmux 里做的任何改动都会反映到界面上，反之亦然。
+- **分屏按 tmux 的字符网格定位**。位于第 (x, y) 格、大小 columns × rows 的窗格，
+  就摆在 (x·单元宽, y·单元高)。两边共用一张网格，分割线不会对不齐。
+- **拖分割线改布局** → `resize-pane`，tmux 跟着 GUI 走。
+- **拖 tab 换顺序** → `move-window`；**双击改名** → `rename-window`。
+- **关 tab 只是隐藏，绝不杀东西。** 窗口里可能正跑着 AI Agent。要杀有单独的右键
+  菜单项，措辞明确并带确认。隐藏的窗口在 tab 栏右侧一键找回。
+- **往上滚看历史**。首次显示窗格时把 tmux 的 scrollback 灌进来。
+- **快捷键**：⌘T 新建窗口、⌘W 隐藏标签、⌘1-9 切窗口、⌘⇧[ ] 前后切；
+  ⌃⌘1-9 切 session、⌃⌘[ ] 前后切、⌘⇧N 新建 session；
+  Shift+PageUp/PageDown/Home/End 翻历史。这些和你自己的 tmux `prefix` 绑定并存。
+- **「有新输出」提示点**用的是 tmux 自己的 activity flag，含义和状态栏里的 `#` 一致。
 
 ## 吞吐压测结果（2026-07-26 实测）
 
@@ -70,21 +56,69 @@ session 所有窗格的输出挤在一根管子里传，所以这是这套设计
 **没有劣化。** 基线是 57ms 而不是 50ms，因为 `printf .; sleep 0.05` 这个循环本身有约 7ms
 的 shell 开销——真正的心跳周期就是 57ms，而它在 19.4 MB/s 的干扰下**一点没变**。
 
-测的是**字节到达 app 的时刻**，不含渲染。另外只渲染了一个窗格，本地 socket，
-tmux 3.6a / Apple Silicon。跨 ssh 或同时渲染很多窗格的情况还没测。
+测的是**字节到达 app 的时刻**，不含渲染。本地 socket，tmux 3.6a / Apple Silicon。
+跨 ssh 的情况还没测。
+
+## 代码结构
+
+`TmuxGUI/Tmux/` —— 跟界面无关的那一半：
+
+- `TmuxOctal.swift` — 字节层编解码。tmux 把控制字符和反斜杠转成 `\ooo` 八进制，
+  但 UTF-8 多字节原样透传，所以解码必须走字节；经过 `String` 会把非法 UTF-8 片段
+  替换成 U+FFFD 而损坏数据流。
+- `TmuxNotification.swift` — 控制模式消息解析。
+- `TmuxLayout.swift` — 窗口布局字符串解析（`{}` 左右排、`[]` 上下排）。
+- `TmuxControlClient.swift` — 子进程 + 读写循环 + 命令应答配对。
+- `TmuxOutputRouter.swift` — 线程安全的 pane id → surface 映射，`%output` 直达不经主线程。
+- `TmuxSessionConnection.swift` — 一个 session 一条连接，维护窗口列表和布局。
+- `TmuxServer.swift` — 所有 session 的连接。
+- `TmuxMetrics.swift` — 吞吐与卡顿测量。
+
+`TmuxGUI/UI/` —— 界面那一半。
+
+`Tools/LayoutCheck/` —— 布局解析器的交叉验证：遍历活着的 tmux 服务器上每一个窗口，
+把解析出的每个窗格几何和 tmux 自己 `list-panes` 报的逐个比对。
+
+```sh
+swiftc -O -o /tmp/layoutcheck TmuxGUI/Tmux/TmuxLayout.swift Tools/LayoutCheck/main.swift
+/tmp/layoutcheck
+```
+
+## 构建
+
+需要 Xcode 和 tmux。
+
+```sh
+git clone --recurse-submodules https://github.com/XueshiQiao/tmux-gui.git && cd tmux-gui
+xcodebuild -project TmuxGUI.xcodeproj -scheme TmuxGUI -configuration Debug \
+  -destination 'platform=macOS,arch=arm64' \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+```
+
+已经 clone 过了：`git submodule update --init --recursive`。
+
+**app sandbox 必须关着。** 沙盒里既起不了 tmux 子进程，也读不到
+`/private/tmp/tmux-<uid>/` 下的 socket。
+
+## 几个踩过的坑（都写在对应代码的注释里）
+
+- macOS 26 上，一个会绘制的兄弟视图会拿到比自身高 66pt 的 backing layer（服务于
+  标题栏的滚动边缘模糊），这块溢出不裁剪。谁后 `addSubview` 谁在上面——tab 栏一开始
+  完全看不见就是被内容区糊住了。
+- libghostty 的终端视图会在主菜单之前消费 ⌘ 组合键。子类化让菜单先挑。
+- `%client-session-changed` 的第一个字段是**客户端名**，不是 session id，而且它是
+  广播的。和 `%session-changed` 合并解析会让每条连接都指向别人的 session。
+- `move-window` 的目标必须写成 `session:index`，少一个冒号 tmux 一声不吭地什么也不做。
+- 点 tab 如果在 mouseDown 就 select，tmux 回报会重建整条 tab 栏，把正在拖的那个
+  item 当场销毁。要在 mouseUp 才动。
 
 ## 已知边界
 
-- 只显示**一个**窗格——当前窗口的活跃窗格。在 tmux 里切窗口或切窗格，本 app 会跟着走。
-- 如果那个 tmux 窗口有多个窗格，画面会对不齐：本 app 按整个视图大小去设 `refresh-client -C`，
-  而 tmux 会把这个尺寸分给窗口里所有窗格。这正是「tmux 窗口尺寸和 GUI 分屏对不上」
-  那个固有问题，后面要专门设计。
-- 初始画面用 `capture-pane` 抓一次快照。tmux 在客户端接入时不会重放历史，
-  没有这一步窗格是空白的。
-- 标题栏那个「卡顿 p99」只在窗格持续输出时才有意义。窗格闲着的时候，两次输出之间
-  天然隔着好几秒，会显示成很大的数值——那不是卡，是没东西可发。真正的判断看
-  菜单里的 A/B 压测，那里的心跳是恒定的，偏离多少一目了然。
-- 压测结果用 `NSAlert.runModal()` 弹出，模态运行循环期间投递到主队列的回调会排队，
-  所以对话框开着的时候标题不刷新。改成非模态窗口即可。
+- 窗格内容在几何变化后靠 `capture-pane` 重新抓一次。tmux 改布局时会 reflow，
+  但不会让里面的程序重绘。
+- 压测结果用 `NSAlert.runModal()` 弹出，模态运行循环期间投递到主队列的回调会排队。
+- 标题栏那个「卡顿 p99」只在窗格持续输出时才有意义；窗格闲着时数值会虚高。
+  真正的判断看菜单里的 A/B 压测。
 - `capture-pane` 的回复经过 `String` 解码，遇到非法 UTF-8 会被替换成 U+FFFD。
-  只影响初始快照那一次；实时的 `%output` 走的是字节路径，不受影响。
+  只影响快照那一次；实时的 `%output` 走字节路径，不受影响。
+- 还没做：搜索、复制模式、配置界面、多窗口。
