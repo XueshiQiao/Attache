@@ -22,6 +22,16 @@ final class SessionViewController: NSViewController {
     private let gridView = PaneGridView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
     private lazy var controller: TerminalController = .init { builder in
         builder.withBackgroundOpacity(0)
+        // No padding around the grid. Ghostty reserves 2pt on each edge by
+        // default, which at a normal font size costs a whole cell — libghostty
+        // then reports one column and one row fewer than tmux gave the pane.
+        // Every line after that wraps in a different place than tmux thinks,
+        // and the damage accumulates into unreadable overdraw wherever a TUI
+        // keeps rewriting a region, which is exactly what a coding agent does
+        // to the bottom of its pane.
+        builder.withCustom("window-padding-x", "0")
+        builder.withCustom("window-padding-y", "0")
+        builder.withCustom("window-padding-balance", "false")
         // Scrollback keys have to be bound explicitly: unbound, Shift+PageUp
         // is forwarded to the pane as a CSI-u sequence and lands in the shell
         // as literal `;5u` text. The buffer being scrolled is libghostty's
@@ -293,9 +303,12 @@ final class SessionViewController: NSViewController {
             }
         )
         surface.onGridMetrics = { [weak self] metrics in
-            guard let self, !self.adoptedCellSize else { return }
-            self.adoptedCellSize = true
-            self.gridView.adoptCellSize(from: metrics)
+            guard let self else { return }
+            if !self.adoptedCellSize {
+                self.adoptedCellSize = true
+                self.gridView.adoptCellSize(from: metrics)
+            }
+            self.gridView.calibrate(paneID: paneID, metrics: metrics)
         }
         surfaces[paneID] = surface
 

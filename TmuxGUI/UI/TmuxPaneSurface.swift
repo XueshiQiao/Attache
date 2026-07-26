@@ -45,8 +45,9 @@ final class TmuxPaneSurface {
     /// views on the same character grid tmux is laying panes out on.
     private(set) var gridMetrics: TerminalGridMetrics?
 
-    /// Called when this surface learns the cell size, so the grid can do its
-    /// first real layout pass.
+    /// Fires on every resize, not just the first. The grid uses it both to
+    /// learn the cell size and to keep checking that the surface really ends
+    /// up with the column count it was placed for.
     var onGridMetrics: ((TerminalGridMetrics) -> Void)?
     var onFocusRequested: ((String) -> Void)?
 
@@ -80,7 +81,7 @@ final class TmuxPaneSurface {
         view.controller = controller
         view.configuration = TerminalSurfaceOptions(backend: .inMemory(terminalSession))
         view.setAccessibilityElement(true)
-        view.setAccessibilityLabel("tmux 窗格 \(paneID)")
+        view.setAccessibilityLabel("tmux pane \(paneID)")
     }
 
     /// Hidden panes stay attached to tmux and keep receiving output, so
@@ -91,9 +92,8 @@ final class TmuxPaneSurface {
     }
 
     fileprivate func gridDidResize(_ metrics: TerminalGridMetrics) {
-        let isFirst = gridMetrics == nil
         gridMetrics = metrics
-        if isFirst { onGridMetrics?(metrics) }
+        onGridMetrics?(metrics)
     }
 
     /// AppKit delegates are unowned-unsafe in libghostty's view, and a

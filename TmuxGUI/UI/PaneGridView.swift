@@ -38,7 +38,15 @@ final class PaneGridView: NSView {
     private(set) var layoutTree: TmuxLayoutNode?
     private var surfaces = [String: TmuxPaneSurface]()
     private var focusedPaneID: String?
+    /// Placeholder cell size, replaced by the first real metrics from a
+    /// surface. Only ever used for the one layout pass that happens before
+    /// any surface has reported, which exists solely to trigger that report.
     private var cellSize = CGSize(width: 8, height: 17)
+    /// Cell size in device pixels, kept alongside the point value. The grid
+    /// has to be counted the same way libghostty counts it — in pixels —
+    /// because converting to points first and flooring there can land one
+    /// cell away from what the surface actually allocates.
+    private var cellPixels = CGSize(width: 16, height: 34)
     private var splitters = [Splitter]()
     private var activeDrag: (splitter: Splitter, startCells: Int)?
 
@@ -84,24 +92,81 @@ final class PaneGridView: NSView {
     }
 
     func adoptCellSize(from metrics: TerminalGridMetrics) {
-        let scale = window?.backingScaleFactor ?? 2
+        let scale = pixelScale
         guard metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0 else { return }
         let size = CGSize(
             width: CGFloat(metrics.cellWidthPixels) / scale,
             height: CGFloat(metrics.cellHeightPixels) / scale
         )
-        guard size != cellSize else { return }
+        let pixels = CGSize(
+            width: CGFloat(metrics.cellWidthPixels),
+            height: CGFloat(metrics.cellHeightPixels)
+        )
+        guard size != cellSize || pixels != cellPixels else { return }
         cellSize = size
+        cellPixels = pixels
         needsLayout = true
         reportGridSize()
     }
 
+    /// Pixels a surface consumes beyond `columns × cellWidth` — padding,
+    /// insets, whatever libghostty decides to reserve.
+    ///
+    /// Measured rather than assumed. Setting `window-padding-*` to zero makes
+    /// this zero today, but the whole layout depends on the GUI and tmux
+    /// agreeing on the column count to the cell, and an off-by-one there
+    /// corrupts every wrapped line. So instead of trusting the config, the
+    /// grid watches what each surface actually reports for a known frame and
+    /// backs out the difference. If a future libghostty reserves space again,
+    /// this absorbs it on the next layout pass instead of silently
+    /// reintroducing the bug.
+    private var surfaceOverhead = CGSize.zero
+
     /// Cells that fit in the current bounds — the size reported to tmux.
+    ///
+    /// Counted in device pixels, the same units libghostty counts in.
+    /// Converting to points first and flooring there can land a cell away
+    /// from what the surface allocates.
     var gridSize: (columns: Int, rows: Int) {
         (
-            max(1, Int(bounds.width / cellSize.width)),
-            max(1, Int(bounds.height / cellSize.height))
+            max(1, Int((bounds.width * pixelScale - surfaceOverhead.width) / cellPixels.width)),
+            max(1, Int((bounds.height * pixelScale - surfaceOverhead.height) / cellPixels.height))
         )
+    }
+
+    /// Backing scale of whatever display the window is on, falling back to the
+    /// main screen and finally to 1 — a non-Retina display is unusual, not
+    /// impossible, and assuming 2 there would halve every measurement.
+    private var pixelScale: CGFloat {
+        window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+    }
+
+    /// Compare what a surface reports against the frame it was given, and
+    /// record any systematic difference. Called for every resize a surface
+    /// reports, so the correction keeps itself honest.
+    func calibrate(paneID: String, metrics: TerminalGridMetrics) {
+        guard metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0,
+              let frame = layoutTree?.panes.first(where: { $0.id == paneID })?.frame,
+              frame.columns > 0, frame.rows > 0,
+              metrics.columns > 0, metrics.rows > 0
+        else { return }
+
+        let assigned = rect(for: frame)
+        let overhead = CGSize(
+            width: assigned.width * pixelScale - CGFloat(metrics.columns) * CGFloat(metrics.cellWidthPixels),
+            height: assigned.height * pixelScale - CGFloat(metrics.rows) * CGFloat(metrics.cellHeightPixels)
+        )
+        // A sane correction is under one cell in each direction; anything
+        // larger means the surface has not caught up with its new frame yet
+        // and should not be treated as a measurement.
+        guard overhead.width >= 0, overhead.width < cellPixels.width * 2,
+              overhead.height >= 0, overhead.height < cellPixels.height * 2,
+              overhead != surfaceOverhead
+        else { return }
+
+        surfaceOverhead = overhead
+        needsLayout = true
+        reportGridSize()
     }
 
     // MARK: - Layout
@@ -180,12 +245,16 @@ final class PaneGridView: NSView {
         }
     }
 
+    /// A pane's rect in points, sized so the surface inside it resolves to
+    /// exactly `frame.columns × frame.rows` cells — the measured overhead is
+    /// added back on top of the cells themselves.
     private func rect(for frame: TmuxLayoutFrame) -> CGRect {
-        CGRect(
+        let scale = pixelScale
+        return CGRect(
             x: CGFloat(frame.x) * cellSize.width,
             y: CGFloat(frame.y) * cellSize.height,
-            width: CGFloat(frame.columns) * cellSize.width,
-            height: CGFloat(frame.rows) * cellSize.height
+            width: CGFloat(frame.columns) * cellSize.width + surfaceOverhead.width / scale,
+            height: CGFloat(frame.rows) * cellSize.height + surfaceOverhead.height / scale
         )
     }
 
