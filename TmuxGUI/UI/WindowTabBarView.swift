@@ -232,7 +232,22 @@ final class WindowTabBarView: NSView {
             + "\nTo just get it out of the way, use Hide From This Strip."
         alert.addButton(withTitle: "Kill")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // Both outcomes are logged, and the prompt itself is logged before it
+        // is shown. If work disappears, the question is whether this dialog
+        // was ever put in front of a human — a GUI driven by automation can
+        // answer it without one, and the log is the only place that shows the
+        // difference.
+        TmuxLog.destructive(
+            "kill confirmation shown for \(window.id) (\(window.index):\(window.name))"
+        )
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            TmuxLog.lifecycle("kill cancelled for \(window.id)")
+            return
+        }
+        TmuxLog.destructive(
+            "kill CONFIRMED for \(window.id) (\(window.index):\(window.name)) — every process in it ends"
+        )
         onKill?(window.id)
     }
 

@@ -36,6 +36,9 @@ final class TmuxServer {
     }
 
     func stop() {
+        TmuxLog.destructive(
+            "stopping every connection: \(connections.keys.sorted().joined(separator: ", "))"
+        )
         for connection in connections.values { connection.stop() }
         connections.removeAll()
     }
@@ -69,6 +72,15 @@ final class TmuxServer {
         }
 
         let gone = Set(connections.keys).subtracting(names)
+        if !gone.isEmpty {
+            // The app did not necessarily do this — a session can be destroyed
+            // from any terminal. Logged so that "the session vanished" can be
+            // told apart from "this app dropped it".
+            TmuxLog.destructive(
+                "sessions no longer on the server, dropping connections: "
+                    + gone.sorted().joined(separator: ", ")
+            )
+        }
         for name in gone {
             connections[name]?.stop()
             connections.removeValue(forKey: name)
@@ -80,6 +92,9 @@ final class TmuxServer {
     /// Create a detached session. Detached so the GUI decides when to show
     /// it, rather than tmux yanking every attached client over to it.
     func newSession() {
+        // Not sent through a control client, so it bypasses the logging choke
+        // point in `TmuxControlClient.enqueue` and has to record itself.
+        TmuxLog.command("new-session -d", session: "-")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tmuxPath)
         process.arguments = ["new-session", "-d"]
@@ -87,6 +102,7 @@ final class TmuxServer {
         process.standardError = FileHandle.nullDevice
         try? process.run()
         process.waitUntilExit()
+        TmuxLog.lifecycle("new-session -d finished, status \(process.terminationStatus)")
         refreshSessions()
     }
 

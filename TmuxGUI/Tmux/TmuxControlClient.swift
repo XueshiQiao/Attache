@@ -69,34 +69,58 @@ final class TmuxControlClient {
             self?.consume(data)
         }
 
-        process.terminationHandler = { [weak self] _ in
+        process.terminationHandler = { [weak self] process in
             guard let self else { return }
+            TmuxLog.lifecycle(
+                "control client exited — status \(process.terminationStatus)"
+                    + " reason \(process.terminationReason.rawValue)",
+                session: self.sessionName
+            )
             self.callbackQueue.async { self.onExit?(nil) }
         }
 
         try process.run()
+        TmuxLog.lifecycle(
+            "spawned \(tmuxPath) -C attach -t '=\(sessionName)' (pid \(process.processIdentifier))",
+            session: sessionName
+        )
     }
 
     func stop() {
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        if process.isRunning {
-            // `detach-client` lets tmux tear the client down cleanly; the pane
-            // processes keep running, which is the whole point of the design.
-            write(command: "detach-client")
-            process.terminate()
+        guard process.isRunning else {
+            TmuxLog.lifecycle("stop() — control client already gone", session: sessionName)
+            return
         }
+        // `detach-client` lets tmux tear the client down cleanly; the pane
+        // processes keep running, which is the whole point of the design. It
+        // is still logged as destructive: it is the one command in this class
+        // that ends something, and after an incident the question is always
+        // whether teardown ran and in what order.
+        TmuxLog.destructive("tearing down control client — sending detach-client, then SIGTERM",
+                            session: sessionName)
+        write(command: "detach-client")
+        process.terminate()
     }
 
     // MARK: - Sending
 
     /// Send a command and ignore its reply.
-    func send(_ command: String) {
-        enqueue(command, completion: nil)
+    ///
+    /// `caller` is captured by the compiler at the call site and carried into
+    /// the log. It is the difference between knowing a `kill-window` went out
+    /// and knowing whether the tab strip or the throughput probe sent it.
+    func send(_ command: String, caller: StaticString = #function) {
+        enqueue(command, caller: caller, completion: nil)
     }
 
     /// Send a command and receive its reply block. `failed` mirrors `%error`.
-    func run(_ command: String, completion: @escaping (_ lines: [String], _ failed: Bool) -> Void) {
-        enqueue(command, completion: completion)
+    func run(
+        _ command: String,
+        caller: StaticString = #function,
+        completion: @escaping (_ lines: [String], _ failed: Bool) -> Void
+    ) {
+        enqueue(command, caller: caller, completion: completion)
     }
 
     /// Forward keystrokes to a pane. tmux takes one hex byte per argument.
@@ -112,7 +136,15 @@ final class TmuxControlClient {
         send("refresh-client -C \(columns)x\(rows)")
     }
 
-    private func enqueue(_ command: String, completion: (([String], Bool) -> Void)?) {
+    /// The one gate every command passes through, which is why the log lives
+    /// here: a command that reaches tmux without a line in the file would have
+    /// to bypass this function, and nothing does.
+    ///
+    /// Logged before the write, not after. If the write is the last thing this
+    /// process ever does, the record still exists.
+    private func enqueue(_ command: String, caller: StaticString, completion: (([String], Bool) -> Void)?) {
+        TmuxLog.command(command, session: sessionName, caller: caller)
+
         stateLock.lock()
         if !handshakeComplete {
             queuedCommands.append((command, completion))
@@ -217,6 +249,10 @@ final class TmuxControlClient {
         }
         stateLock.unlock()
 
+        TmuxLog.lifecycle(
+            "attach handshake complete — releasing \(queued.count) held command(s)",
+            session: sessionName
+        )
         for (command, _) in queued { write(command: command) }
     }
 
