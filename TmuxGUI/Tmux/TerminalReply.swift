@@ -37,6 +37,19 @@ import Foundation
 /// /`~`, or a bare `CSI …u` for the kitty protocol. Anything this file does
 /// not fully recognise is forwarded untouched, so the failure mode is a report
 /// that leaks — never a keystroke that vanishes.
+///
+/// **What deliberately still leaks**, because closing these would mean
+/// guessing at bytes that a key can also produce, or holding state across
+/// callbacks:
+/// - `CSI row;col R`, the plain cursor-position report. xterm encodes modified
+///   F3 as `CSI 1;2R`, byte for byte the same thing. The private form
+///   `CSI ? row;col R` has no such twin and is withheld.
+/// - Mode 1005 mouse reports, which UTF-8-encode the three bytes after
+///   `CSI M`. Reading them would mean deciding how many bytes to consume
+///   without knowing which mode is on, and consuming too many is how a
+///   keystroke disappears.
+/// - Any reply split across two write callbacks. Nothing here carries state
+///   between calls; a half-parsed sequence is forwarded rather than buffered.
 enum TerminalReply {
     /// Whether `data` is nothing but answers, and so must not reach the pane.
     static func isEntirelyReplies(_ data: Data) -> Bool {
@@ -57,9 +70,9 @@ enum TerminalReply {
         guard start + 1 < bytes.count, bytes[start] == 0x1b else { return nil }
 
         switch bytes[start + 1] {
-        case 0x5b: return csiReplyLength(bytes, at: start)          // ESC [
-        case 0x50: return stringReplyLength(bytes, at: start)       // ESC P — DCS
-        case 0x5d: return stringReplyLength(bytes, at: start)       // ESC ] — OSC
+        case 0x5b: return csiReplyLength(bytes, at: start)                    // ESC [
+        case 0x50: return stringReplyLength(bytes, at: start, allowsBEL: false) // ESC P — DCS
+        case 0x5d: return stringReplyLength(bytes, at: start, allowsBEL: true)  // ESC ] — OSC
         default: return nil
         }
     }
@@ -99,15 +112,22 @@ enum TerminalReply {
             final == 0x4d || final == 0x6d
         case UInt8(0x3f), UInt8(0x3e), UInt8(0x3d):
             // Private answers: device attributes (`c`), mode report (`$y`),
-            // kitty keyboard flags (`u`), status (`n`). A key never carries a
-            // private marker, which is what makes these unambiguous — a kitty
-            // *key* is `CSI …u` with no marker and stays forwarded.
+            // kitty keyboard flags (`u`), status (`n`), extended cursor
+            // position (`R`). A key never carries a private marker, which is
+            // what makes these unambiguous — a kitty *key* is `CSI …u` with no
+            // marker and stays forwarded.
             final == 0x63 || final == 0x79 || final == 0x75 || final == 0x6e
+                || final == 0x52
         default:
-            // Cursor position (`R`), device status (`n`), urxvt mouse (1015,
-            // `M` with parameters), and focus in/out (`I`/`O`, which carry no
-            // parameters).
-            final == 0x52 || final == 0x6e
+            // Device status (`n`), urxvt mouse (1015, `M` with parameters),
+            // and focus in/out (`I`/`O`, which carry no parameters).
+            //
+            // The plain cursor-position report `CSI row;col R` is deliberately
+            // *not* here: xterm encodes modified F3 as `CSI 1;2R` — the same
+            // bytes — so filtering it would eat Shift-F3. A leaked report is
+            // recoverable; a key that never arrives is the failure this file
+            // exists to avoid. Only the private form above can be told apart.
+            final == 0x6e
                 || (final == 0x4d && hasParameters)
                 || ((final == 0x49 || final == 0x4f) && !hasParameters)
         }
@@ -121,13 +141,21 @@ enum TerminalReply {
     /// `XTVERSION` come back as `DCS`, a colour query as `OSC`. No keystroke
     /// encodes to either, so the contents do not need inspecting; finding the
     /// end is enough.
-    private static func stringReplyLength(_ bytes: [UInt8], at start: Int) -> Int? {
+    ///
+    /// `OSC` accepts `BEL` as a terminator and `DCS` does not, which is not
+    /// pedantry: sharing one scanner would let `ESC P … BEL` — a string that
+    /// is not a complete reply at all — be recognised as one and withheld.
+    private static func stringReplyLength(
+        _ bytes: [UInt8],
+        at start: Int,
+        allowsBEL: Bool
+    ) -> Int? {
         var index = start + 2
         while index < bytes.count {
-            if bytes[index] == 0x07 { return index + 1 - start }        // BEL
-            if bytes[index] == 0x9c { return index + 1 - start }        // ST
+            if allowsBEL, bytes[index] == 0x07 { return index + 1 - start }  // BEL
+            if bytes[index] == 0x9c { return index + 1 - start }             // ST
             if bytes[index] == 0x1b, index + 1 < bytes.count, bytes[index + 1] == 0x5c {
-                return index + 2 - start                                 // ESC \
+                return index + 2 - start                                      // ESC \
             }
             index += 1
         }

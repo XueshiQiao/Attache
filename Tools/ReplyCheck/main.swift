@@ -23,7 +23,7 @@ let replies: [(String, Data)] = [
     ("X10 mouse", Data([0x1b, 0x5b, 0x4d, 0x20, 0x21, 0x22])),
     ("X10 mouse carrying an ESC byte", Data([0x1b, 0x5b, 0x4d, 0x20, 0x1b, 0x22])),
     ("urxvt mouse (1015)", Data("\u{1b}[35;100;20M".utf8)),
-    ("cursor position report", Data("\u{1b}[57;190R".utf8)),
+    ("extended cursor position report (DECXCPR)", Data("\u{1b}[?57;190R".utf8)),
     ("primary device attributes", Data("\u{1b}[?62;22;52c".utf8)),
     ("secondary device attributes", Data("\u{1b}[>1;4000;29c".utf8)),
     ("device status report", Data("\u{1b}[0n".utf8)),
@@ -66,6 +66,10 @@ let keystrokes: [(String, Data)] = [
     ("truncated X10 mouse", Data([0x1b, 0x5b, 0x4d, 0x20])),
     ("unterminated DCS", Data("\u{1b}P>|ghostty".utf8)),
     ("nothing at all", Data()),
+    ("shift-F3, byte-identical to a cursor position report", Data("\u{1b}[1;2R".utf8)),
+    ("ctrl-F3", Data("\u{1b}[1;5R".utf8)),
+    ("plain cursor position report — leaks, see TerminalReply", Data("\u{1b}[57;190R".utf8)),
+    ("DCS terminated by BEL is not a complete reply", Data("\u{1b}P1+r5463\u{07}".utf8)),
 ]
 
 var failures = 0
