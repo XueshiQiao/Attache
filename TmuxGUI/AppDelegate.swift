@@ -2,10 +2,12 @@ import Cocoa
 import GhosttyTerminal
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let defaultContentSize = NSSize(width: 900, height: 600)
-    private let minimumContentSize = NSSize(width: 480, height: 320)
+    private let defaultContentSize = NSSize(width: 1100, height: 720)
+    private let minimumContentSize = NSSize(width: 520, height: 340)
     private var window: NSWindow?
-    private var viewController: ViewController?
+    private var sessionController: SessionViewController?
+    private var titleTimer: Timer?
+    private var status = "启动中…"
 
     func applicationDidFinishLaunching(_: Notification) {
         installMenu()
@@ -21,8 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let controller = ViewController(tmuxPath: tmuxPath, sessionName: sessionName)
-        viewController = controller
+        let connection = TmuxSessionConnection(tmuxPath: tmuxPath, sessionName: sessionName)
+        let controller = SessionViewController(connection: connection)
+        controller.onStatusChange = { [weak self] status in
+            self?.status = status
+            self?.refreshTitle()
+        }
+        sessionController = controller
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: defaultContentSize),
@@ -43,6 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.window = window
+
+        titleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.refreshTitle()
+        }
     }
 
     func applicationSupportsSecureRestorableState(_: NSApplication) -> Bool { true }
@@ -50,8 +61,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_: Notification) {
-        // Detach cleanly so tmux does not keep a dead control client around.
-        viewController?.paneSession.stop()
+        titleTimer?.invalidate()
+        // Detach cleanly. The panes keep running — that is the whole point.
+        sessionController?.stop()
+    }
+
+    private func refreshTitle() {
+        window?.title = status
+        guard let metrics = sessionController?.connection.metrics.snapshot() else { return }
+        window?.subtitle = metrics.titleSummary
     }
 
     // MARK: - Session choice
@@ -84,17 +102,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(
-            withTitle: "隐藏 TmuxGUI",
-            action: #selector(NSApplication.hide(_:)),
-            keyEquivalent: "h"
-        )
+        appMenu.addItem(withTitle: "隐藏 TmuxGUI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
-        appMenu.addItem(
-            withTitle: "退出 TmuxGUI",
-            action: #selector(NSApplication.terminate(_:)),
-            keyEquivalent: "q"
-        )
+        appMenu.addItem(withTitle: "退出 TmuxGUI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
 
@@ -122,8 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func runThroughputProbe() {
-        guard let session = viewController?.paneSession else { return }
-        session.runThroughputProbe { [weak self] report in
+        sessionController?.connection.runThroughputProbe { [weak self] report in
             print(report)
             self?.showReport(report)
         }
