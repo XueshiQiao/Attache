@@ -179,6 +179,17 @@ one of them presents as "the code is obviously correct and yet".
 - **Autocorrect eats Return in inline editors.** The system completion popup
   takes the key that was supposed to commit. Disable text completion and the
   field editor's substitutions.
+- **libghostty answers as a terminal, and the answers go out as keystrokes.**
+  The surface's write callback is the pane's keyboard, but libghostty is a real
+  terminal and also speaks for itself on it — device attributes, cursor
+  position, and, once a program enables mouse tracking, a pointer report on
+  every refresh. tmux is the pane's actual terminal and has already answered,
+  so the program gets a second reply it never asked for. Measured 2026-07-26:
+  **705 unrequested `send-keys` to one pane in two minutes**, all of them SGR
+  mouse reports. Harmless against a TUI, command-line text against a shell
+  prompt. `TerminalReply` filters them out on the bytes. It cannot be done on
+  provenance: a keystroke's write callback arrives asynchronously on the same
+  queue as a mouse report, so the call stack carries nothing to key off.
 - **`TMUX_TMPDIR` without `-L` is ignored, silently.** It reads as isolation and
   is not. On 2026-07-26 an agent set it, believed it had a private server, ran
   cleanup without `-L`, and destroyed the user's tmux server and every agent

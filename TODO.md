@@ -174,17 +174,6 @@ thing whose failures are invisible until a TUI redraws.
 
 ## 4 · Known defects
 
-- [ ] **The scrollback prime writes back into the live pane.** Worst of these,
-      and it was invisible until `TmuxLog` existed. `capture-pane -p -e`
-      replays raw escape sequences into the surface, some of which are
-      *questions* — cursor position, device attributes. libghostty answers
-      them, the answer goes out through `sendKeys`, and tmux types it into the
-      real pane. Measured on 2026-07-26: opening one window sent **705
-      `send-keys` to a pane in two minutes**, none of them typed by anyone.
-      Harmless against a TUI that discards them; against a shell prompt those
-      bytes are command-line text. Either strip query sequences out of a
-      capture before replaying it, or gate the surface's write path while a
-      snapshot is being painted.
 - [ ] **Teardown runs twice per shown session.** `MainViewController.stop()`
       stops each `SessionViewController`, then `server.stop()` stops every
       connection again, so a session that was ever displayed gets

@@ -68,8 +68,26 @@ final class TmuxPaneSurface {
         // `refresh-client`: a pane's size is decided by tmux's layout, not by
         // how big this particular view happens to be. Only the whole grid
         // reports its size to tmux, in TmuxSessionConnection.
+        //
+        // This channel is the pane's keyboard, so only what the user typed is
+        // allowed down it. libghostty also answers on it as a terminal in its
+        // own right — device attributes, cursor position, and a pointer report
+        // on every refresh once a program turns on mouse tracking — and tmux,
+        // which really is the pane's terminal, has already answered. See
+        // `TerminalReply`.
         terminalSession = InMemoryTerminalSession(
             write: { data in
+                guard !TerminalReply.isEntirelyReplies(data) else {
+                    #if DEBUG
+                        TmuxLog.lifecycle(
+                            "withheld \(paneID) — \(OutboundShape.describe(data))"
+                        )
+                    #endif
+                    return
+                }
+                #if DEBUG
+                    TmuxLog.lifecycle("outbound \(paneID) — \(OutboundShape.describe(data))")
+                #endif
                 Task { @MainActor in sendKeys(paneID, data) }
             },
             resize: { _ in }
