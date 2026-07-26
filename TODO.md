@@ -13,13 +13,34 @@ Deliberately not done, and still worth doing:
 
 - [ ] Ligature and fallback-font settings. Named as a follow-up from the
       start and nothing since has changed that.
-- [ ] The multi-pane case of the font change is unverified. The column-count
-      check was run against a one-pane window across three font sizes, a
-      window resize and a stability poll, all agreeing with `list-panes`;
-      switching the shown session needs ⌃⌘n, and driving the keyboard was off
-      limits while the machine's owner was using it. Splitter placement is
-      arithmetic on the same `cellSize` every checked number came from, so it
-      should follow — but "should" is not "was measured".
+- [ ] Nobody has *looked* at the settings window. Showing it calls
+      `NSApp.activate`, which takes the focus of whoever is at the machine, so
+      it was only ever built off screen — that proves it does not crash and
+      nothing else. Four pages need eyes: Terminal, Appearance, Behaviour,
+      About.
+- [ ] Kill-on-close has never killed anything. Deliberately given no debug
+      hook, on the grounds that nothing destructive should have an unattended
+      path to it, which also means testing it needs a human and a click. Only
+      the half that matters for safety is verified: an absent key reads
+      `false`, so the default stays hide.
+- [ ] A real light↔dark flip at the OS level. The same recompute was exercised
+      through the explicit override, but the system-initiated trigger is
+      untested — flipping it for real changes the whole desktop of whoever is
+      using the machine.
+
+How the font change was checked, since the two halves were measured in
+different places and neither alone is the whole claim:
+
+- Multi-pane, on a throwaway `-L` server: three split panes, sizes 14 → 18 →
+  11 → 20 → 14 and again at the clamped maximum of 72pt, every pane's parsed
+  layout matching `list-panes` matching the surface's resolved grid, plus
+  three font families and two window resizes.
+- Single-pane, on the real server the app is actually used against: the same
+  agreement at 14 → 18 → 11 → 14, after a window resize, and stable across a
+  poll.
+
+Multi-pane against a real session with real programs in it has not been done.
+That is the combination this project keeps finding bugs in.
 
 ---
 
