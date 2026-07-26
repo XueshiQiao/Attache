@@ -190,12 +190,20 @@ final class TmuxSessionConnection {
         client.send(command)
     }
 
-    /// Pull a pane's scrollback. `-S -N` starts N lines above the visible
-    /// region, `-e` keeps colours, `-J` is deliberately not used: joining
-    /// wrapped lines would change where they break at this width.
+    /// Pull a pane's scrollback plus its visible screen.
+    ///
+    /// `-S -N` starts N lines above the top of the visible region and tmux
+    /// clamps to what actually exists, so asking for more than the pane has
+    /// is free. `-e` keeps colours. `-J` is deliberately not used: joining
+    /// wrapped lines would rewrap them at whatever width they are replayed
+    /// into, which is not where the user saw them break.
+    ///
+    /// This is how the GUI gets scrollback at all — tmux owns the history and
+    /// never replays it to a joining client, so a surface that is only fed
+    /// live `%output` can scroll back exactly as far as the moment it opened.
     func captureScrollback(paneID: String, lines: Int, completion: @escaping ([String]) -> Void) {
         client.run("capture-pane -p -e -t \(paneID) -S -\(lines)") { output, failed in
-            completion(failed ? [] : output)
+            completion(failed ? [] : Self.trimmingTrailingBlanks(output))
         }
     }
 

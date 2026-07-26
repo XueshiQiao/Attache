@@ -195,6 +195,7 @@ final class SessionRowView: NSView {
     private let activityDot = NSView()
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
+    private var pressed = false
 
     init(entry: SessionSidebarView.Entry, isSelected: Bool) {
         sessionName = entry.name
@@ -283,12 +284,17 @@ final class SessionRowView: NSView {
             onDoubleClick?()
             return
         }
+        pressed = true
     }
 
-    // Select on mouse up, for the same reason the window strip does: selecting
-    // rebuilds this view, and doing that from mouseDown kills the gesture.
-    override func mouseUp(with event: NSEvent) {
-        guard event.clickCount == 1 else { return }
+    /// Select on mouse up, for the same reason the window strip does:
+    /// selecting rebuilds this view, and doing that from mouseDown kills the
+    /// gesture. The trigger is "a press started here", not `clickCount == 1` —
+    /// synthesised events carry a clickCount of 0 and a guard on the exact
+    /// value silently ignores them.
+    override func mouseUp(with _: NSEvent) {
+        guard pressed else { return }
+        pressed = false
         onClick?()
     }
 }

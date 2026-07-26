@@ -36,6 +36,11 @@ final class TmuxPaneSurface {
     let view: TmuxTerminalView
     let terminalSession: InMemoryTerminalSession
 
+    /// Whether this surface has been seeded with tmux's scrollback. Done
+    /// once per pane: replaying history again on every resize would stack
+    /// duplicate copies of it into the buffer.
+    var hasPrimedHistory = false
+
     /// Cell geometry from the last resize. The pane grid needs it to place
     /// views on the same character grid tmux is laying panes out on.
     private(set) var gridMetrics: TerminalGridMetrics?

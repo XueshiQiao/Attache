@@ -22,6 +22,14 @@ final class SessionViewController: NSViewController {
     private let gridView = PaneGridView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
     private lazy var controller: TerminalController = .init { builder in
         builder.withBackgroundOpacity(0)
+        // Scrollback keys have to be bound explicitly: unbound, Shift+PageUp
+        // is forwarded to the pane as a CSI-u sequence and lands in the shell
+        // as literal `;5u` text. The buffer being scrolled is libghostty's
+        // own, seeded from tmux by the scrollback prime.
+        builder.withCustom("keybind", "shift+page_up=scroll_page_up")
+        builder.withCustom("keybind", "shift+page_down=scroll_page_down")
+        builder.withCustom("keybind", "shift+home=scroll_to_top")
+        builder.withCustom("keybind", "shift+end=scroll_to_bottom")
     }
 
     private var surfaces = [String: TmuxPaneSurface]()
@@ -45,6 +53,12 @@ final class SessionViewController: NSViewController {
     private var syncScheduled = false
 
     var onStatusChange: ((String) -> Void)?
+
+    /// How much history to replay when a pane is first shown. tmux clamps to
+    /// what the pane actually has, so this is a ceiling rather than a cost.
+    /// Matched to a typical `history-limit` without making the opening of a
+    /// busy session pull megabytes through the control pipe at once.
+    private static let scrollbackPrimeLines = 2000
 
     init(connection: TmuxSessionConnection) {
         self.connection = connection
@@ -239,6 +253,25 @@ final class SessionViewController: NSViewController {
             guard let self else { return }
             for pane in panes {
                 guard let surface = self.surfaces[pane.id] else { continue }
+
+                // The first paint of a pane pulls history as well as the
+                // visible screen, so the wheel can scroll back into what
+                // happened before the app was even running. Later repaints —
+                // after a resize — take the visible screen only; the history
+                // is already in the surface's own buffer and replaying it
+                // would stack a second copy on top.
+                guard surface.hasPrimedHistory else {
+                    surface.hasPrimedHistory = true
+                    self.connection.captureScrollback(
+                        paneID: pane.id,
+                        lines: Self.scrollbackPrimeLines
+                    ) { lines in
+                        guard !lines.isEmpty else { return }
+                        surface.terminalSession.receive(lines.joined(separator: "\r\n"))
+                    }
+                    continue
+                }
+
                 self.connection.capturePane(paneID: pane.id) { lines in
                     guard !lines.isEmpty else { return }
                     surface.terminalSession.receive(
