@@ -125,8 +125,32 @@ Then screenshot and look: `screencapture -x -o -R x,y,w,h out.png`. Move the
 window to a known position first — the coordinates are global and a second
 display puts it at a negative x.
 
-Always create a throwaway tmux session for tests and kill it afterwards. The
-user's real sessions have long-running agents in them.
+**Test against a throwaway tmux *server*, not a throwaway session, and reach it
+with `-L` on every single command.** The user's real sessions have long-running
+agents in them, and a session-level mistake is a server-level accident.
+
+```sh
+tmux -L tmuxgui-test -f /dev/null new-session -d -s probe   # create
+tmux -L tmuxgui-test list-windows -a                        # inspect
+tmux -L tmuxgui-test kill-server                            # clean up
+```
+
+`-L` on the create, `-L` on every query, `-L` on the cleanup. The flag is what
+picks the server; leaving it off any one command sends that command to the
+user's.
+
+`TMUX_TMPDIR` is **not** an isolation mechanism and must not be used as one.
+Verified on tmux 3.6a: it is honoured only when `-L` is *also* given. On its
+own it is silently ignored and every command lands on the default server — so
+`TMUX_TMPDIR=/tmp/mine tmux kill-server` destroys the user's server while
+reading as though it could not possibly touch it. Since `-L` alone already
+isolates, there is no reason to set `TMUX_TMPDIR` at all.
+
+Note what this costs when it goes wrong: an agent editing this repo normally
+*runs inside* one of those panes. A command that kills the server kills the
+agent's own terminal mid-call, so the tool call never reaches the transcript —
+the action is invisible in the very record you would search to find it. Assume
+your own log has a hole exactly where the damage is.
 
 ## Traps already paid for
 
@@ -155,6 +179,13 @@ one of them presents as "the code is obviously correct and yet".
 - **Autocorrect eats Return in inline editors.** The system completion popup
   takes the key that was supposed to commit. Disable text completion and the
   field editor's substitutions.
+- **`TMUX_TMPDIR` without `-L` is ignored, silently.** It reads as isolation and
+  is not. On 2026-07-26 an agent set it, believed it had a private server, ran
+  cleanup without `-L`, and destroyed the user's tmux server and every agent
+  running in it. Verified afterwards on tmux 3.6a: with the directory present
+  and `$TMUX` set, `TMUX_TMPDIR=… tmux ls` lists the *real* sessions, while
+  `TMUX_TMPDIR=… tmux -L probe ls` correctly resolves under the custom
+  directory. `-L` is what isolates. See "Verifying a change".
 - **`capture-pane` returns one line per row including blanks.** Painting all of
   them parks the cursor on the bottom row, so a prompt redrawn after SIGWINCH
   lands at the bottom of an empty screen. Trim trailing blanks.
