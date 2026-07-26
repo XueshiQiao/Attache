@@ -74,41 +74,17 @@ Afterwards:
 
 ---
 
-## 3 · Make the UI inspectable by an agent
+## 3 · Make the UI inspectable by an agent — done
 
-The project used to link `LookInsideServer`, inherited from the libghostty
-sample. It is a UI inspector in the [Lookin](https://lookin.work)/Reveal family:
-the app embeds a server, a companion Mac app connects, and you get the live view
-hierarchy with frames, layers and properties. Exactly the tool that finds
-"correct frame, not hidden, alpha 1, `draw(_:)` runs, renders nothing" in
-seconds rather than an hour.
+`TmuxGUI/Debug/` holds it. A debug-only HTTP endpoint on 127.0.0.1:47623,
+off unless `TMUXGUI_INSPECT=1` or the Debug menu turns it on, serving the
+view hierarchy (`/views` — including each layer's overhang, the field that
+explains a correct-looking view rendering nothing) and the app's tmux state
+(`/tmux`, shaped to diff against `list-windows`). The settings work added
+write routes so a font change can be driven without a pointer.
 
-It has been removed, because an agent cannot drive it. The server is a closed
-binary XCFramework from a private source repo, the port speaks a custom protocol
-— probed with a plain HTTP request it returns nothing at all — and only the
-companion GUI understands it. That made it pure cost here: a listening socket on
-`127.0.0.1` at every launch, and no way for the thing that actually does the
-debugging in this project to ask it anything.
-
-The need behind it is real, so build the small version instead:
-
-- [ ] A debug-only view-hierarchy dump: for every view, its class, frame in
-      window coordinates, `isHidden`, `alphaValue`, and the layer's frame and
-      `masksToBounds`. The layer frame is the field that matters — a backing
-      layer larger than its view is what made the tab strip invisible, and no
-      amount of screenshotting reveals it.
-- [ ] Reachable without a GUI. A menu item that writes JSON to a known path is
-      enough and is two dozen lines; a small local HTTP endpoint behind a debug
-      flag is nicer and lets an agent poll while driving the app with
-      `cliclick`. Do not ship either in Release.
-- [ ] Same treatment for tmux state: dump what the app believes about sessions,
-      windows, layouts and pane ids, so it can be diffed against `list-windows`
-      directly. Two bugs so far — the window counts and the crossed session
-      targets — were found by hand-comparing exactly those two things.
-
-This is worth doing before the settings work rather than after. Settings change
-fonts, fonts change cell sizes, cell sizes change the grid, and the grid is the
-thing whose failures are invisible until a TUI redraws.
+The closed-source inspector this replaces is gone for good: an agent could
+not read it, which made it pure cost here.
 
 ---
 
