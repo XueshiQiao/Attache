@@ -58,7 +58,7 @@ enum TmuxLayoutError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .malformed(let reason, let offset):
-            "布局字符串在第 \(offset) 个字符处解析失败：\(reason)"
+            "Malformed layout at offset \(offset): \(reason)"
         }
     }
 }
@@ -81,7 +81,7 @@ enum TmuxLayout {
         try parser.expectChecksum()
         let node = try parser.parseNode()
         guard parser.atEnd else {
-            throw TmuxLayoutError.malformed("末尾有多余内容", at: parser.offset)
+            throw TmuxLayoutError.malformed("trailing content after the root node", at: parser.offset)
         }
         return node
     }
@@ -100,18 +100,18 @@ enum TmuxLayout {
             // Four hex digits then a comma. Not validated as a checksum — see
             // the note on the enum.
             guard bytes.count > 5, bytes[4] == UInt8(ascii: ",") else {
-                throw TmuxLayoutError.malformed("开头不是「四位校验和 + 逗号」", at: 0)
+                throw TmuxLayoutError.malformed("expected four checksum digits followed by a comma", at: 0)
             }
             offset = 5
         }
 
         mutating func parseNode() throws -> TmuxLayoutNode {
             let columns = try parseInt()
-            try expect(UInt8(ascii: "x"), "宽高之间应该是 x")
+            try expect(UInt8(ascii: "x"), "expected x between width and height")
             let rows = try parseInt()
-            try expect(UInt8(ascii: ","), "高度后应该是逗号")
+            try expect(UInt8(ascii: ","), "expected a comma after height")
             let x = try parseInt()
-            try expect(UInt8(ascii: ","), "x 坐标后应该是逗号")
+            try expect(UInt8(ascii: ","), "expected a comma after the x coordinate")
             let y = try parseInt()
             let frame = TmuxLayoutFrame(columns: columns, rows: rows, x: x, y: y)
 
@@ -135,7 +135,7 @@ enum TmuxLayout {
                 )
 
             default:
-                throw TmuxLayoutError.malformed("几何之后应该是 , 或 { 或 [", at: offset)
+                throw TmuxLayoutError.malformed("expected , or { or [ after the geometry", at: offset)
             }
         }
 
@@ -145,19 +145,19 @@ enum TmuxLayout {
             while true {
                 children.append(try parseNode())
                 guard let byte = current else {
-                    throw TmuxLayoutError.malformed("括号没有闭合", at: offset)
+                    throw TmuxLayoutError.malformed("unclosed bracket", at: offset)
                 }
                 if byte == close {
                     offset += 1
                     break
                 }
                 guard byte == UInt8(ascii: ",") else {
-                    throw TmuxLayoutError.malformed("子节点之间应该是逗号", at: offset)
+                    throw TmuxLayoutError.malformed("expected a comma between children", at: offset)
                 }
                 offset += 1
             }
             guard children.count >= 2 else {
-                throw TmuxLayoutError.malformed("容器节点至少要有两个子节点", at: offset)
+                throw TmuxLayoutError.malformed("a container needs at least two children", at: offset)
             }
             return children
         }
@@ -170,7 +170,7 @@ enum TmuxLayout {
                 offset += 1
             }
             guard offset > start else {
-                throw TmuxLayoutError.malformed("这里应该是一个数字", at: start)
+                throw TmuxLayoutError.malformed("expected a number", at: start)
             }
             return value
         }

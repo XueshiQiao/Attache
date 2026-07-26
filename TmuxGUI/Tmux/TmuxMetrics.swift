@@ -108,20 +108,20 @@ extension TmuxMetrics.Snapshot {
         let watched = Self.formatRate(watchedBytesPerSecond)
         let total = Self.formatRate(totalBytesPerSecond)
         let p99 = String(format: "%.0fms", p99Gap * 1000)
-        return "本窗格 \(watched) · 全会话 \(total) · 卡顿 p99 \(p99)"
+        return "pane \(watched) · session \(total) · stall p99 \(p99)"
     }
 
     /// Multi-line report for the log.
     var report: String {
         """
-        ── 控制模式吞吐测量 ──────────────────────
-        采样时长        \(String(format: "%.1f", elapsed)) 秒
-        本窗格          \(watchedBytes) 字节 / \(watchedChunks) 块  = \(Self.formatRate(watchedBytesPerSecond))
-        同会话其它窗格  \(otherBytes) 字节 / \(otherChunks) 块
-        全会话合计      \(Self.formatRate(totalBytesPerSecond))
-        本窗格到达间隔  中位 \(String(format: "%.1f", medianGap * 1000))ms \
+        ── control mode throughput ───────────────
+        window        \(String(format: "%.1f", elapsed)) s
+        this pane     \(watchedBytes) bytes / \(watchedChunks) chunks = \(Self.formatRate(watchedBytesPerSecond))
+        other panes   \(otherBytes) bytes / \(otherChunks) chunks
+        session total \(Self.formatRate(totalBytesPerSecond))
+        arrival gaps  median \(String(format: "%.1f", medianGap * 1000))ms \
         · p99 \(String(format: "%.1f", p99Gap * 1000))ms \
-        · 最差 \(String(format: "%.1f", worstGap * 1000))ms
+        · worst \(String(format: "%.1f", worstGap * 1000))ms
         ──────────────────────────────────────────
         """
     }

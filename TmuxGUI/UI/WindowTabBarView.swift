@@ -10,7 +10,7 @@ import Cocoa
 /// The strip is a view of tmux, not a store. Selecting, reordering, renaming
 /// and closing all turn into tmux commands and only take visible effect when
 /// tmux reports back — so a `prefix + c` typed in another terminal adds a tab
-/// here by exactly the same path a click on ＋ does.
+/// here by exactly the same path a click on + does.
 @MainActor
 final class WindowTabBarView: NSView {
     var onSelect: ((String) -> Void)?
@@ -46,6 +46,9 @@ final class WindowTabBarView: NSView {
     private let gap: CGFloat = 4
 
     override var isFlipped: Bool { true }
+    /// The strip sits where the title bar used to be, so its empty space has
+    /// to stay grabbable — otherwise the window can only be moved by its edges.
+    override var mouseDownCanMoveWindow: Bool { true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -59,13 +62,13 @@ final class WindowTabBarView: NSView {
     private func setUp() {
         // A borderless square button whose whole box responds, not just the
         // glyph — a 12pt plus sign is a miserable target otherwise.
-        newButton.title = "＋"
+        newButton.title = "+"
         newButton.bezelStyle = .inline
         newButton.isBordered = false
         newButton.font = .systemFont(ofSize: 15, weight: .light)
         newButton.target = self
         newButton.action = #selector(newWindowClicked)
-        newButton.toolTip = "新建窗口（⌘T）"
+        newButton.toolTip = "New window (⌘T)"
         addSubview(newButton)
 
         hiddenBadge.bezelStyle = .inline
@@ -115,8 +118,8 @@ final class WindowTabBarView: NSView {
 
         let hiddenCount = hiddenIDs.count
         hiddenBadge.isHidden = hiddenCount == 0
-        hiddenBadge.title = "\(hiddenCount) 个已隐藏"
-        hiddenBadge.toolTip = "点一下把隐藏的窗口全部显示回来"
+        hiddenBadge.title = "\(hiddenCount) hidden"
+        hiddenBadge.toolTip = "Bring every hidden window back"
 
         // Lay out immediately instead of waiting for the next pass. A freshly
         // created item has a zero frame, and tmux notifications arrive in
@@ -186,11 +189,11 @@ final class WindowTabBarView: NSView {
 
     private func showMenu(for window: TmuxWindow, at point: NSPoint) {
         let menu = NSMenu()
-        menu.addItem(withTitle: "重命名…", action: nil, keyEquivalent: "").representedObject = window.id
+        menu.addItem(withTitle: "Rename…", action: nil, keyEquivalent: "").representedObject = window.id
         menu.items[0].target = self
         menu.items[0].action = #selector(renameFromMenu(_:))
 
-        let hide = NSMenuItem(title: "从这里隐藏", action: #selector(hideFromMenu(_:)), keyEquivalent: "")
+        let hide = NSMenuItem(title: "Hide From This Strip", action: #selector(hideFromMenu(_:)), keyEquivalent: "")
         hide.target = self
         hide.representedObject = window.id
         menu.addItem(hide)
@@ -200,7 +203,7 @@ final class WindowTabBarView: NSView {
         // Killing is the only destructive action in the strip, so it is the
         // one thing that never happens by accident: separate item, explicit
         // wording, and a confirmation before anything dies.
-        let kill = NSMenuItem(title: "杀掉这个 tmux 窗口…", action: #selector(killFromMenu(_:)), keyEquivalent: "")
+        let kill = NSMenuItem(title: "Kill This tmux Window…", action: #selector(killFromMenu(_:)), keyEquivalent: "")
         kill.target = self
         kill.representedObject = window.id
         menu.addItem(kill)
@@ -224,11 +227,11 @@ final class WindowTabBarView: NSView {
               let window = windows.first(where: { $0.id == id }) else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "杀掉窗口「\(window.index):\(window.name)」？"
-        alert.informativeText = "窗口里的所有进程都会被结束，包括正在跑的 AI Agent。"
-            + "\n如果只是不想看见它，用「从这里隐藏」。"
-        alert.addButton(withTitle: "杀掉")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = "Kill window \(window.index):\(window.name)?"
+        alert.informativeText = "Every process in the window ends, including any AI agent mid-run."
+            + "\nTo just get it out of the way, use Hide From This Strip."
+        alert.addButton(withTitle: "Kill")
+        alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         onKill?(window.id)
     }
@@ -354,6 +357,7 @@ final class WindowTabItemView: NSView {
     required init?(coder _: NSCoder) { fatalError("not supported") }
 
     override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 
     private func setUp() {
         wantsLayer = true
@@ -384,7 +388,7 @@ final class WindowTabItemView: NSView {
         closeButton.contentTintColor = .secondaryLabelColor
         closeButton.target = self
         closeButton.action = #selector(closeClicked)
-        closeButton.toolTip = "从这里隐藏（不会杀掉 tmux 窗口）"
+        closeButton.toolTip = "Hide from this strip (does not kill the tmux window)"
         closeButton.isHidden = true
         addSubview(closeButton)
     }

@@ -26,6 +26,23 @@ final class SessionSidebarView: NSView {
 
     private let header = NSTextField(labelWithString: "SESSIONS")
     private let newButton = NSButton()
+    private let statusLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+
+    /// Clearance for the traffic lights. The window has no title bar, so the
+    /// content starts at the very top and the buttons float over this rail.
+    ///
+    /// Read from the buttons themselves rather than pinned to a number: their
+    /// size and inset are the system's to choose, and they have changed across
+    /// macOS releases. The fallback only applies before the view has a window.
+    private var trafficLightInset: CGFloat {
+        guard let button = window?.standardWindowButton(.closeButton),
+              let frame = button.superview?.convert(button.frame, to: nil),
+              let height = window?.frame.height
+        else { return 38 }
+        // Button frame is in window coordinates measured from the bottom.
+        return height - frame.minY + 6
+    }
     private var entries = [Entry]()
     private var selectedName: String?
     private var itemViews = [SessionRowView]()
@@ -52,7 +69,7 @@ final class SessionSidebarView: NSView {
         header.textColor = .tertiaryLabelColor
         addSubview(header)
 
-        newButton.title = "＋  新建 session"
+        newButton.title = "+  New session"
         newButton.font = .systemFont(ofSize: 11.5)
         newButton.isBordered = false
         newButton.bezelStyle = .inline
@@ -61,6 +78,25 @@ final class SessionSidebarView: NSView {
         newButton.target = self
         newButton.action = #selector(newClicked)
         addSubview(newButton)
+
+        // Status lives here rather than in a title bar, since there is no
+        // title bar. Two lines: what the app is showing, and how fast bytes
+        // are arriving.
+        for label in [statusLabel, detailLabel] {
+            label.lineBreakMode = .byTruncatingTail
+            label.maximumNumberOfLines = 2
+            addSubview(label)
+        }
+        statusLabel.font = .systemFont(ofSize: 10.5)
+        statusLabel.textColor = .secondaryLabelColor
+        detailLabel.font = .monospacedDigitSystemFont(ofSize: 9.5, weight: .regular)
+        detailLabel.textColor = .tertiaryLabelColor
+    }
+
+    func showStatus(_ status: String, detail: String) {
+        statusLabel.stringValue = status
+        detailLabel.stringValue = detail
+        needsLayout = true
     }
 
     func update(entries: [Entry], selected: String?) {
@@ -95,16 +131,27 @@ final class SessionSidebarView: NSView {
     override func layout() {
         super.layout()
         let inset: CGFloat = 10
-        header.frame = CGRect(x: inset + 2, y: 10, width: bounds.width - inset * 2, height: 14)
+        header.frame = CGRect(
+            x: inset + 2, y: trafficLightInset,
+            width: bounds.width - inset * 2, height: 14
+        )
 
-        var y: CGFloat = 32
+        var y = trafficLightInset + 22
         for row in itemViews {
             row.frame = CGRect(x: 6, y: y, width: bounds.width - 12, height: rowHeight)
             y += rowHeight + gap
         }
 
         newButton.frame = CGRect(x: 10, y: y + 6, width: bounds.width - 20, height: 26)
+
+        let width = bounds.width - inset * 2
+        detailLabel.frame = CGRect(x: inset, y: bounds.maxY - 26, width: width, height: 14)
+        statusLabel.frame = CGRect(x: inset, y: bounds.maxY - 62, width: width, height: 32)
     }
+
+    /// Empty space in the rail drags the window, since there is no title bar
+    /// to grab. Rows and buttons handle their own clicks and opt out.
+    override var mouseDownCanMoveWindow: Bool { true }
 
     override func draw(_: NSRect) {
         NSColor.separatorColor.withAlphaComponent(0.5).setFill()
@@ -224,13 +271,14 @@ final class SessionRowView: NSView {
         activityDot.isHidden = !(entry.hasActivity && !isSelected)
         addSubview(activityDot)
 
-        toolTip = "\(entry.name) · \(entry.windowCount) 个窗口"
+        toolTip = "\(entry.name) · \(entry.windowCount) window\(entry.windowCount == 1 ? "" : "s")"
     }
 
     @available(*, unavailable)
     required init?(coder _: NSCoder) { fatalError("not supported") }
 
     override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 
     private func applyColors() {
         if isSelected {

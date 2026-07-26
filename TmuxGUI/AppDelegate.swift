@@ -7,17 +7,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var main: MainViewController?
     private var titleTimer: Timer?
-    private var status = "启动中…"
+    private var status = "Starting…"
 
     func applicationDidFinishLaunching(_: Notification) {
         installMenu()
 
         guard let tmuxPath = TmuxControlClient.locateTmux() else {
-            fail("找不到 tmux", "在 /opt/homebrew/bin、/usr/local/bin、/usr/bin 和登录 shell 的 PATH 里都没找到 tmux。")
+            fail(
+                "tmux not found",
+                "Looked in /opt/homebrew/bin, /usr/local/bin, /usr/bin and the PATH of a login shell."
+            )
             return
         }
         guard !TmuxControlClient.listSessions(tmuxPath: tmuxPath).isEmpty else {
-            fail("没有可用的 tmux session", "tmux 服务器没在跑，或者一个 session 都没有。先在终端里建一个再启动本 app。")
+            fail(
+                "No tmux sessions",
+                "The tmux server is not running, or it has no sessions. Create one in a terminal first."
+            )
             return
         }
 
@@ -30,11 +36,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: defaultContentSize),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "TmuxGUI"
+        // No visible title bar. The content runs to the top of the window and
+        // the window-tab strip occupies that band instead; the traffic lights
+        // float over the session rail, which leaves room for them.
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
         window.isOpaque = true
         window.backgroundColor = .windowBackgroundColor
         window.contentMinSize = minimumContentSize
@@ -62,10 +74,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main?.stop()
     }
 
+    /// The title bar is hidden, so status goes to the sidebar footer instead.
+    /// `window.title` is still set — Mission Control and the Window menu read
+    /// it even when it is not drawn.
     private func refreshTitle() {
         window?.title = status
-        guard let metrics = main?.currentSession?.connection.metrics.snapshot() else { return }
-        window?.subtitle = metrics.titleSummary
+        let throughput = main?.currentSession?.connection.metrics.snapshot().titleSummary
+        main?.showStatus(status, detail: throughput ?? "")
     }
 
     // MARK: - Menu
@@ -77,17 +92,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "隐藏 TmuxGUI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Hide TmuxGUI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "退出 TmuxGUI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit TmuxGUI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
 
         let editItem = NSMenuItem()
-        let editMenu = NSMenu(title: "编辑")
-        editMenu.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
 
@@ -95,8 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(makeSessionMenuItem())
 
         let probeItem = NSMenuItem()
-        let probeMenu = NSMenu(title: "测量")
-        let run = NSMenuItem(title: "跑一轮吞吐压测（约 18 秒）", action: #selector(runThroughputProbe), keyEquivalent: "r")
+        let probeMenu = NSMenu(title: "Measure")
+        let run = NSMenuItem(title: "Run Throughput Probe (~18s)", action: #selector(runThroughputProbe), keyEquivalent: "r")
         run.target = self
         probeMenu.addItem(run)
         probeItem.submenu = probeMenu
@@ -123,15 +138,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and the strip updates the same way whichever one was used.
     private func makeWindowMenuItem() -> NSMenuItem {
         let item = NSMenuItem()
-        let menu = NSMenu(title: "窗口")
-        entry(menu, "新建窗口", "t", [.command], #selector(newWindow))
-        entry(menu, "隐藏当前标签", "w", [.command], #selector(hideCurrentWindow))
+        let menu = NSMenu(title: "Window")
+        entry(menu, "New Window", "t", [.command], #selector(newWindow))
+        entry(menu, "Hide Current Tab", "w", [.command], #selector(hideCurrentWindow))
         menu.addItem(.separator())
-        entry(menu, "下一个窗口", "]", [.command, .shift], #selector(nextWindow))
-        entry(menu, "上一个窗口", "[", [.command, .shift], #selector(previousWindow))
+        entry(menu, "Next Window", "]", [.command, .shift], #selector(nextWindow))
+        entry(menu, "Previous Window", "[", [.command, .shift], #selector(previousWindow))
         menu.addItem(.separator())
         for slot in 1 ... 9 {
-            entry(menu, "切到第 \(slot) 个", "\(slot)", [.command], #selector(selectWindowSlot(_:)), tag: slot)
+            entry(menu, "Window \(slot)", "\(slot)", [.command], #selector(selectWindowSlot(_:)), tag: slot)
         }
         item.submenu = menu
         return item
@@ -140,13 +155,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func makeSessionMenuItem() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Session")
-        entry(menu, "新建 session", "n", [.command, .shift], #selector(newSession))
+        entry(menu, "New Session", "n", [.command, .shift], #selector(newSession))
         menu.addItem(.separator())
-        entry(menu, "下一个 session", "]", [.command, .control], #selector(nextSession))
-        entry(menu, "上一个 session", "[", [.command, .control], #selector(previousSession))
+        entry(menu, "Next Session", "]", [.command, .control], #selector(nextSession))
+        entry(menu, "Previous Session", "[", [.command, .control], #selector(previousSession))
         menu.addItem(.separator())
         for slot in 1 ... 9 {
-            entry(menu, "切到第 \(slot) 个", "\(slot)", [.command, .control], #selector(selectSessionSlot(_:)), tag: slot)
+            entry(menu, "Session \(slot)", "\(slot)", [.command, .control], #selector(selectSessionSlot(_:)), tag: slot)
         }
         item.submenu = menu
         return item
@@ -176,9 +191,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showReport(_ report: String) {
         let alert = NSAlert()
-        alert.messageText = "控制模式吞吐压测"
+        alert.messageText = "Control Mode Throughput Probe"
         alert.informativeText = report
-        alert.addButton(withTitle: "好")
+        alert.addButton(withTitle: "OK")
         alert.runModal()
     }
 
@@ -189,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.alertStyle = .critical
         alert.messageText = title
         alert.informativeText = detail
-        alert.addButton(withTitle: "退出")
+        alert.addButton(withTitle: "Quit")
         alert.runModal()
         NSApp.terminate(nil)
     }

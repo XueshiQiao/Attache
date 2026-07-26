@@ -131,6 +131,10 @@ final class MainViewController: NSViewController {
         refreshSidebar()
     }
 
+    func showStatus(_ status: String, detail: String) {
+        sidebar.showStatus(status, detail: detail)
+    }
+
     /// ⌃⌘1-9 — the session-level counterpart of ⌘1-9 for windows.
     func selectSession(atSlot slot: Int) {
         guard slot >= 0, slot < server.sessionNames.count else { return }

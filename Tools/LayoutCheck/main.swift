@@ -20,7 +20,7 @@ func tmux(_ arguments: [String]) -> String {
     let candidates = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
     guard let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
     else {
-        FileHandle.standardError.write(Data("找不到 tmux\n".utf8))
+        FileHandle.standardError.write(Data("tmux not found\n".utf8))
         exit(2)
     }
     let process = Process()
@@ -59,7 +59,7 @@ for line in windows {
     do {
         root = try TmuxLayout.parse(layoutText)
     } catch {
-        failures.append(Failure(window: windowTarget, detail: "解析失败：\(error) — \(layoutText)"))
+        failures.append(Failure(window: windowTarget, detail: "parse failed: \(error) — \(layoutText)"))
         continue
     }
     checkedWindows += 1
@@ -83,20 +83,20 @@ for line in windows {
     if parsed.count != expected.count {
         failures.append(Failure(
             window: windowTarget,
-            detail: "窗格数量不一致：解析出 \(parsed.count) 个，tmux 说 \(expected.count) 个"
+            detail: "pane count differs: parsed \(parsed.count), tmux reports \(expected.count)"
         ))
     }
 
     for (id, frame) in parsed {
         checkedPanes += 1
         guard let truth = expected[id] else {
-            failures.append(Failure(window: windowTarget, detail: "解析出了 tmux 没有的窗格 \(id)"))
+            failures.append(Failure(window: windowTarget, detail: "parsed a pane tmux does not have: \(id)"))
             continue
         }
         if frame != truth {
             failures.append(Failure(
                 window: windowTarget,
-                detail: "\(id) 几何不符：解析 \(frame.columns)x\(frame.rows)@\(frame.x),\(frame.y) "
+                detail: "\(id) geometry differs: parsed \(frame.columns)x\(frame.rows)@\(frame.x),\(frame.y) "
                     + "vs tmux \(truth.columns)x\(truth.rows)@\(truth.x),\(truth.y)"
             ))
         }
@@ -118,16 +118,16 @@ let malformed = [
 ]
 for text in malformed {
     if let node = try? TmuxLayout.parse(text) {
-        failures.append(Failure(window: "<畸形输入>", detail: "本该报错却解析成功：\(text) → \(node.panes.count) 窗格"))
+        failures.append(Failure(window: "<malformed input>", detail: "should have thrown but parsed: \(text) → \(node.panes.count) panes"))
     }
 }
 
-print("检查了 \(checkedWindows) 个窗口 / \(checkedPanes) 个窗格，外加 \(malformed.count) 条畸形输入")
+print("Checked \(checkedWindows) windows / \(checkedPanes) panes, plus \(malformed.count) malformed inputs")
 if failures.isEmpty {
-    print("✓ 全部与 tmux 自己的几何一致")
+    print("✓ every pane agrees with the geometry tmux reports")
     exit(0)
 }
 for failure in failures {
-    print("✗ \(failure.window)：\(failure.detail)")
+    print("✗ \(failure.window): \(failure.detail)")
 }
 exit(1)

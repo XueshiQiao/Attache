@@ -47,8 +47,9 @@ enum TmuxOctal {
 
     /// Encode keystrokes for `send-keys -H`, which takes one hex number per
     /// byte. The man page calls them "ASCII characters", but tmux 3.6a accepts
-    /// arbitrary byte values — verified by sending `e4 b8 ad` and reading 中
-    /// back out of the pane — so multi-byte UTF-8 input needs no special case.
+    /// arbitrary byte values — verified by sending the three bytes of a CJK
+    /// character and reading it back out of the pane — so multi-byte UTF-8
+    /// input needs no special case.
     static func hexArguments(for data: Data) -> String {
         data.map { String(format: "%02x", $0) }.joined(separator: " ")
     }

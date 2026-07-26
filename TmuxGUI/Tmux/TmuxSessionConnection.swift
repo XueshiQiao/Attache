@@ -95,9 +95,9 @@ final class TmuxSessionConnection {
     func start() {
         do {
             try client.start()
-            onStatusChange?("正在连接「\(sessionName)」…")
+            onStatusChange?("Connecting to \(sessionName)…")
         } catch {
-            onStatusChange?("连接失败：\(error.localizedDescription)")
+            onStatusChange?("Connection failed: \(error.localizedDescription)")
         }
     }
 
@@ -267,7 +267,7 @@ final class TmuxSessionConnection {
             refreshWindows()
 
         case .paused(let pane):
-            onStatusChange?("⚠️ tmux 暂停了窗格 \(pane)（输出积压）")
+            onStatusChange?("⚠️ tmux paused pane \(pane) — output backed up")
 
         default:
             break
@@ -304,7 +304,7 @@ final class TmuxSessionConnection {
         guard let window = activeWindow else { return sessionName }
         let paneCount = window.paneIDs.count
         return "\(sessionName) → \(window.index):\(window.name)"
-            + (paneCount > 1 ? " · \(paneCount) 个窗格" : "")
+            + (paneCount > 1 ? " · \(paneCount) panes" : "")
     }
 }
 
@@ -325,22 +325,22 @@ extension TmuxSessionConnection {
     /// nothing the user is looking at is disturbed.
     func runThroughputProbe(phaseSeconds: TimeInterval = 8, completion: @escaping (String) -> Void) {
         guard let target = sessionTarget else {
-            completion("还没连上 tmux。")
+            completion("Not connected to tmux yet.")
             return
         }
         guard !probeInFlight else {
-            completion("已经有一轮压测在跑了。")
+            completion("A probe is already running.")
             return
         }
         probeInFlight = true
-        onStatusChange?("压测中：阶段 A（只有心跳）…")
+        onStatusChange?("Probing: phase A — heartbeat alone…")
 
         let heartbeat = "while :; do printf .; sleep 0.05; done"
         client.run("new-window -d -P -F '#{window_id}\u{01}#{pane_id}' -t \(target) -n tmuxgui-probe '\(heartbeat)'") { [weak self] lines, failed in
             guard let self else { return }
             let ids = (lines.first ?? "").components(separatedBy: "\u{01}")
             guard !failed, ids.count == 2 else {
-                self.finishProbe(completion, "建心跳窗口失败：\(lines.joined(separator: " "))")
+                self.finishProbe(completion, "Could not create the heartbeat window: \(lines.joined(separator: " "))")
                 return
             }
             let probeWindow = ids[0]
@@ -376,7 +376,7 @@ extension TmuxSessionConnection {
         baseline: TmuxMetrics.Snapshot,
         completion: @escaping (String) -> Void
     ) {
-        onStatusChange?("压测中：阶段 B（心跳 + 另一个窗格全速刷屏）…")
+        onStatusChange?("Probing: phase B — heartbeat plus a flooding pane…")
         let filler = String(repeating: "0123456789ABCDEF", count: 4)
 
         client.run("new-window -d -P -F '#{window_id}' -t \(target) -n tmuxgui-flood 'yes \(filler)'") { [weak self] lines, failed in
@@ -386,7 +386,7 @@ extension TmuxSessionConnection {
             else {
                 self.client.send("kill-window -t \(probeWindow)")
                 self.measuredPane = restoreMeasured
-                self.finishProbe(completion, "建刷屏窗口失败：\(lines.joined(separator: " "))")
+                self.finishProbe(completion, "Could not create the flood window: \(lines.joined(separator: " "))")
                 return
             }
 
@@ -416,19 +416,20 @@ extension TmuxSessionConnection {
         let floodRate = Double(loaded.otherBytes) / max(loaded.elapsed, 0.001) / 1_048_576
 
         return """
-        A · 只有心跳（每 50ms 一个字节）
-            到达间隔  中位 \(ms(baseline.medianGap))ms · p99 \(ms(baseline.p99Gap))ms · 最差 \(ms(baseline.worstGap))ms
-            心跳样本  \(baseline.watchedChunks) 个
+        A · heartbeat alone (one byte every 50ms)
+            arrival gaps  median \(ms(baseline.medianGap))ms · p99 \(ms(baseline.p99Gap))ms · worst \(ms(baseline.worstGap))ms
+            samples       \(baseline.watchedChunks)
 
-        B · 心跳 + 另一个窗格全速刷屏
-            到达间隔  中位 \(ms(loaded.medianGap))ms · p99 \(ms(loaded.p99Gap))ms · 最差 \(ms(loaded.worstGap))ms
-            心跳样本  \(loaded.watchedChunks) 个
-            刷屏产出  \(loaded.otherBytes) 字节（\(String(format: "%.1f", floodRate)) MB/s）
+        B · heartbeat plus another pane flooding
+            arrival gaps  median \(ms(loaded.medianGap))ms · p99 \(ms(loaded.p99Gap))ms · worst \(ms(loaded.worstGap))ms
+            samples       \(loaded.watchedChunks)
+            flood output  \(loaded.otherBytes) bytes (\(String(format: "%.1f", floodRate)) MB/s)
 
-        结论
-            p99 从 \(ms(baseline.p99Gap))ms 变成 \(ms(loaded.p99Gap))ms，\
-        \(degradation > 0 ? String(format: "劣化 %.1f 倍", degradation) : "无法比较")。
-            心跳本该恒定 —— B 里偏离多少，就是刷屏挤占管道造成的延迟。
+        Result
+            p99 went from \(ms(baseline.p99Gap))ms to \(ms(loaded.p99Gap))ms, \
+        \(degradation > 0 ? String(format: "a factor of %.1f", degradation) : "not comparable").
+            The heartbeat is constant by construction, so whatever B drifts by
+            is the delay the flood adds by sharing the pipe.
         """
     }
 }
