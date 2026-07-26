@@ -117,12 +117,10 @@ Things that must survive the migration — each one breaks the app if dropped:
 
 Worth dropping rather than migrating:
 
-- [ ] **`LookInsideServer`.** Inherited from the sample and still linked, which
-      is why the app opens a listening socket on `127.0.0.1` at launch. It is a
-      UI inspector, not something this app needs, and shipping a local port is
-      not a neutral default. Leave it out of `project.yml`.
 - [ ] The `TmuxGUIUITests` target contains nothing but the sample's placeholder.
       Either write a real test or leave the target out.
+
+(`LookInsideServer` was already removed — see section 3.)
 
 Afterwards:
 
@@ -138,21 +136,21 @@ Afterwards:
 
 ## 3 · Make the UI inspectable by an agent
 
-`LookInsideServer` — the thing item 2 removes — is a UI inspector in the
-[Lookin](https://lookin.work)/Reveal family: the app embeds a server, a
-companion Mac app connects to it, and you get the live view hierarchy with
-frames, layers and properties. Exactly the tool that finds "correct frame, not
-hidden, alpha 1, `draw(_:)` runs, renders nothing" in seconds rather than an
-hour.
+The project used to link `LookInsideServer`, inherited from the libghostty
+sample. It is a UI inspector in the [Lookin](https://lookin.work)/Reveal family:
+the app embeds a server, a companion Mac app connects, and you get the live view
+hierarchy with frames, layers and properties. Exactly the tool that finds
+"correct frame, not hidden, alpha 1, `draw(_:)` runs, renders nothing" in
+seconds rather than an hour.
 
-It cannot be driven by an agent, though. The server is a closed binary
-XCFramework from a private source repo, the port speaks a custom protocol —
-probed with a plain HTTP request, it returns nothing at all — and only the
-companion GUI understands it. So it is dead weight in this project: a listening
-socket on `127.0.0.1` at every launch, and no way for the thing that actually
-does the debugging here to ask it anything.
+It has been removed, because an agent cannot drive it. The server is a closed
+binary XCFramework from a private source repo, the port speaks a custom protocol
+— probed with a plain HTTP request it returns nothing at all — and only the
+companion GUI understands it. That made it pure cost here: a listening socket on
+`127.0.0.1` at every launch, and no way for the thing that actually does the
+debugging in this project to ask it anything.
 
-The need behind it is real. Build the small version instead:
+The need behind it is real, so build the small version instead:
 
 - [ ] A debug-only view-hierarchy dump: for every view, its class, frame in
       window coordinates, `isHidden`, `alphaValue`, and the layer's frame and
