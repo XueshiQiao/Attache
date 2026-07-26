@@ -78,6 +78,19 @@ final class WindowTabBarView: NSView {
         hiddenBadge.action = #selector(restoreHiddenClicked)
         hiddenBadge.isHidden = true
         addSubview(hiddenBadge)
+
+        applyChromeTheme()
+    }
+
+    /// Re-read the chrome colours. Tabs resolve theirs when they are built and
+    /// the strip is rebuilt from tmux's window list constantly, but a theme
+    /// change is not a tmux notification and would otherwise wait for one.
+    func applyChromeTheme() {
+        let theme = ChromeTheme.current
+        newButton.contentTintColor = theme.mutedText
+        hiddenBadge.contentTintColor = theme.faintText
+        rebuild()
+        needsDisplay = true
     }
 
     // MARK: - Content
@@ -108,7 +121,7 @@ final class WindowTabBarView: NSView {
         for window in visibleWindows {
             let item = WindowTabItemView(window: window, isActive: window.id == activeID)
             item.onClick = { [weak self] in self?.onSelect?(window.id) }
-            item.onClose = { [weak self] in self?.onHide?(window.id) }
+            item.onClose = { [weak self] in self?.closeRequested(window) }
             item.onDoubleClick = { [weak self] in self?.beginRename(window) }
             item.onContextMenu = { [weak self] point in self?.showMenu(for: window, at: point) }
             item.onDragged = { [weak self] location in self?.handleDrag(of: window, to: location) }
@@ -178,7 +191,7 @@ final class WindowTabBarView: NSView {
         // Only the hairline. Filling the whole bounds is unnecessary — the
         // window background already shows through — and an opaque fill here
         // is exactly the trap the sibling grid falls into.
-        NSColor.separatorColor.withAlphaComponent(0.5).setFill()
+        ChromeTheme.current.separator.setFill()
         CGRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
     }
 
@@ -225,6 +238,20 @@ final class WindowTabBarView: NSView {
     @objc private func killFromMenu(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String,
               let window = windows.first(where: { $0.id == id }) else { return }
+        confirmKill(window)
+    }
+
+    /// The ✕ on a tab. What it does is a setting; hiding is the default and
+    /// the only one that cannot lose work.
+    private func closeRequested(_ window: TmuxWindow) {
+        guard AppSettings.closingTabKillsWindow else {
+            onHide?(window.id)
+            return
+        }
+        confirmKill(window)
+    }
+
+    private func confirmKill(_ window: TmuxWindow) {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Kill window \(window.index):\(window.name)?"
@@ -383,7 +410,6 @@ final class WindowTabItemView: NSView {
 
         label.stringValue = "\(tmuxWindow.index): \(tmuxWindow.name)"
         label.font = .systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
-        label.textColor = isActive ? .labelColor : .secondaryLabelColor
         label.lineBreakMode = .byTruncatingTail
         label.isSelectable = false
         // Clicks have to reach the tab, not stop at the label.
@@ -400,7 +426,6 @@ final class WindowTabItemView: NSView {
         closeButton.font = .systemFont(ofSize: 10)
         closeButton.isBordered = false
         closeButton.bezelStyle = .inline
-        closeButton.contentTintColor = .secondaryLabelColor
         closeButton.target = self
         closeButton.action = #selector(closeClicked)
         closeButton.toolTip = "Hide from this strip (does not kill the tmux window)"
@@ -409,14 +434,17 @@ final class WindowTabItemView: NSView {
     }
 
     private func applyColors() {
+        let theme = ChromeTheme.current
         if isActive {
-            layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
-            layer?.borderColor = NSColor.controlAccentColor.cgColor
+            layer?.backgroundColor = theme.accent.withAlphaComponent(0.18).cgColor
+            layer?.borderColor = theme.accent.cgColor
         } else if isHovering {
-            layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+            layer?.backgroundColor = theme.hover.cgColor
         } else {
             layer?.backgroundColor = NSColor.clear.cgColor
         }
+        label.textColor = isActive ? theme.text : theme.mutedText
+        closeButton.contentTintColor = theme.mutedText
     }
 
     override func layout() {

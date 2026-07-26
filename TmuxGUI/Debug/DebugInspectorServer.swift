@@ -106,7 +106,7 @@
 
         private func describeEndpoint() -> String {
             let port = port ?? Self.configuredPort
-            return "http://127.0.0.1:\(port)/ — also /views and /tmux"
+            return "http://127.0.0.1:\(port)/ — also /views, /tmux, /settings, /window and /settings-window"
         }
 
         // MARK: - Requests
@@ -153,13 +153,31 @@
                 return
             }
 
-            // Drop any query string; none of the routes take parameters.
-            let path = String(fields[1].split(separator: "?", maxSplits: 1).first ?? "/")
+            let target = fields[1].split(separator: "?", maxSplits: 1)
+            let path = String(target.first ?? "/")
+            let query = target.count > 1 ? String(target[1]) : ""
+
+            // The two routes that take parameters, and the two that write.
+            if path == "/settings" {
+                send(status: "200 OK", body: DebugInspector.settingsBody(query: query),
+                     contentType: "application/json", on: connection)
+                return
+            }
+            if path == "/window" {
+                send(status: "200 OK", body: DebugInspector.resizeWindowBody(query: query),
+                     contentType: "application/json", on: connection)
+                return
+            }
+            if path == "/settings-window" {
+                send(status: "200 OK", body: DebugInspector.settingsWindowBody(query: query),
+                     contentType: "application/json", on: connection)
+                return
+            }
 
             guard let body = DebugInspector.body(forPath: path) else {
                 send(
                     status: "404 Not Found",
-                    body: Data("no such route. try /, /views or /tmux\n".utf8),
+                    body: Data("no such route. try /, /views, /tmux, /settings, /window or /settings-window\n".utf8),
                     contentType: "text/plain",
                     on: connection
                 )

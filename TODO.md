@@ -5,81 +5,21 @@ starting — several of these touch code with non-obvious constraints.
 
 ---
 
-## 1 · Settings
+## 1 · Settings — done
 
-The app has no configuration at all today: font, size and colours are whatever
-libghostty defaults to, and every one of them is hard-coded at the
-`TerminalController` builder in `SessionViewController`.
+`TmuxGUI/Settings/` holds the store, the chrome theme, and the window.
 
-### 1.1 A settings store
+Deliberately not done, and still worth doing:
 
-- [ ] `AppSettings` backed by `UserDefaults`, with typed accessors and a change
-      notification so open surfaces can react without a relaunch.
-- [ ] Decide the migration story early: a settings file that gains keys must
-      keep the ones it does not recognise. Dropping unknown keys on write makes
-      downgrades destructive.
-
-### 1.2 Font family and size
-
-- [ ] Font family picker and a size control.
-- [ ] Apply through the `TerminalController` builder — libghostty takes
-      `font-family` and `font-size` as config keys, the same way
-      `window-padding-x` is set today.
-- [ ] **Changing the font changes the cell size, which changes the grid.** This
-      is the part to be careful with. `PaneGridView` learns the cell size from
-      whatever a surface reports (`adoptCellSize`) and re-measures the surface
-      overhead (`calibrate`), so in principle it follows automatically — but
-      `adoptedCellSize` in `SessionViewController` is a one-shot latch and will
-      need to reset on a font change. Verify afterwards that tmux and the app
-      still agree on the column count exactly; a one-column drift is the bug
-      described in CLAUDE.md and it is not visually obvious until a TUI
-      redraws.
-- [ ] Ligature and fallback-font settings are a reasonable follow-up, not part
-      of the first pass.
-
-### 1.3 Themes
-
-- [ ] Light and dark to start, following the system appearance by default with
-      an explicit override.
-- [ ] **`GhosttyTheme` already ships 485 terminal colour schemes** (from
-      iTerm2-Color-Schemes) and is already a dependency — see
-      `Vendor/libghostty-spm/Sources/GhosttyTheme`. Prefer wiring that up over
-      inventing a theme format.
-- [ ] Design the theme type so a scheme can be added without touching the
-      picker: a named list the UI enumerates, not a switch statement.
-- [ ] The GUI chrome needs to follow too — the tab strip, session rail and
-      splitter colours currently come from system semantic colours, which
-      handles light/dark but not a user-chosen scheme. Decide whether chrome
-      tracks the terminal theme or stays system-native.
-- [ ] `cgColor` snapshots the appearance current at the call site. Anything set
-      on a layer must be re-resolved in `viewDidChangeEffectiveAppearance`, as
-      `SessionRowView` and `WindowTabItemView` already do.
-
-### 1.4 The settings window itself
-
-**Follow `AnyDrag`'s settings, which has been through real use.** See
-`~/Code/AnyDrag/AnyDrag/Sources/`. Its shape, and why each piece is there:
-
-- `Preferences.swift` — one place for every `UserDefaults` key, its default, and
-  its migration. Values are clamped on load so a hand-edited defaults entry
-  cannot put the app in an impossible state. Copy this discipline; it is the
-  part that stops settings rotting.
-- `SettingsStore` (an `ObservableObject`, in `PreferencesWindowController.swift`)
-  — the mutable layer. Every setting gets a `setX` that writes the default,
-  pushes the value to whatever consumes it, and mirrors it back onto the
-  published property, so there is exactly one path a change can take.
-- `SettingsChrome.swift` — shared SwiftUI pieces: `optionRow`, `IconTile`,
-  `featureLabel`, `SidebarIcon`, and the `SettingsRootView` sidebar shell. Pages
-  are then almost entirely declarative.
-- One file per page (`GeneralPages`, `GesturePages`, `AboutPage`). Adding a page
-  is adding a file and a sidebar entry.
-
-- [ ] Add ⌘, to the app menu.
-- [ ] Worth exposing while the window exists: scrollback prime size
-      (`SessionViewController.scrollbackPrimeLines`), sidebar width, and whether
-      closing a tab hides or kills.
-- [ ] An About page is a good place for the throughput probe, which currently
-      hides in a menu called "Measure".
+- [ ] Ligature and fallback-font settings. Named as a follow-up from the
+      start and nothing since has changed that.
+- [ ] The multi-pane case of the font change is unverified. The column-count
+      check was run against a one-pane window across three font sizes, a
+      window resize and a stability poll, all agreeing with `list-panes`;
+      switching the shown session needs ⌃⌘n, and driving the keyboard was off
+      limits while the machine's owner was using it. Splitter placement is
+      arithmetic on the same `cellSize` every checked number came from, so it
+      should follow — but "should" is not "was measured".
 
 ---
 

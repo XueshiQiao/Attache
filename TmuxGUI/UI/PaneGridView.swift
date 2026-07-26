@@ -105,8 +105,31 @@ final class PaneGridView: NSView {
         guard size != cellSize || pixels != cellPixels else { return }
         cellSize = size
         cellPixels = pixels
+        // The old overhead was measured against the old cell size and is not a
+        // correction for this one. Zeroed here rather than when the change was
+        // announced, so a font change that turns out not to move the cell size
+        // does not throw away a good measurement.
+        surfaceOverhead = .zero
+        // Every frame in the view tree is still the old size; nothing measured
+        // before the next layout pass places them means anything.
+        calibrationSuspended = true
         needsLayout = true
         reportGridSize()
+    }
+
+    /// Called before something changes the cell size — a font or size change.
+    ///
+    /// Between the config being pushed and the next layout pass, a surface
+    /// reports metrics for the *new* cell size while its view still has its
+    /// *old* frame. `calibrate` compares those metrics against `rect(for:)`
+    /// computed with the new `cellSize`, so the difference it records is the
+    /// frame lag, not a real overhead. The "under two cells" sanity check does
+    /// not catch it: a cell width moving 16.0 → 16.1 px across an 80-column
+    /// pane produces exactly 16.1 px of apparent overhead, which is one cell
+    /// and passes. A poisoned `surfaceOverhead` costs a column, and a column
+    /// of disagreement with tmux breaks every wrapped line from then on.
+    func prepareForCellSizeChange() {
+        calibrationSuspended = true
     }
 
     /// Pixels a surface consumes beyond `columns × cellWidth` — padding,
@@ -121,6 +144,11 @@ final class PaneGridView: NSView {
     /// this absorbs it on the next layout pass instead of silently
     /// reintroducing the bug.
     private var surfaceOverhead = CGSize.zero
+
+    /// Whether a measurement taken right now would be comparing a surface's
+    /// new metrics against a frame that has not been re-placed yet. See
+    /// `prepareForCellSizeChange`.
+    private var calibrationSuspended = false
 
     /// Cells that fit in the current bounds — the size reported to tmux.
     ///
@@ -145,7 +173,15 @@ final class PaneGridView: NSView {
     /// record any systematic difference. Called for every resize a surface
     /// reports, so the correction keeps itself honest.
     func calibrate(paneID: String, metrics: TerminalGridMetrics) {
-        guard metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0,
+        // Both sides have to be counting in the same cell before a difference
+        // between them means anything. A report that still carries the previous
+        // font's cell size — a surface that has not caught up yet — measured
+        // against a `rect(for:)` built from the new one yields a difference
+        // that is entirely the font change and nothing to do with overhead.
+        guard !calibrationSuspended,
+              CGFloat(metrics.cellWidthPixels) == cellPixels.width,
+              CGFloat(metrics.cellHeightPixels) == cellPixels.height,
+              metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0,
               let frame = layoutTree?.panes.first(where: { $0.id == paneID })?.frame,
               frame.columns > 0, frame.rows > 0,
               metrics.columns > 0, metrics.rows > 0
@@ -174,6 +210,14 @@ final class PaneGridView: NSView {
     override func layout() {
         super.layout()
         reportGridSize()
+
+        // Everything below assigns frames from the current cell size, and a
+        // frame assignment is what makes a surface report. So from this point
+        // on a report describes a frame this pass placed, which is exactly the
+        // condition `calibrate` needs — the reports arrive synchronously from
+        // inside `place`, so releasing afterwards would drop the first honest
+        // measurement of the new cell size.
+        calibrationSuspended = false
 
         guard let layoutTree else { return }
         splitters.removeAll()
@@ -270,10 +314,15 @@ final class PaneGridView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
+        let theme = ChromeTheme.current
+        // Must match the window's own background colour. On macOS 26 this
+        // view's backing layer runs 66pt past its bounds and paints the
+        // *window's* colour over the tab strip; the two agreeing is what keeps
+        // that from being visible the moment a theme leaves the system grey.
+        theme.background.setFill()
         dirtyRect.fill()
 
-        NSColor.separatorColor.setFill()
+        theme.separator.setFill()
         for splitter in splitters {
             splitter.rect.insetBy(
                 dx: splitter.isVertical ? cellSize.width * 0.35 : 0,
@@ -287,9 +336,14 @@ final class PaneGridView: NSView {
               let frame = layoutTree?.panes.first(where: { $0.id == focusedPaneID })?.frame
         else { return }
         let path = NSBezierPath(rect: rect(for: frame).insetBy(dx: -1, dy: -1))
-        NSColor.controlAccentColor.setStroke()
+        theme.accent.setStroke()
         path.lineWidth = 2
         path.stroke()
+    }
+
+    /// The theme changed. Nothing here caches a colour, so a redraw is enough.
+    func applyChromeTheme() {
+        needsDisplay = true
     }
 
     // MARK: - Splitter dragging

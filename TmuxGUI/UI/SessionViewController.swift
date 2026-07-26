@@ -20,27 +20,39 @@ final class SessionViewController: NSViewController {
 
     private let tabBar = WindowTabBarView(frame: .zero)
     private let gridView = PaneGridView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
-    private lazy var controller: TerminalController = .init { builder in
-        builder.withBackgroundOpacity(0)
-        // No padding around the grid. Ghostty reserves 2pt on each edge by
-        // default, which at a normal font size costs a whole cell — libghostty
-        // then reports one column and one row fewer than tmux gave the pane.
-        // Every line after that wraps in a different place than tmux thinks,
-        // and the damage accumulates into unreadable overdraw wherever a TUI
-        // keeps rewriting a region, which is exactly what a coding agent does
-        // to the bottom of its pane.
-        builder.withCustom("window-padding-x", "0")
-        builder.withCustom("window-padding-y", "0")
-        builder.withCustom("window-padding-balance", "false")
-        // Scrollback keys have to be bound explicitly: unbound, Shift+PageUp
-        // is forwarded to the pane as a CSI-u sequence and lands in the shell
-        // as literal `;5u` text. The buffer being scrolled is libghostty's
-        // own, seeded from tmux by the scrollback prime.
-        builder.withCustom("keybind", "shift+page_up=scroll_page_up")
-        builder.withCustom("keybind", "shift+page_down=scroll_page_down")
-        builder.withCustom("keybind", "shift+home=scroll_to_top")
-        builder.withCustom("keybind", "shift+end=scroll_to_bottom")
-    }
+    /// Three layers, and which one a setting belongs in matters: the base
+    /// template below is what this app needs to be true of any surface, the
+    /// user's font goes in the per-session overrides, and the colours go in
+    /// the theme. libghostty renders them in that order, so a later layer wins
+    /// — and `applySettings` can replace one without disturbing the others.
+    private lazy var controller: TerminalController = {
+        let base = TerminalConfiguration(startingFrom: .default) { builder in
+            builder.withBackgroundOpacity(0)
+            // No padding around the grid. Ghostty reserves 2pt on each edge by
+            // default, which at a normal font size costs a whole cell — libghostty
+            // then reports one column and one row fewer than tmux gave the pane.
+            // Every line after that wraps in a different place than tmux thinks,
+            // and the damage accumulates into unreadable overdraw wherever a TUI
+            // keeps rewriting a region, which is exactly what a coding agent does
+            // to the bottom of its pane.
+            builder.withCustom("window-padding-x", "0")
+            builder.withCustom("window-padding-y", "0")
+            builder.withCustom("window-padding-balance", "false")
+            // Scrollback keys have to be bound explicitly: unbound, Shift+PageUp
+            // is forwarded to the pane as a CSI-u sequence and lands in the shell
+            // as literal `;5u` text. The buffer being scrolled is libghostty's
+            // own, seeded from tmux by the scrollback prime.
+            builder.withCustom("keybind", "shift+page_up=scroll_page_up")
+            builder.withCustom("keybind", "shift+page_down=scroll_page_down")
+            builder.withCustom("keybind", "shift+home=scroll_to_top")
+            builder.withCustom("keybind", "shift+end=scroll_to_bottom")
+        }
+        return TerminalController(
+            configSource: .generated(base.rendered),
+            theme: AppSettings.terminalTheme(),
+            terminalConfiguration: AppSettings.terminalConfiguration()
+        )
+    }()
 
     private var surfaces = [String: TmuxPaneSurface]()
     private var adoptedCellSize = false
@@ -63,12 +75,6 @@ final class SessionViewController: NSViewController {
     private var syncScheduled = false
 
     var onStatusChange: ((String) -> Void)?
-
-    /// How much history to replay when a pane is first shown. tmux clamps to
-    /// what the pane actually has, so this is a ceiling rather than a cost.
-    /// Matched to a typical `history-limit` without making the opening of a
-    /// busy session pull megabytes through the control pipe at once.
-    private static let scrollbackPrimeLines = 2000
 
     init(connection: TmuxSessionConnection) {
         self.connection = connection
@@ -152,6 +158,53 @@ final class SessionViewController: NSViewController {
             self?.hiddenWindowIDs.removeAll()
             self?.syncWithModel()
         }
+    }
+
+    // MARK: - Settings
+
+    /// Push the current font, colours and chrome onto everything this session
+    /// owns. Runs once per session, because each one has its own
+    /// `TerminalController`.
+    ///
+    /// Order matters, and all of it has to happen in one main-actor turn:
+    ///
+    /// 1. `adoptedCellSize` is a one-shot latch. Left set, `cellPixels` stays
+    ///    at the old font's value forever and the app's idea of the grid
+    ///    drifts from tmux's permanently.
+    /// 2. Calibration is suspended, because between the config push and the
+    ///    next layout pass a surface reports the new cell size against its old
+    ///    frame. See `PaneGridView.prepareForCellSizeChange`.
+    /// 3. The config goes through the controller rather than recreating
+    ///    surfaces: it reaches every live surface, hidden windows included,
+    ///    and a recreated surface would lose its scrollback.
+    /// 4. Every surface is nudged. libghostty *should* announce the new cell
+    ///    size on its own and usually does, but that is an upstream contract
+    ///    nobody here has measured, and the nudge costs nothing when the
+    ///    metrics are already current — the coordinator drops it as unchanged.
+    func applySettings() {
+        let configuration = AppSettings.terminalConfiguration()
+        if controller.terminalConfiguration != configuration {
+            // Gated on the font config actually differing, so a settings change
+            // that cannot move the cell size — a colour scheme, the rail width —
+            // never resets the latch or suspends calibration. Logged because
+            // entering this branch is the only thing after launch that changes
+            // the grid out from under tmux.
+            TmuxLog.lifecycle(
+                "font changed — re-measuring the cell size for \(surfaces.count) surface(s)",
+                session: connection.sessionName
+            )
+            adoptedCellSize = false
+            gridView.prepareForCellSizeChange()
+            controller.setTerminalConfiguration(configuration)
+            for surface in surfaces.values { surface.view.fitToSize() }
+            // Guarantee a layout pass this turn even if nothing reported a new
+            // cell size, so the calibration suspension above cannot latch on.
+            gridView.needsLayout = true
+        }
+        controller.setTheme(AppSettings.terminalTheme())
+
+        tabBar.applyChromeTheme()
+        gridView.applyChromeTheme()
     }
 
     // MARK: - Commands the menu drives
@@ -279,9 +332,13 @@ final class SessionViewController: NSViewController {
                 // would stack a second copy on top.
                 guard surface.hasPrimedHistory else {
                     surface.hasPrimedHistory = true
+                    // Read at use rather than captured: tmux clamps to what the
+                    // pane actually has, so this is a ceiling, and a change
+                    // should apply to the next pane opened rather than waiting
+                    // for a relaunch.
                     self.connection.captureScrollback(
                         paneID: pane.id,
-                        lines: Self.scrollbackPrimeLines
+                        lines: AppSettings.scrollbackPrimeLines
                     ) { lines in
                         guard !lines.isEmpty else { return }
                         surface.terminalSession.receive(lines.joined(separator: "\r\n"))

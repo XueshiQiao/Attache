@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let minimumContentSize = NSSize(width: 700, height: 380)
     private var window: NSWindow?
     private var main: MainViewController?
+    private var settings: SettingsWindowController?
     private var titleTimer: Timer?
     private var status = "Starting…"
     #if DEBUG
@@ -13,6 +14,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     #endif
 
     func applicationDidFinishLaunching(_: Notification) {
+        // Before anything draws: pin the process appearance if the user asked
+        // for one, then derive the chrome colours from whichever half of the
+        // theme that leaves showing. Both are read-only with respect to the
+        // stored settings, so a launch cannot rewrite them.
+        AppSettings.applyAppearanceOverride()
+        ChromeTheme.reload()
+
         installMenu()
 
         guard let tmuxPath = TmuxControlClient.locateTmux() else {
@@ -59,7 +67,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.isOpaque = true
-        window.backgroundColor = .windowBackgroundColor
+        // Has to match `PaneGridView`'s fill. That view's backing layer runs
+        // 66pt past its own bounds on macOS 26 and paints the *window's*
+        // colour across the tab strip; while both were the system grey the
+        // mismatch was invisible, and a theme is exactly what exposes it.
+        window.backgroundColor = ChromeTheme.current.background
         window.contentMinSize = minimumContentSize
         window.contentViewController = controller
         // Assigning a content view controller resizes the window to fit that
@@ -105,6 +117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
+        entry(appMenu, "Settings…", ",", [.command], #selector(showSettings))
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide TmuxGUI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit TmuxGUI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -122,13 +136,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(makeWindowMenuItem())
         mainMenu.addItem(makeSessionMenuItem())
 
-        let probeItem = NSMenuItem()
-        let probeMenu = NSMenu(title: "Measure")
-        let run = NSMenuItem(title: "Run Throughput Probe (~18s)", action: #selector(runThroughputProbe), keyEquivalent: "r")
-        run.target = self
-        probeMenu.addItem(run)
-        probeItem.submenu = probeMenu
-        mainMenu.addItem(probeItem)
+        // The throughput probe used to be a top-level menu called "Measure",
+        // which said nothing about what it measured or that it runs for the
+        // better part of a minute. It lives on the settings window's About
+        // page now, where it can show its report without a modal.
 
         #if DEBUG
             mainMenu.addItem(makeDebugMenuItem())
@@ -199,19 +210,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main?.selectSession(atSlot: sender.tag - 1)
     }
 
-    @objc private func runThroughputProbe() {
-        main?.currentSession?.connection.runThroughputProbe { [weak self] report in
-            print(report)
-            self?.showReport(report)
-        }
-    }
+    // MARK: - Settings
 
-    private func showReport(_ report: String) {
-        let alert = NSAlert()
-        alert.messageText = "Control Mode Throughput Probe"
-        alert.informativeText = report
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+    @objc private func showSettings() {
+        if settings == nil {
+            settings = SettingsWindowController { [weak self] completion in
+                guard let connection = self?.main?.currentSession?.connection else {
+                    completion("No session is on screen, so there is nothing to measure.")
+                    return
+                }
+                connection.runThroughputProbe { report in
+                    // Through TmuxLog, not print: the probe runs for the better
+                    // part of a minute and its result is the one number this
+                    // project trusts about throughput. stdout alone loses it
+                    // when the app quits; the log file keeps it.
+                    TmuxLog.lifecycle(report)
+                    completion(report)
+                }
+            }
+        }
+        settings?.show()
     }
 
     // MARK: - Debug inspection

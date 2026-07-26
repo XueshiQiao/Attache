@@ -16,8 +16,6 @@ final class SessionSidebarView: NSView {
     var onRename: ((String, String) -> Void)?
     var onNew: (() -> Void)?
 
-    static let preferredWidth: CGFloat = 168
-
     struct Entry {
         let name: String
         let windowCount: Int
@@ -66,14 +64,12 @@ final class SessionSidebarView: NSView {
 
     private func setUp() {
         header.font = .systemFont(ofSize: 10, weight: .semibold)
-        header.textColor = .tertiaryLabelColor
         addSubview(header)
 
         newButton.title = "+  New session"
         newButton.font = .systemFont(ofSize: 11.5)
         newButton.isBordered = false
         newButton.bezelStyle = .inline
-        newButton.contentTintColor = .tertiaryLabelColor
         newButton.alignment = .left
         newButton.target = self
         newButton.action = #selector(newClicked)
@@ -88,9 +84,22 @@ final class SessionSidebarView: NSView {
             addSubview(label)
         }
         statusLabel.font = .systemFont(ofSize: 10.5)
-        statusLabel.textColor = .secondaryLabelColor
         detailLabel.font = .monospacedDigitSystemFont(ofSize: 9.5, weight: .regular)
-        detailLabel.textColor = .tertiaryLabelColor
+
+        applyChromeTheme()
+    }
+
+    /// Re-read the chrome colours. The rows resolve theirs at construction, so
+    /// they are rebuilt — a theme change is not a tmux notification and they
+    /// would otherwise keep the old colours until one arrived.
+    func applyChromeTheme() {
+        let theme = ChromeTheme.current
+        header.textColor = theme.faintText
+        newButton.contentTintColor = theme.faintText
+        statusLabel.textColor = theme.mutedText
+        detailLabel.textColor = theme.faintText
+        rebuild()
+        needsDisplay = true
     }
 
     func showStatus(_ status: String, detail: String) {
@@ -154,7 +163,7 @@ final class SessionSidebarView: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
 
     override func draw(_: NSRect) {
-        NSColor.separatorColor.withAlphaComponent(0.5).setFill()
+        ChromeTheme.current.separator.setFill()
         CGRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height).fill()
     }
 
@@ -255,18 +264,19 @@ final class SessionRowView: NSView {
 
         label.stringValue = entry.name
         label.font = .systemFont(ofSize: 12.5, weight: isSelected ? .semibold : .regular)
-        label.textColor = isSelected ? .labelColor : .secondaryLabelColor
         label.lineBreakMode = .byTruncatingMiddle
         addSubview(label)
 
         countLabel.stringValue = "\(entry.windowCount)"
         countLabel.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
-        countLabel.textColor = .tertiaryLabelColor
         countLabel.alignment = .right
         addSubview(countLabel)
 
         activityDot.wantsLayer = true
         activityDot.layer?.cornerRadius = 3
+        // Left as the system orange on purpose. This is a status signal, not
+        // decoration — "something happened in a session you are not looking
+        // at" has to mean the same thing under every scheme.
         activityDot.layer?.backgroundColor = NSColor.systemOrange.cgColor
         activityDot.isHidden = !(entry.hasActivity && !isSelected)
         addSubview(activityDot)
@@ -281,15 +291,20 @@ final class SessionRowView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
 
     private func applyColors() {
+        let theme = ChromeTheme.current
         if isSelected {
-            layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+            layer?.backgroundColor = theme.accent.cgColor
         } else if isHovering {
-            layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+            layer?.backgroundColor = theme.hover.cgColor
         } else {
             layer?.backgroundColor = NSColor.clear.cgColor
         }
-        label.textColor = isSelected ? .white : (isHovering ? .labelColor : .secondaryLabelColor)
-        countLabel.textColor = isSelected ? NSColor.white.withAlphaComponent(0.75) : .tertiaryLabelColor
+        // The text over the accent used to be hardcoded white, which is
+        // unreadable as soon as a scheme's accent is a light colour.
+        label.textColor = isSelected ? theme.onAccent : (isHovering ? theme.text : theme.mutedText)
+        countLabel.textColor = isSelected
+            ? theme.onAccent.withAlphaComponent(0.75)
+            : theme.faintText
     }
 
     override func layout() {

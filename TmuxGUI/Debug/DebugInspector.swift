@@ -6,6 +6,7 @@
 #if DEBUG
 
     import Cocoa
+    import GhosttyTheme
 
     /// A machine-readable dump of what the app currently believes.
     ///
@@ -91,6 +92,113 @@
             }
         }
 
+        // MARK: - Settings
+
+        /// Read, and optionally change, the settings — over the same endpoint
+        /// the rest of the dump is served from.
+        ///
+        /// This exists because the two settings that carry real risk, font
+        /// family and size, change the size of a character cell, and the only
+        /// honest way to check that the app and tmux still agree on the column
+        /// count afterwards is to make the change *while the app is running*
+        /// and re-read both sides. Every other route to that change needs a
+        /// pointer on the screen.
+        ///
+        /// Read-write, unlike the rest of the inspector, and therefore Debug
+        /// only along with the rest of this file. Deliberately does not expose
+        /// whether closing a tab kills its window: that one ends processes, and
+        /// nothing destructive should have an unattended path to it.
+        static func settingsBody(query: String) -> Data {
+            let parameters = parseQuery(query)
+            var changed = [String]()
+
+            if let raw = parameters["fontSize"], let value = Double(raw) {
+                AppSettings.fontSize = value
+                changed.append("fontSize")
+            }
+            if let value = parameters["fontFamily"] {
+                AppSettings.fontFamily = value
+                changed.append("fontFamily")
+            }
+            if let raw = parameters["appearance"], let value = AppSettings.Appearance(rawValue: raw) {
+                AppSettings.appearance = value
+                AppSettings.applyAppearanceOverride()
+                changed.append("appearance")
+            }
+            if let value = parameters["lightTheme"] {
+                AppSettings.lightThemeName = value
+                changed.append("lightTheme")
+            }
+            if let value = parameters["darkTheme"] {
+                AppSettings.darkThemeName = value
+                changed.append("darkTheme")
+            }
+            if let raw = parameters["sidebarWidth"], let value = Double(raw) {
+                AppSettings.sidebarWidth = CGFloat(value)
+                changed.append("sidebarWidth")
+            }
+            if let raw = parameters["scrollbackPrimeLines"], let value = Int(raw) {
+                AppSettings.scrollbackPrimeLines = value
+                changed.append("scrollbackPrimeLines")
+            }
+
+            if !changed.isEmpty {
+                TmuxLog.lifecycle("inspector changed settings: \(changed.joined(separator: ", "))")
+                AppSettings.notifyChanged()
+            }
+
+            return encode(SettingsReport(changed: changed.sorted()))
+        }
+
+        /// Resize the app's window. Exists so the "does stale state survive a
+        /// resize" question — which is where grid bugs usually surface, on the
+        /// pass *after* the one that broke — can be asked without a pointer.
+        static func resizeWindowBody(query: String) -> Data {
+            let parameters = parseQuery(query)
+            if let raw = parameters["size"] {
+                let parts = raw.lowercased().split(separator: "x")
+                if parts.count == 2, let width = Double(parts[0]), let height = Double(parts[1]),
+                   let window = NSApp.windows.first(where: { $0.contentViewController === main })
+                {
+                    window.setContentSize(NSSize(width: width, height: height))
+                }
+            }
+            return encode(WindowSizeReport())
+        }
+
+        /// Build the settings window off screen and report what came out.
+        ///
+        /// Showing it would take the user's focus, so this only forces the
+        /// SwiftUI tree to be constructed and laid out. That is enough to catch
+        /// the failures that are silent until the window is opened — a picker
+        /// whose selection matches no tag, a `ForEach` over colliding ids — and
+        /// nothing at all about whether it looks right, which still needs eyes.
+        static func settingsWindowBody(query: String) -> Data {
+            let requested = parseQuery(query)["page"] ?? ""
+            let page = SettingsPage.allCases.first { $0.axID == requested } ?? .terminal
+            let controller = SettingsWindowController { $0("not run from the inspector") }
+            let root = controller.debugBuildOffScreen(page: page)
+            root.layoutSubtreeIfNeeded()
+            return encode(ViewsReport(
+                generatedAt: ISO8601DateFormatter().string(from: Date()),
+                windows: [WindowNode(offScreenRoot: root)]
+            ))
+        }
+
+        /// `a=b&c=d`, percent-decoded, with `+` read as a space so a font
+        /// family can be passed the way a browser would send it.
+        private static func parseQuery(_ query: String) -> [String: String] {
+            var parameters = [String: String]()
+            for pair in query.split(separator: "&") {
+                let halves = pair.split(separator: "=", maxSplits: 1)
+                guard let name = halves.first else { continue }
+                let raw = halves.count > 1 ? String(halves[1]) : ""
+                let decoded = raw.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? raw
+                parameters[String(name)] = decoded
+            }
+            return parameters
+        }
+
         @discardableResult
         static func writeSnapshot() -> Result<URL, Error> {
             do {
@@ -123,6 +231,96 @@
         struct TmuxOnlyReport: Encodable {
             let generatedAt: String
             let tmux: TmuxReport
+        }
+
+        /// What the settings endpoint answers with: which keys the request
+        /// changed, and every value as it reads back afterwards — clamped, so
+        /// an out-of-range request shows what the app actually took.
+        struct SettingsReport: Encodable {
+            let changed: [String]
+            let fontFamily: String
+            let fontSize: Double
+            let appearance: String
+            let lightTheme: String
+            let darkTheme: String
+            let effectiveTheme: String
+            let isShowingDarkAppearance: Bool
+            let scrollbackPrimeLines: Int
+            let sidebarWidth: Double
+            let closingTabKillsWindow: Bool
+            /// The derived chrome, as hex. Every one of these is a blend of the
+            /// scheme's own foreground and background except `accent`, which is
+            /// picked from the scheme's highlight colours and has to clear a
+            /// contrast floor — so this is where a scheme that would have made
+            /// the selection invisible shows up as a different value.
+            let chrome: [String: String]
+            let accentContrast: Double
+            let accentSource: String
+
+            @MainActor
+            init(changed: [String]) {
+                self.changed = changed
+                fontFamily = AppSettings.fontFamily
+                fontSize = AppSettings.fontSize
+                appearance = AppSettings.appearance.rawValue
+                lightTheme = AppSettings.lightThemeName
+                darkTheme = AppSettings.darkThemeName
+                effectiveTheme = AppSettings.effectiveThemeDefinition().name
+                isShowingDarkAppearance = AppSettings.isShowingDarkAppearance
+                scrollbackPrimeLines = AppSettings.scrollbackPrimeLines
+                sidebarWidth = Double(AppSettings.sidebarWidth)
+                closingTabKillsWindow = AppSettings.closingTabKillsWindow
+
+                let theme = ChromeTheme.current
+                chrome = [
+                    "background": Self.hex(theme.background),
+                    "text": Self.hex(theme.text),
+                    "mutedText": Self.hex(theme.mutedText),
+                    "faintText": Self.hex(theme.faintText),
+                    "separator": Self.hex(theme.separator),
+                    "hover": Self.hex(theme.hover),
+                    "accent": Self.hex(theme.accent),
+                    "onAccent": Self.hex(theme.onAccent),
+                    "windowBackground": NSApp.windows
+                        .first(where: { $0.contentViewController === DebugInspector.main })?
+                        .backgroundColor.map(Self.hex) ?? "?",
+                ]
+                accentContrast = (Double(
+                    ChromeTheme.contrastRatio(theme.accent, theme.background)
+                ) * 100).rounded() / 100
+                let definition = AppSettings.effectiveThemeDefinition()
+                accentSource = [
+                    ("cursorColor", definition.cursorColor),
+                    ("palette4", definition.palette[4]),
+                    ("palette12", definition.palette[12]),
+                    ("selectionBackground", definition.selectionBackground),
+                ]
+                .first { _, hex in
+                    hex.flatMap(ChromeTheme.color(hex:)).map { Self.hex($0) } == Self.hex(theme.accent)
+                }?.0 ?? "foreground (nothing cleared the contrast floor)"
+            }
+
+            private static func hex(_ color: NSColor) -> String {
+                guard let srgb = color.usingColorSpace(.sRGB) else { return "?" }
+                return String(
+                    format: "#%02X%02X%02X",
+                    Int((srgb.redComponent * 255).rounded()),
+                    Int((srgb.greenComponent * 255).rounded()),
+                    Int((srgb.blueComponent * 255).rounded())
+                )
+            }
+        }
+
+        /// The window's content size, so a resize can be confirmed rather than
+        /// assumed.
+        struct WindowSizeReport: Encodable {
+            let contentSize: Size
+
+            @MainActor
+            init() {
+                let window = NSApp.windows.first { $0.contentViewController === DebugInspector.main }
+                contentSize = Size(window?.contentView?.bounds.size ?? .zero)
+            }
         }
 
         struct Rect: Encodable {
@@ -236,6 +434,20 @@
                     return name
                 }
                 contentView = window.contentView.map { ViewNode(view: $0) }
+            }
+
+            /// A hierarchy that was never put in a window. Used for the
+            /// settings window, which is built off screen so the check cannot
+            /// take the user's focus.
+            init(offScreenRoot: NSView) {
+                title = "TmuxGUI Settings (built off screen)"
+                type = String(describing: Swift.type(of: offScreenRoot))
+                frame = Rect(offScreenRoot.frame)
+                isKey = false
+                isVisible = false
+                backingScaleFactor = Double(NSScreen.main?.backingScaleFactor ?? 1)
+                firstResponder = nil
+                contentView = ViewNode(view: offScreenRoot)
             }
         }
 

@@ -25,6 +25,8 @@ final class MainViewController: NSViewController {
     private let container = NSView()
     private var controllers = [String: SessionViewController]()
     private var currentName: String?
+    private var sidebarWidth: NSLayoutConstraint?
+    private var settingsObserver: NSObjectProtocol?
 
     var onStatusChange: ((String) -> Void)?
 
@@ -42,8 +44,15 @@ final class MainViewController: NSViewController {
     }
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 1280, height: 760))
-        view.wantsLayer = true
+        let root = RootView(frame: NSRect(x: 0, y: 0, width: 1280, height: 760))
+        // The system flipping between light and dark is the input "follow
+        // system" runs on, and nothing is stored for it — so it takes the same
+        // path a settings change does, but only when it actually selects a
+        // different scheme. There is no view-*controller* hook for it, which is
+        // the only reason this view subclass exists.
+        root.onAppearanceChange = { AppSettings.notifyIfAppearanceSelectsAnotherTheme() }
+        root.wantsLayer = true
+        view = root
     }
 
     override func viewDidLoad() {
@@ -58,11 +67,14 @@ final class MainViewController: NSViewController {
         view.addSubview(container)
         view.addSubview(sidebar)
 
+        let width = sidebar.widthAnchor.constraint(equalToConstant: AppSettings.sidebarWidth)
+        sidebarWidth = width
+
         NSLayoutConstraint.activate([
             sidebar.topAnchor.constraint(equalTo: view.topAnchor),
             sidebar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             sidebar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            sidebar.widthAnchor.constraint(equalToConstant: SessionSidebarView.preferredWidth),
+            width,
 
             container.topAnchor.constraint(equalTo: view.topAnchor),
             container.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
@@ -78,6 +90,43 @@ final class MainViewController: NSViewController {
 
         server.onChange = { [weak self] in self?.refreshSidebar() }
         server.start()
+
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: AppSettings.didChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let controller = self else { return }
+            Task { @MainActor in controller.applySettings() }
+        }
+    }
+
+    deinit {
+        if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
+    }
+
+    // MARK: - Settings
+
+    /// One place where a settings change fans out, so the order is fixed and
+    /// visible: chrome first, then each session's own terminal controller.
+    ///
+    /// Session controllers are per-session by construction — each owns a
+    /// `TerminalController` — so a font change has to reach every one of them,
+    /// not just the session on screen. A session left out would keep the old
+    /// cell size and report a grid tmux disagrees with the moment it is shown.
+    private func applySettings() {
+        // Logged because this is the only thing that reaches into every
+        // session's terminal controller after launch, and a font change there
+        // moves the cell size. If the app and tmux ever disagree on a column
+        // again, the first question is how many times this ran and why.
+        TmuxLog.lifecycle(
+            "applying settings to \(controllers.count) session controller(s) —"
+                + " theme \(ChromeTheme.current.sourceName), font"
+                + " \(AppSettings.fontFamily.isEmpty ? "default" : AppSettings.fontFamily)"
+                + " \(Int(AppSettings.fontSize))pt"
+        )
+        sidebarWidth?.constant = AppSettings.sidebarWidth
+        view.window?.backgroundColor = ChromeTheme.current.background
+        sidebar.applyChromeTheme()
+        for controller in controllers.values { controller.applySettings() }
     }
 
     // MARK: - Sessions
@@ -151,6 +200,17 @@ final class MainViewController: NSViewController {
     func stop() {
         for controller in controllers.values { controller.stop() }
         server.stop()
+    }
+}
+
+/// The window's root view, which exists only to forward the appearance change.
+@MainActor
+private final class RootView: NSView {
+    var onAppearanceChange: (() -> Void)?
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
     }
 }
 

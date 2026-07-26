@@ -256,6 +256,17 @@ final class TmuxControlClient {
         for (command, _) in queued { write(command: command) }
     }
 
+    // A `-L <socket>` override was added here and deliberately removed. It
+    // would have let a debug build be pointed at a scratch tmux server so that
+    // testing a font change did not reflow the user's real windows — which is
+    // a genuine cost, since the app tells tmux how many columns it has. The
+    // owner of this project declined it anyway, and the reasoning is worth
+    // keeping: an app tested only against a server made for testing is tested
+    // against the easy case. The bugs that have actually hurt here — a pane
+    // reporting mouse positions into a live shell, a column count drifting by
+    // one — all needed a real session with real programs in it to show up.
+    // Test against the real thing and accept the reflow.
+
     // MARK: - Discovery
 
     /// Session names on the running server, in tmux's own order.

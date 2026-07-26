@@ -79,14 +79,22 @@ final class TmuxPaneSurface {
             write: { data in
                 guard !TerminalReply.isEntirelyReplies(data) else {
                     #if DEBUG
+                        // An explicit caller: `#function` would resolve to the
+                        // initializer this closure was built in, and a log
+                        // whose purpose is "who sent it" must not name the
+                        // wrong place.
                         TmuxLog.lifecycle(
-                            "withheld \(paneID) — \(OutboundShape.describe(data))"
+                            "withheld \(paneID) — \(OutboundShape.describe(data))",
+                            caller: "TmuxPaneSurface.terminalWrite"
                         )
                     #endif
                     return
                 }
                 #if DEBUG
-                    TmuxLog.lifecycle("outbound \(paneID) — \(OutboundShape.describe(data))")
+                    TmuxLog.lifecycle(
+                        "outbound \(paneID) — \(OutboundShape.describe(data))",
+                        caller: "TmuxPaneSurface.terminalWrite"
+                    )
                 #endif
                 Task { @MainActor in sendKeys(paneID, data) }
             },
