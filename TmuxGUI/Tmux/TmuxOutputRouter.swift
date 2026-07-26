@@ -81,12 +81,23 @@ final class TmuxOutputRouter {
     /// The hand-off happens under the lock. That is what lets `deliverSnapshot`
     /// mean anything: counting a chunk and enqueuing it have to be one step, or
     /// a snapshot can be enqueued between them and land on top of output it was
-    /// supposed to defer to. It costs nothing on this path —
-    /// `InMemoryTerminalSession.receive` is a `DispatchQueue.async` onto the
-    /// session's own serial queue, so the lock is held for an enqueue and never
-    /// for a parse, and every `%output` for one session arrives on that
-    /// session's single reader queue anyway, so there is nothing here to
-    /// contend with.
+    /// supposed to defer to.
+    ///
+    /// What that costs, stated exactly rather than as "nothing", because
+    /// CLAUDE.md's rule about not slowing this path deserves a real answer.
+    /// `InMemoryTerminalSession.receive` reaches `enqueueWrite`, which is a
+    /// `DispatchQueue.async` onto the surface's own serial queue — so the lock
+    /// never covers a parse. But `enqueueWrite` first reads `currentGeneration`,
+    /// and that takes libghostty's surface-access lock. Attaching or detaching
+    /// a surface — showing a pane, hiding one, switching windows — holds that
+    /// same lock while it drains in-flight work, so a reader thread here can
+    /// wait behind one chunk's parse, and now holds this lock while it does.
+    ///
+    /// Bounded and not a deadlock: the work on that queue writes into the
+    /// surface and never calls back into this router, and a terminal's own
+    /// output takes the `TmuxControlClient` path instead. So the worst case is
+    /// one session's delivery pausing for one chunk during a pane
+    /// show/hide — not the sustained stall the rule is about.
     @discardableResult
     func deliver(paneID: String, data: Data) -> Bool {
         lock.lock()
