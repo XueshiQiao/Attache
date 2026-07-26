@@ -34,9 +34,32 @@ final class TmuxSessionConnection {
 
     /// Fires on the main queue whenever the window list, the active window, or
     /// a layout changed — i.e. whenever the UI needs to redraw structure.
-    var onModelChange: (() -> Void)?
+    ///
+    /// A list rather than a single closure: both the sidebar (for window
+    /// counts and activity dots) and the session's own view controller need
+    /// these, and a plain property meant whichever registered last silently
+    /// unsubscribed the other.
+    private var modelObservers = [() -> Void]()
+
+    func addModelObserver(_ observer: @escaping () -> Void) {
+        modelObservers.append(observer)
+    }
+
+    private func notifyModelChanged() {
+        for observer in modelObservers { observer() }
+    }
     var onStatusChange: ((String) -> Void)?
     var onExit: ((String?) -> Void)?
+    /// A session was created or destroyed anywhere on the server. Every
+    /// connection sees this, so the server picks one to act on it.
+    var onServerSessionsChanged: (() -> Void)?
+
+    /// True when any window in this session has unseen output. Reuses tmux's
+    /// own activity flag so the sidebar dot means the same thing as the `#`
+    /// in a tmux status line.
+    var hasActivity: Bool {
+        windows.contains { $0.hasActivity && $0.id != activeWindowID }
+    }
 
     private let client: TmuxControlClient
     private var lastReportedGrid: (columns: Int, rows: Int)?
@@ -83,6 +106,12 @@ final class TmuxSessionConnection {
         client.stop()
     }
 
+    /// Re-emit the current status. Switching sessions has to repaint the
+    /// title even though nothing about the session itself changed.
+    func announceStatus() {
+        onStatusChange?(describeActive())
+    }
+
     var window: (String) -> TmuxWindow? {
         { [weak self] id in self?.windows.first { $0.id == id } }
     }
@@ -126,6 +155,11 @@ final class TmuxSessionConnection {
 
     func killWindow(id: String) {
         client.send("kill-window -t \(id)")
+    }
+
+    func renameSession(to name: String) {
+        guard let target = sessionTarget else { return }
+        client.send("rename-session -t \(target) \(TmuxCommand.quote(name))")
     }
 
     func renameWindow(id: String, to name: String) {
@@ -205,7 +239,7 @@ final class TmuxSessionConnection {
             }
             guard windows[index].layoutText != layout else { return }
             windows[index].layoutText = layout
-            onModelChange?()
+            notifyModelChanged()
 
         case .windowAdd, .windowClose:
             refreshWindows()
@@ -213,11 +247,14 @@ final class TmuxSessionConnection {
         case .windowRenamed(let windowID, let name):
             guard let index = windows.firstIndex(where: { $0.id == windowID }) else { return }
             windows[index].name = TmuxText.plain(name)
-            onModelChange?()
+            notifyModelChanged()
+
+        case .other(let verb, _) where verb == "%sessions-changed":
+            onServerSessionsChanged?()
+            refreshWindows()
 
         case .other(let verb, _) where verb == "%session-window-changed"
             || verb == "%window-pane-changed"
-            || verb == "%sessions-changed"
             || verb == "%unlinked-window-add":
             refreshWindows()
 
@@ -251,7 +288,7 @@ final class TmuxSessionConnection {
             if self.activeWindowID != previousActive || previousActive == nil {
                 self.onStatusChange?(self.describeActive())
             }
-            self.onModelChange?()
+            self.notifyModelChanged()
         }
     }
 

@@ -65,14 +65,13 @@ final class SessionViewController: NSViewController {
         wireGrid()
         wireTabBar()
 
-        connection.onModelChange = { [weak self] in self?.setNeedsSync() }
+        connection.addModelObserver { [weak self] in self?.setNeedsSync() }
         connection.onStatusChange = { [weak self] status in self?.onStatusChange?(status) }
     }
 
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        connection.start()
-    }
+    // The connection is started by TmuxServer, not here: every session stays
+    // connected whether or not it is on screen, which is what keeps the
+    // sidebar's activity dots live and switching instant.
 
     private func installSubviews() {
         tabBar.translatesAutoresizingMaskIntoConstraints = false

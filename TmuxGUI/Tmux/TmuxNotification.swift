@@ -60,7 +60,15 @@ enum TmuxNotification {
                 ? .begin(number: number)
                 : .end(number: number, failed: verb == "%error")
 
-        case "%session-changed", "%client-session-changed":
+        case "%session-changed":
+            // `%session-changed <session-id> <name>` — sent to this client
+            // about itself. Deliberately NOT merged with
+            // `%client-session-changed`, whose first field is a *client* name:
+            // that one is broadcast to every client on the server, so reading
+            // it as an identity would leave each connection addressing
+            // whichever client moved most recently. Every later command
+            // targets this id, so getting it wrong silently points a whole
+            // connection at someone else's session.
             let text = String(decoding: rest, as: UTF8.self)
             let parts = text.split(separator: " ", maxSplits: 1)
             guard let id = parts.first else { return nil }

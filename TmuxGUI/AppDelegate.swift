@@ -2,10 +2,10 @@ import Cocoa
 import GhosttyTerminal
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let defaultContentSize = NSSize(width: 1100, height: 720)
-    private let minimumContentSize = NSSize(width: 520, height: 340)
+    private let defaultContentSize = NSSize(width: 1280, height: 780)
+    private let minimumContentSize = NSSize(width: 700, height: 380)
     private var window: NSWindow?
-    private var sessionController: SessionViewController?
+    private var main: MainViewController?
     private var titleTimer: Timer?
     private var status = "启动中…"
 
@@ -16,20 +16,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fail("找不到 tmux", "在 /opt/homebrew/bin、/usr/local/bin、/usr/bin 和登录 shell 的 PATH 里都没找到 tmux。")
             return
         }
-
-        let sessions = TmuxControlClient.listSessions(tmuxPath: tmuxPath)
-        guard let sessionName = chooseSession(from: sessions) else {
+        guard !TmuxControlClient.listSessions(tmuxPath: tmuxPath).isEmpty else {
             fail("没有可用的 tmux session", "tmux 服务器没在跑，或者一个 session 都没有。先在终端里建一个再启动本 app。")
             return
         }
 
-        let connection = TmuxSessionConnection(tmuxPath: tmuxPath, sessionName: sessionName)
-        let controller = SessionViewController(connection: connection)
+        let controller = MainViewController(server: TmuxServer(tmuxPath: tmuxPath))
         controller.onStatusChange = { [weak self] status in
             self?.status = status
             self?.refreshTitle()
         }
-        sessionController = controller
+        main = controller
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: defaultContentSize),
@@ -57,40 +54,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationSupportsSecureRestorableState(_: NSApplication) -> Bool { true }
-
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_: Notification) {
         titleTimer?.invalidate()
         // Detach cleanly. The panes keep running — that is the whole point.
-        sessionController?.stop()
+        main?.stop()
     }
 
     private func refreshTitle() {
         window?.title = status
-        guard let metrics = sessionController?.connection.metrics.snapshot() else { return }
+        guard let metrics = main?.currentSession?.connection.metrics.snapshot() else { return }
         window?.subtitle = metrics.titleSummary
-    }
-
-    // MARK: - Session choice
-
-    /// Which session to attach to: `TMUX_GUI_SESSION` wins, so a measurement
-    /// run can target a throwaway session without touching the real ones;
-    /// otherwise the first session tmux reports.
-    private func chooseSession(from sessions: [String]) -> String? {
-        if let requested = ProcessInfo.processInfo.environment["TMUX_GUI_SESSION"],
-           !requested.isEmpty
-        {
-            guard sessions.contains(requested) else {
-                fail(
-                    "找不到 session「\(requested)」",
-                    "TMUX_GUI_SESSION 指定了它，但服务器上只有：\(sessions.joined(separator: ", "))"
-                )
-                return nil
-            }
-            return requested
-        }
-        return sessions.first
     }
 
     // MARK: - Menu
@@ -117,14 +92,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(editItem)
 
         mainMenu.addItem(makeWindowMenuItem())
+        mainMenu.addItem(makeSessionMenuItem())
 
         let probeItem = NSMenuItem()
         let probeMenu = NSMenu(title: "测量")
-        let run = NSMenuItem(
-            title: "跑一轮吞吐压测（约 18 秒）",
-            action: #selector(runThroughputProbe),
-            keyEquivalent: "r"
-        )
+        let run = NSMenuItem(title: "跑一轮吞吐压测（约 18 秒）", action: #selector(runThroughputProbe), keyEquivalent: "r")
         run.target = self
         probeMenu.addItem(run)
         probeItem.submenu = probeMenu
@@ -133,50 +105,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = mainMenu
     }
 
+    private func entry(
+        _ menu: NSMenu, _ title: String, _ key: String,
+        _ mask: NSEvent.ModifierFlags, _ action: Selector, tag: Int = 0
+    ) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.keyEquivalentModifierMask = mask
+        item.target = self
+        item.tag = tag
+        menu.addItem(item)
+    }
+
     /// Native shortcuts for the things a tab strip should do.
     ///
     /// These sit alongside the user's tmux `prefix` bindings rather than
     /// replacing them: ⌘T and `prefix + c` both end up calling `new-window`,
-    /// and the strip updates the same way whichever one was used. Nothing here
-    /// intercepts a key the terminal needs — ⌘ is free because tmux and the
-    /// programs inside it only ever see Control and Escape sequences.
+    /// and the strip updates the same way whichever one was used.
     private func makeWindowMenuItem() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "窗口")
-
-        func add(_ title: String, _ key: String, _ mask: NSEvent.ModifierFlags, _ action: Selector, tag: Int = 0) {
-            let entry = NSMenuItem(title: title, action: action, keyEquivalent: key)
-            entry.keyEquivalentModifierMask = mask
-            entry.target = self
-            entry.tag = tag
-            menu.addItem(entry)
-        }
-
-        add("新建窗口", "t", [.command], #selector(newWindow))
-        add("隐藏当前标签", "w", [.command], #selector(hideCurrentWindow))
+        entry(menu, "新建窗口", "t", [.command], #selector(newWindow))
+        entry(menu, "隐藏当前标签", "w", [.command], #selector(hideCurrentWindow))
         menu.addItem(.separator())
-        add("下一个窗口", "]", [.command, .shift], #selector(nextWindow))
-        add("上一个窗口", "[", [.command, .shift], #selector(previousWindow))
+        entry(menu, "下一个窗口", "]", [.command, .shift], #selector(nextWindow))
+        entry(menu, "上一个窗口", "[", [.command, .shift], #selector(previousWindow))
         menu.addItem(.separator())
         for slot in 1 ... 9 {
-            add("切到第 \(slot) 个", "\(slot)", [.command], #selector(selectWindowSlot(_:)), tag: slot)
+            entry(menu, "切到第 \(slot) 个", "\(slot)", [.command], #selector(selectWindowSlot(_:)), tag: slot)
         }
-
         item.submenu = menu
         return item
     }
 
-    @objc private func newWindow() { sessionController?.newWindow() }
-    @objc private func hideCurrentWindow() { sessionController?.hideActiveWindow() }
-    @objc private func nextWindow() { sessionController?.selectAdjacentWindow(offset: 1) }
-    @objc private func previousWindow() { sessionController?.selectAdjacentWindow(offset: -1) }
+    private func makeSessionMenuItem() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "Session")
+        entry(menu, "新建 session", "n", [.command, .shift], #selector(newSession))
+        menu.addItem(.separator())
+        entry(menu, "下一个 session", "]", [.command, .control], #selector(nextSession))
+        entry(menu, "上一个 session", "[", [.command, .control], #selector(previousSession))
+        menu.addItem(.separator())
+        for slot in 1 ... 9 {
+            entry(menu, "切到第 \(slot) 个", "\(slot)", [.command, .control], #selector(selectSessionSlot(_:)), tag: slot)
+        }
+        item.submenu = menu
+        return item
+    }
 
+    @objc private func newWindow() { main?.currentSession?.newWindow() }
+    @objc private func hideCurrentWindow() { main?.currentSession?.hideActiveWindow() }
+    @objc private func nextWindow() { main?.currentSession?.selectAdjacentWindow(offset: 1) }
+    @objc private func previousWindow() { main?.currentSession?.selectAdjacentWindow(offset: -1) }
     @objc private func selectWindowSlot(_ sender: NSMenuItem) {
-        sessionController?.selectWindow(atVisibleSlot: sender.tag - 1)
+        main?.currentSession?.selectWindow(atVisibleSlot: sender.tag - 1)
+    }
+
+    @objc private func newSession() { main?.server.newSession() }
+    @objc private func nextSession() { main?.selectAdjacentSession(offset: 1) }
+    @objc private func previousSession() { main?.selectAdjacentSession(offset: -1) }
+    @objc private func selectSessionSlot(_ sender: NSMenuItem) {
+        main?.selectSession(atSlot: sender.tag - 1)
     }
 
     @objc private func runThroughputProbe() {
-        sessionController?.connection.runThroughputProbe { [weak self] report in
+        main?.currentSession?.connection.runThroughputProbe { [weak self] report in
             print(report)
             self?.showReport(report)
         }
