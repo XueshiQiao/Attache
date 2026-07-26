@@ -139,6 +139,12 @@ reach its socket under `/private/tmp/tmux-<uid>/`.
 - Selecting a tab on mouse *down* rebuilds the strip from tmux's reply and
   destroys the view mid-gesture. Selection happens on mouse up.
 
+## Working on it
+
+[CLAUDE.md](CLAUDE.md) covers the architecture, the invariants worth
+protecting, how to verify a change, and the traps already paid for.
+[TODO.md](TODO.md) is the open work.
+
 ## Known limits
 
 - Pane content is re-snapshotted with `capture-pane` after a geometry change:
