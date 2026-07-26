@@ -52,20 +52,23 @@ came across: the "Normalize libghostty Framework" post-build script (its body
 now lives in `Scripts/normalize-libghostty.sh`, which `project.yml` names by
 path and XcodeGen inlines into the generated phase), `ENABLE_APP_SANDBOX = NO`,
 the local package reference with all four of its products, and `TmuxGUI/` as a
-synchronized folder rather than a file list. Checked by diffing `xcodebuild
--showBuildSettings` for Debug and Release against the old project, then building
-a fresh clone and launching it.
+synchronized folder rather than a file list. `TmuxGUIUITests` came across too —
+an earlier draft of this section called it the sample's placeholder, which
+stopped being true in 885633c. Checked by diffing `xcodebuild -showBuildSettings`
+for Debug and Release against the old project, then building a fresh clone and
+launching it.
 
-Three things left deliberately different, noted here so they are not mistaken
-for oversights:
+The one test in `TmuxGUIUITests` is a launch smoke test: the app starts, gets a
+window, and draws the session rail from live tmux state. It is in the scheme's
+test action only, so a plain build does not build it. It has never been run
+here, and running it is not free — it launches the app for real, which takes the
+focus of whoever is at the machine and attaches to whatever tmux server is live.
+Growing it into something that covers more than launch means giving it a
+throwaway session on its own `-L` socket to drive.
 
-- [ ] **The `TmuxGUIUITests` target is gone; the file is not.**
-      `TmuxGUIUITests/TmuxGUIUITests.swift` is still in git and nothing compiles
-      it. Its one test asserts that the app launches and reaches live tmux
-      state, which only means something against a tmux server in a known state —
-      a throwaway session created, driven and torn down by the test. Write that
-      and add the target back (`type: bundle.ui-testing`, `dependencies: [-
-      target: TmuxGUI]`), or delete the file.
+Two things left deliberately different, noted here so they are not mistaken for
+oversights:
+
 - [ ] **The SwiftPM lock file is no longer in git.**
       `TmuxGUI.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
       used to be committed with the project and pinned MSDisplayLink — the one

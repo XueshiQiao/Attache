@@ -4,6 +4,14 @@ options:
   bundleIdPrefix: dev.xueshi
   deploymentTarget:
     macOS: "13.0"
+  # Both of these are here to match what the hand-maintained project had, and
+  # both are silent if omitted. Without defaultConfig, XcodeGen picks the first
+  # configuration alphabetically — Debug — so an `xcodebuild build` with no
+  # `-configuration` would quietly switch from a Release build to a Debug one.
+  # Without xcodeVersion, LastUpgradeCheck is stamped 1430 instead of 2630 and
+  # Xcode offers to "update to recommended settings" after every generate.
+  defaultConfig: Release
+  xcodeVersion: "26.3"
   # `syncedFolder` sources below need 2.44.
   minimumXcodeGenVersion: "2.44.0"
 
@@ -19,6 +27,14 @@ schemes:
     build:
       targets:
         TmuxGUI: all
+        # `[test]` is buildForTesting and nothing else, so `xcodebuild build`
+        # does not drag the test bundle in — only `build-for-testing` and `test`
+        # do. This is what the hand-maintained scheme had.
+        TmuxGUIUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - TmuxGUIUITests
 
 targets:
   TmuxGUI:
@@ -93,11 +109,26 @@ targets:
           # thing script sandboxing exists to stop.
           ENABLE_USER_SCRIPT_SANDBOXING: NO
 
-# TmuxGUIUITests/ is deliberately not a target here. The one test in it asserts
-# that the app launches and reaches live tmux state, which needs a tmux server in
-# a known state to mean anything — see TODO.md. The file is kept so whoever
-# writes that gets a starting point; adding it back is a `type:
-# bundle.ui-testing` target with `dependencies: [- target: TmuxGUI]`.
+  TmuxGUIUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: TmuxGUIUITests
+        type: syncedFolder
+    dependencies:
+      # On a ui-testing target this is what makes XcodeGen write
+      # TEST_TARGET_NAME = TmuxGUI, which is how the runner knows what to launch.
+      - target: TmuxGUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.xueshi.TmuxGUIUITests
+        # There is no Info.plist on disk for this bundle, so without this the
+        # .xctest is built with no Info.plist inside it at all — the build still
+        # succeeds and XCTest then has nothing to load.
+        GENERATE_INFOPLIST_FILE: YES
+        ENABLE_TESTABILITY: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 964G86XT2P
 
 settings:
   base:

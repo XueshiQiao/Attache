@@ -71,7 +71,7 @@ tab hides it. A window may have an agent mid-run; there is no undo.
 ## Building and running
 
 ```sh
-xcodegen generate            # only when project.yml changed, or after a fresh clone
+xcodegen generate            # after a fresh clone, or any change to project.yml or Scripts/
 xcodebuild -project TmuxGUI.xcodeproj -scheme TmuxGUI -configuration Debug \
   -destination 'platform=macOS,arch=arm64' -derivedDataPath /tmp/dd \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
@@ -93,6 +93,10 @@ It is gitignored and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
 (`brew install xcodegen`) regenerates it. Change a build setting in `project.yml`
 and regenerate — a change made in Xcode's build-settings editor lasts until the
 next `xcodegen generate` and then vanishes, with no sign it was ever there.
+
+`Scripts/normalize-libghostty.sh` needs a regenerate too: XcodeGen copies its
+contents into the build phase, so an edited or freshly pulled script does
+nothing until the project is rebuilt from `project.yml`.
 
 Two things in `project.yml` are load-bearing and fail at *launch* rather than at
 build, so a green build does not tell you they are still right:

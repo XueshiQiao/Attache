@@ -1,14 +1,24 @@
 import XCTest
 
-/// Placeholder. What this replaced was libghostty's own sample test — terminal
-/// selection, the copy menu, CJK input — none of which this app wires up the
-/// same way, and it had never been run.
+/// A launch smoke test, and only that.
 ///
-/// Real coverage here needs a tmux server in a known state: the test would have
-/// to create a throwaway session, drive the app against it, and tear it down.
-/// Until that exists this target only proves the app launches and reaches live
-/// tmux state. See TODO.md item 2 — the target should either grow real coverage
-/// or be dropped when the project moves to XcodeGen.
+/// What it covers: the app starts, gets a window on screen, and draws the
+/// session rail from live tmux state. Since the app refuses to start without a
+/// tmux server, reaching the rail at all means the control-mode connection came
+/// up. That is enough to catch the failures that are invisible at build time —
+/// a missing entitlement, a framework that will not load, a crash in
+/// `applicationDidFinishLaunching`.
+///
+/// What it does not cover: anything below the rail. No window tabs, no pane
+/// geometry, no input, no resize. Real coverage needs a tmux server in a known
+/// state — the test would have to create a throwaway session on its own `-L`
+/// socket, drive the app against it, and tear it down.
+///
+/// **Running this is not free.** `XCUIApplication().launch()` takes the focus of
+/// whoever is at the machine, and the app attaches to whatever tmux server is
+/// live — on a development machine that is the owner's real one, with real
+/// long-running work in it. Run it deliberately, once, when nobody is mid-task.
+/// Never in a loop and never unattended.
 final class TmuxGUIUITests: XCTestCase {
     private var app: XCUIApplication!
 
