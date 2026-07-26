@@ -130,6 +130,27 @@ enum TmuxLog {
     private static var handle: FileHandle?
     private static var bytesWritten: UInt64 = 0
 
+    /// Stop a closed stdout from killing the process.
+    ///
+    /// Process-wide, which is why it is spelled out rather than buried: with
+    /// the default disposition, writing to a pipe whose reader has gone raises
+    /// SIGPIPE and the default action for SIGPIPE is termination. Nothing in
+    /// this app wants that. `TmuxControlClient.write` guards its pipe write
+    /// with `process.isRunning` for the same hazard, and that guard is a race
+    /// it cannot win; ignoring the signal turns both cases into an ordinary
+    /// `EPIPE` that the `try?` at each call site drops.
+    ///
+    /// `dispatch_once` semantics via `let`, so the handler is installed once
+    /// however many threads arrive together.
+    private static let brokenPipesIgnored: Bool = {
+        signal(SIGPIPE, SIG_IGN)
+        return true
+    }()
+
+    private static func ignoreBrokenPipes() {
+        _ = brokenPipesIgnored
+    }
+
     /// Keep one generation of history and cap it. A day of heavy use is a few
     /// megabytes; an unbounded log on someone's boot volume is its own bug.
     private static let sizeLimit: UInt64 = 8 * 1024 * 1024
@@ -147,7 +168,16 @@ enum TmuxLog {
         // stdout too: CLAUDE.md's documented way to run this app is the binary
         // directly, with stdout attached, and that is where anyone watching a
         // live repro is already looking.
-        FileHandle.standardOutput.write(Data(line.utf8))
+        //
+        // `try?` and not the older `write(_:)`, which raises. And the raise was
+        // not even the dangerous half: a closed reader delivers SIGPIPE, which
+        // kills the process before any error can be returned, so
+        // `TmuxGUI | head -1` — a completely ordinary thing to type — took the
+        // whole app down at the second log line. `ignoreBrokenPipes` is what
+        // actually fixes that; this call just stops the leftover EPIPE from
+        // becoming an exception.
+        Self.ignoreBrokenPipes()
+        try? FileHandle.standardOutput.write(contentsOf: Data(line.utf8))
 
         lock.lock()
         defer { lock.unlock() }

@@ -172,10 +172,27 @@ enum TerminalReply {
     }
 
     /// First semicolon-separated parameter, or -1 when there is not one.
+    ///
+    /// Digits are capped, and the cap is not tidiness. Swift traps on integer
+    /// overflow in release builds as well as debug, so accumulating an
+    /// unbounded digit run kills the process: `ESC [` followed by nineteen
+    /// nines was enough, and it did not even need a final byte, because the
+    /// parameter scan runs before the guard that checks for one. Pasting a log
+    /// line into a pane whose program has not turned on bracketed paste is a
+    /// realistic way to send exactly that.
+    ///
+    /// Nine digits covers every parameter this file reads — a mouse button
+    /// code, a row, a column. Anything longer is not one of those, so -1 (the
+    /// same value as "no parameter here") is the honest answer, and it makes
+    /// `isBareMotion` false, so the payload is forwarded. Leak rather than eat,
+    /// and above all do not die.
     private static func firstParameter(_ bytes: ArraySlice<UInt8>) -> Int {
         var value = -1
+        var digits = 0
         for byte in bytes {
             guard (0x30 ... 0x39).contains(byte) else { break }
+            digits += 1
+            guard digits <= 9 else { return -1 }
             value = max(value, 0) * 10 + Int(byte - 0x30)
         }
         return value

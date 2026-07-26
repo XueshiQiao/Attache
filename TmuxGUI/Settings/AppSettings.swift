@@ -109,8 +109,13 @@ enum AppSettings {
     }
 
     static var fontSize: Double {
-        get { clamp(store.object(forKey: Key.fontSize) as? Double ?? defaultFontSize, to: fontSizeRange) }
-        set { store.set(clamp(newValue, to: fontSizeRange), forKey: Key.fontSize) }
+        get {
+            clamp(
+                store.object(forKey: Key.fontSize) as? Double ?? defaultFontSize,
+                to: fontSizeRange, fallback: defaultFontSize
+            )
+        }
+        set { store.set(clamp(newValue, to: fontSizeRange, fallback: defaultFontSize), forKey: Key.fontSize) }
     }
 
     static var appearance: Appearance {
@@ -142,10 +147,15 @@ enum AppSettings {
         get {
             clamp(
                 (store.object(forKey: Key.sidebarWidth) as? Double).map { CGFloat($0) } ?? defaultSidebarWidth,
-                to: sidebarWidthRange
+                to: sidebarWidthRange, fallback: defaultSidebarWidth
             )
         }
-        set { store.set(Double(clamp(newValue, to: sidebarWidthRange)), forKey: Key.sidebarWidth) }
+        set {
+            store.set(
+                Double(clamp(newValue, to: sidebarWidthRange, fallback: defaultSidebarWidth)),
+                forKey: Key.sidebarWidth
+            )
+        }
     }
 
     /// Whether the ✕ on a tab kills the tmux window instead of hiding it.
@@ -251,5 +261,26 @@ enum AppSettings {
 
     private static func clamp<Value: Comparable>(_ value: Value, to range: ClosedRange<Value>) -> Value {
         min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    /// The same for floating point, where `min`/`max` are not enough.
+    ///
+    /// NaN compares false against everything, so `min(max(nan, lo), hi)` is
+    /// `nan` — the clamp passes it straight through and it reaches
+    /// `UserDefaults`, which stores it happily, so every later launch reads it
+    /// back. From there it is not a settings problem any more: `JSONEncoder`
+    /// refuses non-conforming floats so the inspector stops answering, a NaN
+    /// width makes `NSLayoutConstraint` raise, and a NaN that reaches the grid
+    /// arithmetic traps on the conversion to `Int`.
+    ///
+    /// A non-finite value is not a number this app can act on, so it becomes
+    /// the default — the same value an absent key gives.
+    private static func clamp<Value: BinaryFloatingPoint>(
+        _ value: Value,
+        to range: ClosedRange<Value>,
+        fallback: Value
+    ) -> Value {
+        guard value.isFinite else { return fallback }
+        return min(max(value, range.lowerBound), range.upperBound)
     }
 }

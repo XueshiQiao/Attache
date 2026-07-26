@@ -85,6 +85,14 @@ let keystrokes: [(String, Data)] = [
     ("X10 left press", Data([0x1b, 0x5b, 0x4d, 0x20, 0x21, 0x22])),
     ("X10 wheel up", Data([0x1b, 0x5b, 0x4d, 0x60, 0x21, 0x22])),
     ("urxvt left press (1015)", Data("\u{1b}[32;100;20M".utf8)),
+
+    // Long digit runs. These are not mouse reports; they are here because
+    // accumulating them used to overflow and kill the process — Swift traps on
+    // overflow in release builds too — and an unterminated one reached the
+    // parameter scan before anything checked for a final byte.
+    ("nineteen nines then a final byte", Data(("\u{1b}[" + String(repeating: "9", count: 19) + "m").utf8)),
+    ("forty digits, no final byte at all", Data(("\u{1b}[" + String(repeating: "9", count: 40)).utf8)),
+    ("long digit run inside a pasted line", Data(("hello \u{1b}[" + String(repeating: "1", count: 30) + "m world").utf8)),
 ]
 
 var failures = 0
