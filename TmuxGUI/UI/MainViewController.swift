@@ -153,3 +153,24 @@ final class MainViewController: NSViewController {
         server.stop()
     }
 }
+
+#if DEBUG
+
+    extension MainViewController {
+        var debugShownSessionName: String? { currentName }
+
+        /// Every session on the server, whether or not it has ever been shown.
+        /// A session with no controller still has a live connection, and its
+        /// window list is exactly the thing worth diffing against tmux.
+        func debugSessionReports() -> [DebugInspector.SessionReport] {
+            server.sessionNames.compactMap { name in
+                guard let connection = server.connection(for: name) else { return nil }
+                if let controller = controllers[name] {
+                    return controller.debugReport(isShown: name == currentName)
+                }
+                return DebugInspector.SessionReport(connection: connection)
+            }
+        }
+    }
+
+#endif

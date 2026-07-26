@@ -179,6 +179,13 @@ final class SessionViewController: NSViewController {
     }
 
     private func hideWindow(_ id: String) {
+        // Hiding sends nothing to tmux, so it leaves no trace there. Logged
+        // anyway: "the tab is gone" has two causes and only one of them lost
+        // anything, and telling them apart afterwards is otherwise guesswork.
+        TmuxLog.lifecycle(
+            "hiding window \(id) from the strip (tmux is untouched, nothing is killed)",
+            session: connection.sessionName
+        )
         hiddenWindowIDs.insert(id)
         let visible = connection.windows.filter { !hiddenWindowIDs.contains($0.id) }
         if connection.activeWindowID == id, let next = visible.first {
@@ -341,3 +348,51 @@ final class SessionViewController: NSViewController {
         surfaces.removeAll()
     }
 }
+
+#if DEBUG
+
+    extension SessionViewController {
+        /// What this controller believes about its session, next to what tmux
+        /// told it. The two should be identical everywhere except
+        /// `hiddenWindowIDs`, which is the app's one piece of authored state.
+        func debugReport(isShown: Bool) -> DebugInspector.SessionReport {
+            DebugInspector.SessionReport(
+                name: connection.sessionName,
+                sessionID: connection.debugSessionID,
+                isShown: isShown,
+                hasSurfaces: !surfaces.isEmpty,
+                activeWindowID: connection.activeWindowID,
+                hiddenWindowIDs: hiddenWindowIDs.sorted(),
+                focusedPaneID: focusedPaneID,
+                reportedGrid: connection.debugLastReportedGrid.map {
+                    DebugInspector.GridSize(columns: $0.columns, rows: $0.rows)
+                },
+                grid: gridView.debugReport(),
+                windows: connection.windows.map {
+                    DebugInspector.WindowReport(
+                        window: $0,
+                        isHiddenFromStrip: hiddenWindowIDs.contains($0.id)
+                    )
+                },
+                surfaces: surfaces.sorted { $0.key < $1.key }.map { paneID, surface in
+                    DebugInspector.SurfaceReport(
+                        paneID: paneID,
+                        hasPrimedHistory: surface.hasPrimedHistory,
+                        isAttached: surface.view.superview != nil,
+                        viewFrame: DebugInspector.Rect(surface.view.frame),
+                        grid: surface.gridMetrics.map {
+                            DebugInspector.GridSize(columns: Int($0.columns), rows: Int($0.rows))
+                        },
+                        cellSizeInPixels: surface.gridMetrics.map {
+                            DebugInspector.Size(CGSize(
+                                width: CGFloat($0.cellWidthPixels),
+                                height: CGFloat($0.cellHeightPixels)
+                            ))
+                        }
+                    )
+                }
+            )
+        }
+    }
+
+#endif

@@ -352,3 +352,25 @@ final class PaneGridView: NSView {
         layoutTree?.panes.first { rect(for: $0.frame).contains(point) }?.id
     }
 }
+
+#if DEBUG
+
+    extension PaneGridView {
+        /// Everything the column count is derived from, so a disagreement with
+        /// tmux can be traced to the number that caused it rather than guessed
+        /// at from a screenshot.
+        func debugReport() -> DebugInspector.GridViewReport {
+            let size = gridSize
+            return DebugInspector.GridViewReport(
+                boundsInPoints: DebugInspector.Rect(bounds),
+                pixelScale: Double(pixelScale),
+                cellSizeInPoints: DebugInspector.Size(cellSize),
+                cellSizeInPixels: DebugInspector.Size(cellPixels),
+                measuredSurfaceOverheadInPixels: DebugInspector.Size(surfaceOverhead),
+                computedGrid: DebugInspector.GridSize(columns: size.columns, rows: size.rows),
+                splitterCount: splitters.count
+            )
+        }
+    }
+
+#endif

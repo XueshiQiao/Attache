@@ -434,6 +434,20 @@ extension TmuxSessionConnection {
     }
 }
 
+#if DEBUG
+
+    // Read-only windows onto state the debug inspector needs and nothing else
+    // has any business seeing. Same file, so `private` still means private
+    // everywhere that matters.
+    extension TmuxSessionConnection {
+        var debugSessionID: String? { sessionID }
+        /// The last size this app sent with `refresh-client -C`, which is what
+        /// tmux should be sizing the session's windows to.
+        var debugLastReportedGrid: (columns: Int, rows: Int)? { lastReportedGrid }
+    }
+
+#endif
+
 // MARK: - Quoting
 
 enum TmuxCommand {

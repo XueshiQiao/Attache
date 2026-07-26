@@ -8,6 +8,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var main: MainViewController?
     private var titleTimer: Timer?
     private var status = "Starting…"
+    #if DEBUG
+        private var inspectorMenuItem: NSMenuItem?
+    #endif
 
     func applicationDidFinishLaunching(_: Notification) {
         installMenu()
@@ -33,6 +36,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refreshTitle()
         }
         main = controller
+
+        #if DEBUG
+            DebugInspector.main = controller
+            if DebugInspectorServer.isEnabledByDefault {
+                TmuxLog.lifecycle(DebugInspectorServer.shared.start())
+                syncInspectorMenuItem()
+            }
+        #endif
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: defaultContentSize),
@@ -69,9 +80,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_: Notification) {
+        TmuxLog.lifecycle("applicationWillTerminate — detaching every connection")
         titleTimer?.invalidate()
         // Detach cleanly. The panes keep running — that is the whole point.
         main?.stop()
+        TmuxLog.lifecycle("teardown complete")
     }
 
     /// The title bar is hidden, so status goes to the sidebar footer instead.
@@ -116,6 +129,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         probeMenu.addItem(run)
         probeItem.submenu = probeMenu
         mainMenu.addItem(probeItem)
+
+        #if DEBUG
+            mainMenu.addItem(makeDebugMenuItem())
+        #endif
 
         NSApp.mainMenu = mainMenu
     }
@@ -196,6 +213,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
+
+    // MARK: - Debug inspection
+
+    #if DEBUG
+
+        /// The view hierarchy and the app's tmux state, dumped somewhere an
+        /// agent can read without a companion GUI. See `DebugInspector`.
+        private func makeDebugMenuItem() -> NSMenuItem {
+            let item = NSMenuItem()
+            let menu = NSMenu(title: "Debug")
+            entry(menu, "Write Inspector Snapshot", "i", [.command, .option], #selector(writeInspectorSnapshot))
+
+            let toggle = NSMenuItem(
+                title: "Inspector Server",
+                action: #selector(toggleInspectorServer),
+                keyEquivalent: "i"
+            )
+            toggle.keyEquivalentModifierMask = [.command, .option, .shift]
+            toggle.target = self
+            menu.addItem(toggle)
+            inspectorMenuItem = toggle
+
+            item.submenu = menu
+            return item
+        }
+
+        @objc private func writeInspectorSnapshot() {
+            switch DebugInspector.writeSnapshot() {
+            case .success(let url):
+                report("Inspector snapshot → \(url.path)")
+            case .failure(let error):
+                report("Inspector snapshot failed: \(error)")
+            }
+        }
+
+        @objc private func toggleInspectorServer() {
+            let server = DebugInspectorServer.shared
+            if server.isRunning {
+                server.stop()
+                DebugInspectorServer.isRememberedOn = false
+                report("Inspector off")
+            } else {
+                DebugInspectorServer.isRememberedOn = true
+                report(server.start())
+            }
+            syncInspectorMenuItem()
+        }
+
+        private func syncInspectorMenuItem() {
+            inspectorMenuItem?.state = DebugInspectorServer.shared.isRunning ? .on : .off
+        }
+
+        /// Two audiences. `TmuxLog` covers the machine one: it writes to stdout,
+        /// where an agent running the binary directly is already looking, and
+        /// to a file that outlives the process. The sidebar footer is for the
+        /// human, and holds until tmux next has something to say.
+        private func report(_ message: String) {
+            TmuxLog.lifecycle(message)
+            status = message
+            refreshTitle()
+        }
+
+    #endif
 
     // MARK: - Errors
 
