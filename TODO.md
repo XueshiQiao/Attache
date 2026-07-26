@@ -57,12 +57,29 @@ libghostty defaults to, and every one of them is hard-coded at the
 
 ### 1.4 The settings window itself
 
-- [ ] A plain `NSWindow` with a tabbed layout is enough; there is no settings UI
-      of any kind yet, so this is greenfield.
+**Follow `AnyDrag`'s settings, which has been through real use.** See
+`~/Code/AnyDrag/AnyDrag/Sources/`. Its shape, and why each piece is there:
+
+- `Preferences.swift` — one place for every `UserDefaults` key, its default, and
+  its migration. Values are clamped on load so a hand-edited defaults entry
+  cannot put the app in an impossible state. Copy this discipline; it is the
+  part that stops settings rotting.
+- `SettingsStore` (an `ObservableObject`, in `PreferencesWindowController.swift`)
+  — the mutable layer. Every setting gets a `setX` that writes the default,
+  pushes the value to whatever consumes it, and mirrors it back onto the
+  published property, so there is exactly one path a change can take.
+- `SettingsChrome.swift` — shared SwiftUI pieces: `optionRow`, `IconTile`,
+  `featureLabel`, `SidebarIcon`, and the `SettingsRootView` sidebar shell. Pages
+  are then almost entirely declarative.
+- One file per page (`GeneralPages`, `GesturePages`, `AboutPage`). Adding a page
+  is adding a file and a sidebar entry.
+
 - [ ] Add ⌘, to the app menu.
 - [ ] Worth exposing while the window exists: scrollback prime size
       (`SessionViewController.scrollbackPrimeLines`), sidebar width, and whether
       closing a tab hides or kills.
+- [ ] An About page is a good place for the throughput probe, which currently
+      hides in a menu called "Measure".
 
 ---
 
@@ -119,7 +136,45 @@ Afterwards:
 
 ---
 
-## 3 · Known defects
+## 3 · Make the UI inspectable by an agent
+
+`LookInsideServer` — the thing item 2 removes — is a UI inspector in the
+[Lookin](https://lookin.work)/Reveal family: the app embeds a server, a
+companion Mac app connects to it, and you get the live view hierarchy with
+frames, layers and properties. Exactly the tool that finds "correct frame, not
+hidden, alpha 1, `draw(_:)` runs, renders nothing" in seconds rather than an
+hour.
+
+It cannot be driven by an agent, though. The server is a closed binary
+XCFramework from a private source repo, the port speaks a custom protocol —
+probed with a plain HTTP request, it returns nothing at all — and only the
+companion GUI understands it. So it is dead weight in this project: a listening
+socket on `127.0.0.1` at every launch, and no way for the thing that actually
+does the debugging here to ask it anything.
+
+The need behind it is real. Build the small version instead:
+
+- [ ] A debug-only view-hierarchy dump: for every view, its class, frame in
+      window coordinates, `isHidden`, `alphaValue`, and the layer's frame and
+      `masksToBounds`. The layer frame is the field that matters — a backing
+      layer larger than its view is what made the tab strip invisible, and no
+      amount of screenshotting reveals it.
+- [ ] Reachable without a GUI. A menu item that writes JSON to a known path is
+      enough and is two dozen lines; a small local HTTP endpoint behind a debug
+      flag is nicer and lets an agent poll while driving the app with
+      `cliclick`. Do not ship either in Release.
+- [ ] Same treatment for tmux state: dump what the app believes about sessions,
+      windows, layouts and pane ids, so it can be diffed against `list-windows`
+      directly. Two bugs so far — the window counts and the crossed session
+      targets — were found by hand-comparing exactly those two things.
+
+This is worth doing before the settings work rather than after. Settings change
+fonts, fonts change cell sizes, cell sizes change the grid, and the grid is the
+thing whose failures are invisible until a TUI redraws.
+
+---
+
+## 4 · Known defects
 
 - [ ] **Probe report blocks the run loop.** It appears in
       `NSAlert.runModal()`, and main-queue work queues up behind the modal run
@@ -140,7 +195,7 @@ Afterwards:
 
 ---
 
-## 4 · Features not started
+## 5 · Features not started
 
 - [ ] **Search** within a pane's scrollback. libghostty has
       `TerminalSurfaceSearchDelegate`; the buffer is already populated.
@@ -156,7 +211,7 @@ Afterwards:
 
 ---
 
-## 5 · Not yet reviewed
+## 6 · Not yet reviewed
 
 The whole codebase was written in one pass with verification-by-running but no
 independent review. A review pass should look hardest at:
