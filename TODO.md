@@ -106,6 +106,13 @@ not read it, which made it pure cost here.
 
 ## 4 · Known defects
 
+- [ ] **A session shown for the first time can stay blank.**
+      `MainViewController.show(sessionNamed:)` never syncs the model itself; it
+      waits for tmux to send a notification. Normally masked, because the
+      `refresh-client -C` that follows triggers a reflow and the reflow
+      notifies. With a window whose size already matches, tmux sends nothing
+      and the pane grid stays empty until something else happens to change.
+      Found while fixing the font relayout, pre-existing and unrelated to it.
 - [ ] **Teardown runs twice per shown session.** `MainViewController.stop()`
       stops each `SessionViewController`, then `server.stop()` stops every
       connection again, so a session that was ever displayed gets
