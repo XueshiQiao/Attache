@@ -27,19 +27,19 @@ final class SessionSidebarView: NSView {
     private let statusLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
 
-    /// Clearance for the traffic lights. The window has no title bar, so the
-    /// content starts at the very top and the buttons float over this rail.
+    /// Where the rail's own content starts.
     ///
-    /// Read from the buttons themselves rather than pinned to a number: their
-    /// size and inset are the system's to choose, and they have changed across
-    /// macOS releases. The fallback only applies before the view has a window.
-    private var trafficLightInset: CGFloat {
-        guard let button = window?.standardWindowButton(.closeButton),
-              let frame = button.superview?.convert(button.frame, to: nil),
-              let height = window?.frame.height
-        else { return 38 }
-        // Button frame is in window coordinates measured from the bottom.
-        return height - frame.minY + 6
+    /// The window has no title bar and the traffic lights float over this rail,
+    /// so something has to clear them. `safeAreaInsets.top` is the system's own
+    /// answer and it is the sidebar split view item that supplies it — which is
+    /// the point of using a real one. This used to read the close button's
+    /// frame and add a constant, and that number was already wrong on macOS 26:
+    /// measured here, the sidebar item's safe area is 42pt, of which the inset
+    /// glass panel the system draws the rail inside has already absorbed 32, so
+    /// the rail itself is told 10. A hand-rolled 38 would have pushed the
+    /// header a further 28pt down for no reason.
+    private var contentTopInset: CGFloat {
+        safeAreaInsets.top + 6
     }
     private var entries = [Entry]()
     private var selectedName: String?
@@ -141,11 +141,11 @@ final class SessionSidebarView: NSView {
         super.layout()
         let inset: CGFloat = 10
         header.frame = CGRect(
-            x: inset + 2, y: trafficLightInset,
+            x: inset + 2, y: contentTopInset,
             width: bounds.width - inset * 2, height: 14
         )
 
-        var y = trafficLightInset + 22
+        var y = contentTopInset + 22
         for row in itemViews {
             row.frame = CGRect(x: 6, y: y, width: bounds.width - 12, height: rowHeight)
             y += rowHeight + gap
@@ -162,9 +162,23 @@ final class SessionSidebarView: NSView {
     /// to grab. Rows and buttons handle their own clicks and opt out.
     override var mouseDownCanMoveWindow: Bool { true }
 
-    override func draw(_: NSRect) {
-        ChromeTheme.current.separator.setFill()
-        CGRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height).fill()
+    /// The rail's fill, and the reason the system sidebar material is not
+    /// visible.
+    ///
+    /// A sidebar split view item paints a vibrant material behind whatever it
+    /// contains, and this covers it. That is the deliberate choice: the point
+    /// of `ChromeTheme` is that the app's chrome follows the terminal scheme,
+    /// and a translucent grey rail beside a Dracula tab strip reads as a piece
+    /// of a different application. The native structure — full height, traffic
+    /// lights on the rail, the divider, drag to resize — is what was wanted
+    /// from the split view, not its colour. Deleting this override is all it
+    /// takes to hand the rail back to the material.
+    ///
+    /// The right-hand hairline that used to be drawn here is gone; the split
+    /// view's own divider is that line now.
+    override func draw(_ dirtyRect: NSRect) {
+        ChromeTheme.current.background.setFill()
+        dirtyRect.fill()
     }
 
     @objc private func newClicked() { onNew?() }

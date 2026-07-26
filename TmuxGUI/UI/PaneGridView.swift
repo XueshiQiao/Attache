@@ -47,6 +47,24 @@ final class PaneGridView: NSView {
     /// because converting to points first and flooring there can land one
     /// cell away from what the surface actually allocates.
     private var cellPixels = CGSize(width: 16, height: 34)
+    /// The cell size `layoutTree` was drawn up for.
+    ///
+    /// Normally identical to `cellSize`. They come apart for one tmux round
+    /// trip after a font change, and keeping them apart is the whole point: a
+    /// layout is a count of *cells*, decided by tmux for the grid it was told
+    /// about. The moment the font changes, `cellSize` becomes the new one and
+    /// the layout in hand is still the old one — multiplying those two
+    /// together places panes for a window that is 20% wider than this view,
+    /// and the overflow is not clipped, so the last pane in each direction
+    /// runs off the edge and the splitters land inside their neighbours.
+    ///
+    /// Placing the old counts at the old size instead keeps the panes tiling
+    /// the view exactly as they did a moment ago — stale, but whole — until
+    /// tmux answers the new `refresh-client -C` with a layout for the new
+    /// grid, which is when this catches up. What tmux is *told* still comes
+    /// from `cellPixels`, so the count the two sides agree on is never the
+    /// stale one.
+    private var layoutCellSize = CGSize(width: 8, height: 17)
     private var splitters = [Splitter]()
     private var activeDrag: (splitter: Splitter, startCells: Int)?
 
@@ -72,9 +90,11 @@ final class PaneGridView: NSView {
     /// Replace the visible pane set. Surfaces are supplied by the owner so
     /// they can outlive a layout change and keep receiving output.
     func setContent(layout: TmuxLayoutNode?, surfaces: [String: TmuxPaneSurface], focused: String?) {
+        let isNewsFromTmux = layout != layoutTree
         layoutTree = layout
         self.surfaces = surfaces
         focusedPaneID = focused
+        adoptCellSizeForLayout(isNewsFromTmux: isNewsFromTmux)
 
         let wanted = Set(layoutTree?.panes.map(\.id) ?? [])
         for view in subviews where !(view is TmuxTerminalView) { view.removeFromSuperview() }
@@ -91,9 +111,17 @@ final class PaneGridView: NSView {
         needsDisplay = true
     }
 
-    func adoptCellSize(from metrics: TerminalGridMetrics) {
+    /// Take a surface's cell size as the app's own.
+    ///
+    /// Answers whether the metrics were usable at all, so the caller's
+    /// once-per-font-change latch closes on a measurement rather than on the
+    /// mere arrival of one. A surface that reports a zero cell — it has been
+    /// asked for its size before it has a font — would otherwise close the
+    /// latch on the old cell size and keep it until the next font change.
+    @discardableResult
+    func adoptCellSize(from metrics: TerminalGridMetrics) -> Bool {
         let scale = pixelScale
-        guard metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0 else { return }
+        guard metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0 else { return false }
         let size = CGSize(
             width: CGFloat(metrics.cellWidthPixels) / scale,
             height: CGFloat(metrics.cellHeightPixels) / scale
@@ -102,7 +130,7 @@ final class PaneGridView: NSView {
             width: CGFloat(metrics.cellWidthPixels),
             height: CGFloat(metrics.cellHeightPixels)
         )
-        guard size != cellSize || pixels != cellPixels else { return }
+        guard size != cellSize || pixels != cellPixels else { return true }
         cellSize = size
         cellPixels = pixels
         // The old overhead was measured against the old cell size and is not a
@@ -114,7 +142,79 @@ final class PaneGridView: NSView {
         // before the next layout pass places them means anything.
         calibrationSuspended = true
         needsLayout = true
-        reportGridSize()
+        if reportGridSize() {
+            // tmux has been asked for a new grid, so a new layout is due and
+            // placement waits for it — but not forever.
+            waitForTmuxThenAdoptAnyway()
+        } else if !isLayoutBehindReportedGrid {
+            // A new cell size that leaves the grid the same size — a font a
+            // hair wider that still fits the same 217 columns — tells tmux
+            // nothing, so there is no layout coming and the new size applies to
+            // the one already in hand. Only when that one is current, though:
+            // an earlier resize still unanswered means a layout is on its way
+            // regardless of what this change did to the count.
+            layoutCellSize = cellSize
+        }
+        return true
+    }
+
+    /// Give tmux a moment to answer the new `refresh-client -C`, then place at
+    /// the new cell size whether it did or not.
+    ///
+    /// tmux is not obliged to resize a window to what a client asks for.
+    /// `resize-window -x` pins one outright, and a second client attached to the
+    /// same session can be the one the size follows. Measured with a window
+    /// pinned to 100x30: the app reports 86x30, tmux says nothing at all, and
+    /// with no deadline the panes stay at the *previous* font's cell size for
+    /// as long as the app runs — while every surface renders the new one. That
+    /// is worse than the overflow this whole mechanism exists to avoid, and it
+    /// is indistinguishable from the bug that started it: the layout stops
+    /// responding to the font.
+    ///
+    /// So the wait is bounded. When tmux cooperates — the ordinary case, and
+    /// the one worth being smooth — the layout arrives in a few milliseconds
+    /// and this finds nothing to do. When it does not, the app goes back to
+    /// showing tmux's real geometry at the real cell size, which is honest
+    /// about the disagreement rather than hiding it behind stale pixels.
+    private func waitForTmuxThenAdoptAnyway() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, self.layoutCellSize != self.cellSize else { return }
+            self.layoutCellSize = self.cellSize
+            self.needsLayout = true
+            self.needsDisplay = true
+        }
+    }
+
+    /// Whether tmux still owes an answer: the layout in hand was drawn for a
+    /// window size other than the one this view last reported.
+    private var isLayoutBehindReportedGrid: Bool {
+        guard let root = layoutTree?.frame, let reported = lastReportedGrid else { return false }
+        return root.columns != reported.0 || root.rows != reported.1
+    }
+
+    /// Switch placement over to the current cell size once tmux has answered
+    /// for it.
+    ///
+    /// The first test is tmux's own: a layout carries the window size it was
+    /// drawn for, so a layout whose root matches the grid this view last
+    /// reported is a layout for the size the app is now rendering at.
+    ///
+    /// The second test is what keeps a disagreement from becoming permanent.
+    /// tmux does not have to answer with the size it was asked for — another
+    /// client attached to the same session can size the window instead — and
+    /// waiting for a match that will never come would leave every pane placed
+    /// at a cell size the surfaces stopped rendering at, forever. So any layout
+    /// tmux has actually changed is taken as its answer, matching or not:
+    /// showing tmux's real geometry at the real cell size is right even when
+    /// the two sides disagree about how many columns there is room for, and it
+    /// converges the moment they agree again.
+    ///
+    /// What is deliberately *not* adopted is a repeat of the layout already in
+    /// hand, which is what arrives when some other notification re-syncs the
+    /// session while the answer is still in flight.
+    private func adoptCellSizeForLayout(isNewsFromTmux: Bool) {
+        guard layoutTree != nil else { return }
+        if isNewsFromTmux || !isLayoutBehindReportedGrid { layoutCellSize = cellSize }
     }
 
     /// Called before something changes the cell size — a font or size change.
@@ -163,10 +263,21 @@ final class PaneGridView: NSView {
     }
 
     /// Backing scale of whatever display the window is on, falling back to the
-    /// main screen and finally to 1 — a non-Retina display is unusual, not
-    /// impossible, and assuming 2 there would halve every measurement.
+    /// main screen and finally to 2.
+    ///
+    /// The final fallback is copied from libghostty rather than chosen. Its
+    /// `core.scaleFactor` — `AppTerminalView.swift`, the closure that produces
+    /// the `cellWidthPixels` `gridSize` divides by — is the same expression
+    /// ending in `?? 2.0`. The two only ever meet as a ratio, so what matters
+    /// is not which number is right but that both sides pick the same one: at
+    /// `?? 1` against its `?? 2.0`, a view with no window on a machine
+    /// reporting no main screen computes half the true column count and hands
+    /// that to tmux, reflowing every window in the session for every client
+    /// attached to it. Nobody has observed `NSScreen.main` being nil here, and
+    /// `reportGridSize` now refuses to speak from a windowless view anyway —
+    /// this is the second of the two locks.
     private var pixelScale: CGFloat {
-        window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+        window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
     }
 
     /// Compare what a surface reports against the frame it was given, and
@@ -174,11 +285,17 @@ final class PaneGridView: NSView {
     /// reports, so the correction keeps itself honest.
     func calibrate(paneID: String, metrics: TerminalGridMetrics) {
         // Both sides have to be counting in the same cell before a difference
-        // between them means anything. A report that still carries the previous
-        // font's cell size — a surface that has not caught up yet — measured
-        // against a `rect(for:)` built from the new one yields a difference
-        // that is entirely the font change and nothing to do with overhead.
+        // between them means anything, and there are two ways for them not to
+        // be. A report that still carries the previous font's cell size — a
+        // surface that has not caught up yet — measured against a `rect(for:)`
+        // built from the new one yields a difference that is entirely the font
+        // change. And the mirror image: while a layout is still the previous
+        // grid's, `rect(for:)` is deliberately built from the *old* cell size
+        // while the surface reports the new one, so the slack between the two
+        // would be banked as overhead. It is small enough to pass the sanity
+        // check below and it sticks, which costs a column for good.
         guard !calibrationSuspended,
+              layoutCellSize == cellSize,
               CGFloat(metrics.cellWidthPixels) == cellPixels.width,
               CGFloat(metrics.cellHeightPixels) == cellPixels.height,
               metrics.cellWidthPixels > 0, metrics.cellHeightPixels > 0,
@@ -252,17 +369,17 @@ final class PaneGridView: NSView {
 
             let rect: CGRect = if vertical {
                 CGRect(
-                    x: CGFloat(frame.x + frame.columns) * cellSize.width,
-                    y: CGFloat(frame.y) * cellSize.height,
-                    width: cellSize.width,
-                    height: CGFloat(frame.rows) * cellSize.height
+                    x: CGFloat(frame.x + frame.columns) * layoutCellSize.width,
+                    y: CGFloat(frame.y) * layoutCellSize.height,
+                    width: layoutCellSize.width,
+                    height: CGFloat(frame.rows) * layoutCellSize.height
                 )
             } else {
                 CGRect(
-                    x: CGFloat(frame.x) * cellSize.width,
-                    y: CGFloat(frame.y + frame.rows) * cellSize.height,
-                    width: CGFloat(frame.columns) * cellSize.width,
-                    height: cellSize.height
+                    x: CGFloat(frame.x) * layoutCellSize.width,
+                    y: CGFloat(frame.y + frame.rows) * layoutCellSize.height,
+                    width: CGFloat(frame.columns) * layoutCellSize.width,
+                    height: layoutCellSize.height
                 )
             }
             splitters.append(Splitter(
@@ -295,20 +412,41 @@ final class PaneGridView: NSView {
     private func rect(for frame: TmuxLayoutFrame) -> CGRect {
         let scale = pixelScale
         return CGRect(
-            x: CGFloat(frame.x) * cellSize.width,
-            y: CGFloat(frame.y) * cellSize.height,
-            width: CGFloat(frame.columns) * cellSize.width + surfaceOverhead.width / scale,
-            height: CGFloat(frame.rows) * cellSize.height + surfaceOverhead.height / scale
+            x: CGFloat(frame.x) * layoutCellSize.width,
+            y: CGFloat(frame.y) * layoutCellSize.height,
+            width: CGFloat(frame.columns) * layoutCellSize.width + surfaceOverhead.width / scale,
+            height: CGFloat(frame.rows) * layoutCellSize.height + surfaceOverhead.height / scale
         )
     }
 
     private var lastReportedGrid: (Int, Int)?
 
-    private func reportGridSize() {
+    /// Answers whether this was news — a caller that has just changed the cell
+    /// size needs to know whether a new layout is on its way or whether tmux
+    /// has nothing to say.
+    @discardableResult
+    private func reportGridSize() -> Bool {
+        // A view with no window has no honest grid to report. Its `bounds` are
+        // whatever they were when it was last on screen and its `pixelScale`
+        // is a guess, yet what comes out of here is sent to tmux and resizes
+        // every window in a live session for every client attached to it.
+        //
+        // This is reachable, and the settings work is what made it so: a font
+        // change runs `applySettings` on *every* session controller, on screen
+        // or not, and libghostty's `synchronizeMetrics` does not check whether
+        // its view is attached — only that the frame is non-empty. So an
+        // off-screen session reports a grid derived from stale bounds. Nothing
+        // is lost by staying quiet: the view reports from `layout()` the moment
+        // it is put back in a window, which is the first point it knows its
+        // real size.
+        guard window != nil else { return false }
         let size = gridSize
-        guard lastReportedGrid?.0 != size.columns || lastReportedGrid?.1 != size.rows else { return }
+        guard lastReportedGrid?.0 != size.columns || lastReportedGrid?.1 != size.rows else {
+            return false
+        }
         lastReportedGrid = (size.columns, size.rows)
         onGridSizeChange?(size.columns, size.rows)
+        return true
     }
 
     // MARK: - Drawing
@@ -325,8 +463,8 @@ final class PaneGridView: NSView {
         theme.separator.setFill()
         for splitter in splitters {
             splitter.rect.insetBy(
-                dx: splitter.isVertical ? cellSize.width * 0.35 : 0,
-                dy: splitter.isVertical ? 0 : cellSize.height * 0.35
+                dx: splitter.isVertical ? layoutCellSize.width * 0.35 : 0,
+                dy: splitter.isVertical ? 0 : layoutCellSize.height * 0.35
             ).fill()
         }
 
@@ -385,9 +523,9 @@ final class PaneGridView: NSView {
         let splitter = activeDrag.splitter
 
         let cells: Int = if splitter.isVertical {
-            Int(round((point.x - splitter.rect.minX) / cellSize.width)) + activeDrag.startCells
+            Int(round((point.x - splitter.rect.minX) / layoutCellSize.width)) + activeDrag.startCells
         } else {
-            Int(round((point.y - splitter.rect.minY) / cellSize.height)) + activeDrag.startCells
+            Int(round((point.y - splitter.rect.minY) / layoutCellSize.height)) + activeDrag.startCells
         }
         guard cells >= 1, cells != splitter.beforeCells else { return }
 
@@ -415,11 +553,27 @@ final class PaneGridView: NSView {
         /// at from a screenshot.
         func debugReport() -> DebugInspector.GridViewReport {
             let size = gridSize
+            let placed = layoutTree.map { tree in
+                CGSize(
+                    width: CGFloat(tree.frame.columns) * layoutCellSize.width
+                        + surfaceOverhead.width / pixelScale,
+                    height: CGFloat(tree.frame.rows) * layoutCellSize.height
+                        + surfaceOverhead.height / pixelScale
+                )
+            }
             return DebugInspector.GridViewReport(
                 boundsInPoints: DebugInspector.Rect(bounds),
                 pixelScale: Double(pixelScale),
                 cellSizeInPoints: DebugInspector.Size(cellSize),
                 cellSizeInPixels: DebugInspector.Size(cellPixels),
+                layoutCellSizeInPoints: DebugInspector.Size(layoutCellSize),
+                layoutGrid: layoutTree.map {
+                    DebugInspector.GridSize(columns: $0.frame.columns, rows: $0.frame.rows)
+                },
+                placedSizeInPoints: placed.map(DebugInspector.Size.init),
+                overflowsBounds: placed.map {
+                    $0.width > bounds.width + 0.5 || $0.height > bounds.height + 0.5
+                } ?? false,
                 measuredSurfaceOverheadInPixels: DebugInspector.Size(surfaceOverhead),
                 computedGrid: DebugInspector.GridSize(columns: size.columns, rows: size.rows),
                 splitterCount: splitters.count

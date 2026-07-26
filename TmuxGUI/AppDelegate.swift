@@ -46,6 +46,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main = controller
 
         #if DEBUG
+            // libghostty's own log, off by default because it is per-frame
+            // chatty. It is the only thing that says *why* a surface did not
+            // come up, and a surface that never reports its cell size leaves
+            // the grid on its placeholder — which looks like a layout bug and
+            // is not one.
+            if ProcessInfo.processInfo.environment["TMUXGUI_GHOSTTY_LOG"] == "1" {
+                TerminalDebugLog.sink = { message in TmuxLog.lifecycle("ghostty: \(message)") }
+                TerminalDebugLog.enable([.lifecycle, .metrics])
+            }
             DebugInspector.main = controller
             if DebugInspectorServer.isEnabledByDefault {
                 TmuxLog.lifecycle(DebugInspectorServer.shared.start())

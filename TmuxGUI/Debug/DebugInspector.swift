@@ -150,20 +150,203 @@
             return encode(SettingsReport(changed: changed.sorted()))
         }
 
-        /// Resize the app's window. Exists so the "does stale state survive a
-        /// resize" question — which is where grid bugs usually surface, on the
-        /// pass *after* the one that broke — can be asked without a pointer.
+        /// Resize or move the app's window. Exists so the "does stale state
+        /// survive a resize" question — which is where grid bugs usually
+        /// surface, on the pass *after* the one that broke — can be asked
+        /// without a pointer.
+        ///
+        /// `position` matters as much as `size`, because looking at the result
+        /// means `screencapture`, and that fails outright on a window sitting
+        /// on a secondary display: both `-R` with a negative x and `-l` on a
+        /// window belonging to another display's Space answer "could not create
+        /// image". `?position=0,0&screen=main` parks the window somewhere a
+        /// capture can reach it.
         static func resizeWindowBody(query: String) -> Data {
             let parameters = parseQuery(query)
-            if let raw = parameters["size"] {
+            let window = NSApp.windows.first { $0.contentViewController === main }
+
+            if let raw = parameters["size"], let window {
                 let parts = raw.lowercased().split(separator: "x")
-                if parts.count == 2, let width = Double(parts[0]), let height = Double(parts[1]),
-                   let window = NSApp.windows.first(where: { $0.contentViewController === main })
-                {
+                if parts.count == 2, let width = Double(parts[0]), let height = Double(parts[1]) {
                     window.setContentSize(NSSize(width: width, height: height))
                 }
             }
+            // Both ordered after the resize: they place a corner, and a resize
+            // afterwards would move the corner that was just placed.
+            if parameters["screen"] == "primary", let window,
+               let primary = NSScreen.screens.first
+            {
+                let frame = window.frame
+                window.setFrameOrigin(NSPoint(
+                    x: primary.visibleFrame.midX - frame.width / 2,
+                    y: primary.visibleFrame.midY - frame.height / 2
+                ))
+            }
+            // Screen coordinates as `screencapture` counts them: from the
+            // top-left of the primary display, y downwards. Asking an agent to
+            // flip the axis itself is how a capture ends up off by the height
+            // of the window.
+            if let raw = parameters["position"], let window,
+               let primary = NSScreen.screens.first
+            {
+                let parts = raw.split(separator: ",")
+                if parts.count == 2, let x = Double(parts[0]), let y = Double(parts[1]) {
+                    window.setFrameTopLeftPoint(NSPoint(x: x, y: primary.frame.maxY - y))
+                }
+            }
             return encode(WindowSizeReport())
+        }
+
+        /// Write a PNG of the app's own window.
+        ///
+        /// `screencapture` is the obvious tool and is not always available: it
+        /// needs Screen Recording consent, which belongs to whatever terminal
+        /// an agent happens to be running under, and without it every form of
+        /// the command — `-R` on a region, `-l` on a window id — fails with
+        /// "could not create image". An agent cannot grant itself that consent,
+        /// so a project whose whole verification story is "take a screenshot
+        /// and look at it" needs a route that does not depend on it.
+        ///
+        /// An app photographing its own window needs no permission, and this
+        /// captures nothing else on the display — strictly less than
+        /// `screencapture` would.
+        ///
+        /// Two methods, because they see different things:
+        ///
+        /// - `window` composites the real window, terminal content included.
+        /// - `view` re-renders the AppKit view tree, which is enough for chrome
+        ///   and misses anything drawn by Metal — every pane comes out empty.
+        ///   Useful precisely for that: it separates "the chrome is wrong" from
+        ///   "the terminal drew nothing".
+        static func screenshotBody(query: String) -> Data {
+            let parameters = parseQuery(query)
+            let path = parameters["path"] ?? "/tmp/tmuxgui/shot.png"
+            let method = parameters["method"] ?? "window"
+
+            // Temporary directories and `.png` only. Writing the file is the
+            // one thing on this endpoint that destroys something, and without a
+            // restriction a plain `GET` names any path the user can write —
+            // `?path=…/README.md` overwrites it with a screenshot, atomically
+            // and without a word. Scratch directories are where a caller wants
+            // the file anyway.
+            let resolved = URL(fileURLWithPath: path).standardizedFileURL.path
+            guard resolved.hasSuffix(".png"),
+                  resolved.hasPrefix("/tmp/") || resolved.hasPrefix("/private/tmp/")
+                  || resolved.hasPrefix("/private/var/folders/")
+            else {
+                return encode(ScreenshotReport(
+                    path: path, method: method,
+                    error: "path must be a .png under /tmp or the system temporary directory"
+                ))
+            }
+
+            guard let window = NSApp.windows.first(where: { $0.contentViewController === main })
+            else { return encode(ScreenshotReport(path: path, method: method, error: "no window")) }
+
+            // `subview=SomeViewClass` renders one view and its own subtree.
+            // The reason it exists: a `view` capture of the whole window
+            // re-renders every sibling, and a system material sibling has no
+            // desktop to sample in a cached render, so it comes out opaque
+            // white over whatever it overlaps. Rendering the component alone
+            // answers "is this view drawing what it should" without the
+            // material in the way.
+            let target = parameters["subview"].flatMap { name in
+                window.contentView.flatMap { Self.firstView(in: $0, named: name) }
+            } ?? (method == "view" ? window.contentView : nil)
+
+            let image: CGImage?
+            if let target, let rep = target.bitmapImageRepForCachingDisplay(in: target.bounds) {
+                target.cacheDisplay(in: target.bounds, to: rep)
+                image = rep.cgImage
+            } else {
+                // Deprecated since macOS 14 in favour of ScreenCaptureKit,
+                // which is asynchronous and — the point of this route — gated
+                // on the very consent that is missing. Still the only
+                // synchronous way to composite one's own window.
+                image = CGWindowListCreateImage(
+                    .null,
+                    .optionIncludingWindow,
+                    CGWindowID(window.windowNumber),
+                    [.boundsIgnoreFraming, .bestResolution]
+                )
+            }
+
+            guard let image else {
+                return encode(ScreenshotReport(path: path, method: method, error: "capture failed"))
+            }
+            let rep = NSBitmapImageRep(cgImage: image)
+            guard let data = rep.representation(using: .png, properties: [:]) else {
+                return encode(ScreenshotReport(path: path, method: method, error: "png encoding failed"))
+            }
+            do {
+                // `resolved`, not `path`: the write has to land on the path the
+                // guard above vetted, or the guard is decoration.
+                let url = URL(fileURLWithPath: resolved)
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                try data.write(to: url, options: .atomic)
+            } catch {
+                return encode(ScreenshotReport(
+                    path: path, method: method, error: String(describing: error)
+                ))
+            }
+            return encode(ScreenshotReport(
+                path: path, method: method,
+                pixelSize: Size(CGSize(width: image.width, height: image.height))
+            ))
+        }
+
+        /// `?session=name` — show a session, the way clicking its row would.
+        ///
+        /// The app opens on whichever session tmux lists first and every other
+        /// one is a click away, so without this the only session an unattended
+        /// run can look at is the alphabetically first — which is rarely the
+        /// one with the interesting layout in it. Non-destructive: it selects,
+        /// exactly like the rail does.
+        static func selectBody(query: String) -> Data {
+            if let name = parseQuery(query)["session"] { main?.show(sessionNamed: name) }
+            return encode(tmuxOnly())
+        }
+
+        /// `?cellPixels=24x50` — hand a grid a cell size, the way a surface
+        /// would after a font change. See
+        /// `SessionViewController.debugAdoptCellSize`.
+        ///
+        /// `&session=name` aims it at a session that is *not* on screen, which
+        /// is the case worth being able to reach: a font change reaches every
+        /// session controller, and an off-screen one's view has no window, no
+        /// current bounds and no honest grid to report.
+        static func gridBody(query: String) -> Data {
+            let parameters = parseQuery(query)
+            let target = parameters["session"].flatMap { main?.debugSessionController(named: $0) }
+                ?? main?.currentSession
+            if let raw = parameters["cellPixels"] {
+                let parts = raw.lowercased().split(separator: "x")
+                if parts.count == 2, let width = UInt32(parts[0]), let height = UInt32(parts[1]),
+                   // Bounded, and not as tidiness. The cell size divides the
+                   // view to produce the grid this app *sends to tmux*: an
+                   // absurd cell floors that division to zero, `gridSize`
+                   // clamps it to one, and the session on screen is told
+                   // `refresh-client -C 1x1` — every window in it reflowed to a
+                   // single cell, with whatever was running inside. A debug
+                   // route that can do that unattended has no business
+                   // existing. The range spans every plausible font size at
+                   // every plausible scale factor.
+                   (2 ... 400).contains(width), (2 ... 400).contains(height)
+                {
+                    target?.debugAdoptCellSize(widthPixels: width, heightPixels: height)
+                }
+            }
+            return encode(tmuxOnly())
+        }
+
+        private static func firstView(in root: NSView, named name: String) -> NSView? {
+            if String(describing: type(of: root)) == name { return root }
+            for subview in root.subviews {
+                if let found = firstView(in: subview, named: name) { return found }
+            }
+            return nil
         }
 
         /// Build the settings window off screen and report what came out.
@@ -311,15 +494,49 @@
             }
         }
 
+        /// Where the PNG went, or why it did not.
+        struct ScreenshotReport: Encodable {
+            let path: String
+            let method: String
+            let pixelSize: Size?
+            let error: String?
+
+            init(path: String, method: String, pixelSize: Size? = nil, error: String? = nil) {
+                self.path = path
+                self.method = method
+                self.pixelSize = pixelSize
+                self.error = error
+            }
+        }
+
         /// The window's content size, so a resize can be confirmed rather than
-        /// assumed.
+        /// assumed, plus everything needed to point `screencapture` at it.
         struct WindowSizeReport: Encodable {
             let contentSize: Size
+            /// AppKit's own frame: global, origin at the primary display's
+            /// bottom-left, y upwards.
+            let windowFrame: Rect
+            /// The same rect in `screencapture`'s space — y downwards from the
+            /// primary display's top-left — ready to paste after `-R`.
+            let captureRegion: String
+            /// Whether that region is on the primary display. `screencapture`
+            /// answers "could not create image from rect" for anything else,
+            /// which reads as a broken command rather than a misplaced window.
+            let isOnPrimaryScreen: Bool
 
             @MainActor
             init() {
                 let window = NSApp.windows.first { $0.contentViewController === DebugInspector.main }
                 contentSize = Size(window?.contentView?.bounds.size ?? .zero)
+                let frame = window?.frame ?? .zero
+                windowFrame = Rect(frame)
+                let primary = NSScreen.screens.first?.frame ?? .zero
+                let top = primary.maxY - frame.maxY
+                captureRegion = "\(Int(frame.minX)),\(Int(top)),\(Int(frame.width)),\(Int(frame.height))"
+                // The whole rect, not its middle: `screencapture` fails on a
+                // region that runs off the primary display at all, so a window
+                // straddling the edge has to answer false.
+                isOnPrimaryScreen = primary.contains(frame)
             }
         }
 
@@ -377,6 +594,10 @@
             let isEffectivelyHidden: Bool
             let alpha: Double
             let wantsLayer: Bool
+            /// `top,left,bottom,right`. The system's own answer to "how far in
+            /// is it safe to draw", and the only honest input for clearing the
+            /// traffic lights. Invisible in every other form of inspection.
+            let safeAreaInsets: String
             let layer: LayerInfo?
             let subviews: [ViewNode]
 
@@ -390,6 +611,8 @@
                 isEffectivelyHidden = hiddenAncestor || view.isHidden
                 alpha = (Double(view.alphaValue) * 1000).rounded() / 1000
                 wantsLayer = view.wantsLayer
+                let insets = view.safeAreaInsets
+                safeAreaInsets = "\(insets.top),\(insets.left),\(insets.bottom),\(insets.right)"
                 layer = view.layer.map { layer in
                     LayerInfo(
                         frame: Rect(layer.frame),
@@ -490,6 +713,19 @@
             let pixelScale: Double
             let cellSizeInPoints: Size
             let cellSizeInPixels: Size
+            /// The cell size the panes are actually placed at. Differs from
+            /// `cellSizeInPoints` only while a font change is waiting for tmux
+            /// to answer with a layout for the new grid.
+            let layoutCellSizeInPoints: Size
+            /// The window size tmux drew the current layout for. When this
+            /// stops matching `computedGrid`, the two sides have stopped
+            /// agreeing and every wrapped line after that breaks in the wrong
+            /// place.
+            let layoutGrid: GridSize?
+            /// What the placed panes add up to. The number nobody had: the
+            /// column counts can all agree while this runs off the view.
+            let placedSizeInPoints: Size?
+            let overflowsBounds: Bool
             let measuredSurfaceOverheadInPixels: Size
             /// What `gridSize` computes right now, before any coalescing.
             let computedGrid: GridSize

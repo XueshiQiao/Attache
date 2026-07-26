@@ -20,6 +20,26 @@
     /// exactly the cost that got the previous inspector removed. Set
     /// `TMUXGUI_INSPECT=1` in the environment, or turn it on in the Debug menu
     /// (which remembers the choice). Debug builds only.
+    ///
+    /// **Who this is protected against.** Not the network: the listener binds
+    /// to 127.0.0.1 and nothing off the machine can open a connection. Verified
+    /// with `lsof -nP -iTCP:47623` against a running Debug build, which reports
+    /// `TCP 127.0.0.1:47623 (LISTEN)` — the previous version of this comment
+    /// asserted it without anyone having looked.
+    ///
+    /// The threat that binding does *not* answer is the browser, which runs on
+    /// this machine and will issue a request on behalf of any page the user
+    /// visits. Reads are left open to it — a cross-origin reply is unreadable
+    /// and there is nothing here worth the friction. Writes are not: they take
+    /// a `POST` carrying `X-TmuxGUI-Inspect`, a pair no page can produce
+    /// without a preflight this server never answers. `Origin` is refused
+    /// outright and `Host` must be the loopback address this was reached at,
+    /// which is what closes DNS rebinding.
+    ///
+    /// **Anything else running as this user can still call it.** Loopback is
+    /// not an authentication boundary and this has no credential. That is the
+    /// deliberate line: the endpoint exists so an agent driving the app can
+    /// read and steer it, and it only exists in Debug builds.
     @MainActor
     final class DebugInspectorServer {
         static let shared = DebugInspectorServer()
@@ -106,7 +126,14 @@
 
         private func describeEndpoint() -> String {
             let port = port ?? Self.configuredPort
-            return "http://127.0.0.1:\(port)/ — also /views, /tmux, /settings, /window and /settings-window"
+            return "Inspector http://127.0.0.1:\(port)"
+                + " — GET /, /views, /tmux, /settings, /settings-window, and any"
+                + " write route with no query. Changing something needs"
+                + " POST -H '\(Self.writeHeader): 1':"
+                + " /settings (?fontSize=18&darkTheme=Dracula&…),"
+                + " /window (?size=1200x800&screen=primary&position=x,y),"
+                + " /select (?session=name), /grid (?cellPixels=24x50),"
+                + " /shot (?path=….png&method=window|view&subview=Class)"
         }
 
         // MARK: - Requests
@@ -116,9 +143,11 @@
             receive(on: connection, accumulated: Data())
         }
 
-        /// Read until the end of the request head. Every route is a `GET` with
-        /// no body, so a blank line is the whole story; the 64 KB ceiling is
-        /// there so a malformed client cannot make the app grow without bound.
+        /// Read until the end of the request head. Every route takes its
+        /// parameters in the query string, so the head is the whole story even
+        /// for the writes, which are `POST`s — a body, if one is sent, is
+        /// ignored and left unread. The 64 KB ceiling is there so a malformed
+        /// client cannot make the app grow without bound.
         private func receive(on connection: NWConnection, accumulated: Data) {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] chunk, _, isComplete, error in
                 var buffer = accumulated
@@ -142,22 +171,90 @@
             }
         }
 
-        private func respond(to head: Data, on connection: NWConnection) {
-            let requestLine = String(decoding: head, as: UTF8.self)
-                .components(separatedBy: "\r\n").first ?? ""
-            let fields = requestLine.split(separator: " ", omittingEmptySubsequences: true)
+        /// Routes that change something when given parameters: a setting, the
+        /// window's frame, which session is shown, the grid's cell size. With
+        /// an empty query each one only reports, so each one is still a read.
+        private static let writeRoutes: Set<String> = [
+            "/settings", "/window", "/select", "/grid",
+        ]
 
-            guard fields.count >= 2, fields[0] == "GET" else {
-                send(status: "405 Method Not Allowed", body: Data("only GET\n".utf8),
+        /// `/shot` is the exception: it writes a PNG whether or not it was told
+        /// where, so there is no parameterless read of it.
+        private static let alwaysWriteRoutes: Set<String> = ["/shot"]
+
+        /// Header a write has to carry. Its value is irrelevant; its presence
+        /// is the whole point. See `respond`.
+        private static let writeHeader = "x-tmuxgui-inspect"
+
+        private func respond(to head: Data, on connection: NWConnection) {
+            let lines = String(decoding: head, as: UTF8.self).components(separatedBy: "\r\n")
+            let fields = (lines.first ?? "").split(separator: " ", omittingEmptySubsequences: true)
+            var headers = [String: String]()
+            for line in lines.dropFirst() {
+                guard let colon = line.firstIndex(of: ":") else { continue }
+                headers[line[..<colon].lowercased()] = line[line.index(after: colon)...]
+                    .trimmingCharacters(in: .whitespaces)
+            }
+
+            guard fields.count >= 2, fields[0] == "GET" || fields[0] == "POST" else {
+                send(status: "405 Method Not Allowed", body: Data("only GET and POST\n".utf8),
                      contentType: "text/plain", on: connection)
                 return
             }
+            let method = String(fields[0])
 
             let target = fields[1].split(separator: "?", maxSplits: 1)
             let path = String(target.first ?? "/")
             let query = target.count > 1 ? String(target[1]) : ""
 
-            // The two routes that take parameters, and the two that write.
+            // Binding to loopback keeps this off the network — verified with
+            // `lsof -nP -iTCP:47623`, which shows `127.0.0.1:47623 (LISTEN)`
+            // rather than `*:47623`. What it does not keep out is the browser,
+            // which is already on the machine: any page the user visits can
+            // make their browser issue this request. A mutating `GET` needs
+            // nothing but `<img src="http://127.0.0.1:47623/settings?fontSize=6">`
+            // to fire — no script, no reply read, no consent. A font size that
+            // small is destructive by this project's measure: it changes the
+            // column count, and the app hands that straight to tmux.
+            //
+            // So a write must carry two things a cross-origin request cannot
+            // produce. `POST` rules out `<img>`, `<script>` and every other
+            // markup-only trigger. The custom header rules out the form that
+            // can still POST across origins: setting a header makes the browser
+            // preflight, and nothing here answers `OPTIONS`. Reads stay plain
+            // `GET`s, because being reachable with a bare `curl` is what they
+            // are for — and a reply nothing can read is not worth defending.
+            let isWrite = Self.alwaysWriteRoutes.contains(path)
+                || (Self.writeRoutes.contains(path) && !query.isEmpty)
+            if isWrite, method != "POST" || headers[Self.writeHeader] == nil {
+                send(
+                    status: "405 Method Not Allowed",
+                    body: Data("\(path) changes something: POST it with the \(Self.writeHeader) header\n".utf8),
+                    contentType: "text/plain", on: connection
+                )
+                return
+            }
+            // Separately from the above: `Origin` is present on exactly the
+            // requests a page made, and absent from the ones a terminal made.
+            // Refusing it costs a real caller nothing.
+            if headers["origin"] != nil {
+                send(status: "403 Forbidden", body: Data("no cross-origin requests\n".utf8),
+                     contentType: "text/plain", on: connection)
+                return
+            }
+            // And a `Host` this listener could actually have been reached at.
+            // A name that resolves to 127.0.0.1 is how DNS rebinding turns a
+            // page's own origin into this one, and it arrives carrying that
+            // name rather than the address.
+            let port = self.port ?? Self.configuredPort
+            if let host = headers["host"],
+               host != "127.0.0.1:\(port)", host != "localhost:\(port)", host != "[::1]:\(port)"
+            {
+                send(status: "403 Forbidden", body: Data("unexpected Host\n".utf8),
+                     contentType: "text/plain", on: connection)
+                return
+            }
+
             if path == "/settings" {
                 send(status: "200 OK", body: DebugInspector.settingsBody(query: query),
                      contentType: "application/json", on: connection)
@@ -165,6 +262,21 @@
             }
             if path == "/window" {
                 send(status: "200 OK", body: DebugInspector.resizeWindowBody(query: query),
+                     contentType: "application/json", on: connection)
+                return
+            }
+            if path == "/select" {
+                send(status: "200 OK", body: DebugInspector.selectBody(query: query),
+                     contentType: "application/json", on: connection)
+                return
+            }
+            if path == "/grid" {
+                send(status: "200 OK", body: DebugInspector.gridBody(query: query),
+                     contentType: "application/json", on: connection)
+                return
+            }
+            if path == "/shot" {
+                send(status: "200 OK", body: DebugInspector.screenshotBody(query: query),
                      contentType: "application/json", on: connection)
                 return
             }
@@ -177,7 +289,7 @@
             guard let body = DebugInspector.body(forPath: path) else {
                 send(
                     status: "404 Not Found",
-                    body: Data("no such route. try /, /views, /tmux, /settings, /window or /settings-window\n".utf8),
+                    body: Data("no such route. read: /, /views, /tmux, /settings-window. write (POST + X-TmuxGUI-Inspect): /settings, /window, /select, /grid, /shot\n".utf8),
                     contentType: "text/plain",
                     on: connection
                 )

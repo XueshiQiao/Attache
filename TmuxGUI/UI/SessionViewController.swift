@@ -368,9 +368,13 @@ final class SessionViewController: NSViewController {
         )
         surface.onGridMetrics = { [weak self] metrics in
             guard let self else { return }
+            // The latch closes on a measurement, not on the arrival of one.
+            // Setting it first and letting `adoptCellSize` reject the metrics
+            // leaves the app on the previous font's cell size with no way back
+            // until the next font change — the grid it reports to tmux would
+            // then be right about the window and wrong about the font.
             if !self.adoptedCellSize {
-                self.adoptedCellSize = true
-                self.gridView.adoptCellSize(from: metrics)
+                self.adoptedCellSize = self.gridView.adoptCellSize(from: metrics)
             }
             self.gridView.calibrate(paneID: paneID, metrics: metrics)
         }
@@ -409,6 +413,28 @@ final class SessionViewController: NSViewController {
 #if DEBUG
 
     extension SessionViewController {
+        /// Feed the grid a cell size as though a surface had just reported one.
+        ///
+        /// A font change is only observable through libghostty: it measures the
+        /// new cell and announces it, and everything downstream — the grid the
+        /// app reports, tmux's reflow, the layout that comes back — hangs off
+        /// that one number. libghostty needs a live GPU surface to produce it,
+        /// which rules the whole path out on any machine that cannot give it
+        /// one; a locked screen is enough. This substitutes the number and
+        /// leaves every other step real, so "does the app recover from a cell
+        /// size change" can be answered without a font, a pointer, or a screen.
+        ///
+        /// It is a simulation of one input, not of the font change. It says
+        /// nothing about whether libghostty reports the size this argues about.
+        func debugAdoptCellSize(widthPixels: UInt32, heightPixels: UInt32) {
+            gridView.prepareForCellSizeChange()
+            gridView.adoptCellSize(from: TerminalGridMetrics(
+                columns: 0, rows: 0, widthPixels: 0, heightPixels: 0,
+                cellWidthPixels: widthPixels, cellHeightPixels: heightPixels
+            ))
+            gridView.needsLayout = true
+        }
+
         /// What this controller believes about its session, next to what tmux
         /// told it. The two should be identical everywhere except
         /// `hiddenWindowIDs`, which is the app's one piece of authored state.
