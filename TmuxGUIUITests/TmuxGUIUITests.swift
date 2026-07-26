@@ -1,7 +1,7 @@
 import XCTest
 import AppKit
 
-final class GhosttyTerminalAppUITests: XCTestCase {
+final class TmuxGUIUITests: XCTestCase {
     private var app: XCUIApplication!
     private var systemAlertMonitor: NSObjectProtocol?
 
