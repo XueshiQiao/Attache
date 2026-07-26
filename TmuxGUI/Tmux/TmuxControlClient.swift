@@ -108,8 +108,10 @@ final class TmuxControlClient {
     /// Send a command and ignore its reply.
     ///
     /// `caller` is captured by the compiler at the call site and carried into
-    /// the log. It is the difference between knowing a `kill-window` went out
-    /// and knowing whether the tab strip or the throughput probe sent it.
+    /// the log. It resolves to the *immediate* caller, so it distinguishes
+    /// `killWindow(id:)` from `runThroughputProbe` — two very different reasons
+    /// for a `kill-window` to go out. It does not distinguish which UI reached
+    /// `killWindow`, because the tab strip and the menu both route through it.
     func send(_ command: String, caller: StaticString = #function) {
         enqueue(command, caller: caller, completion: nil)
     }
@@ -136,9 +138,19 @@ final class TmuxControlClient {
         send("refresh-client -C \(columns)x\(rows)")
     }
 
-    /// The one gate every command passes through, which is why the log lives
-    /// here: a command that reaches tmux without a line in the file would have
-    /// to bypass this function, and nothing does.
+    /// The gate every command from the UI passes through, which is why the log
+    /// lives here.
+    ///
+    /// Three things reach tmux without coming through it, and they are listed
+    /// because an earlier version of this comment said nothing did, which is
+    /// the kind of claim someone later relies on:
+    ///
+    /// - `stop()` writes `detach-client` straight to the pipe. It logs, but as
+    ///   a DESTRUCTIVE line rather than in the command format.
+    /// - `TmuxControlClient.listSessions` spawns its own `tmux list-sessions`,
+    ///   and logs nothing at all. Read-only, so nothing it does can be the
+    ///   cause of a disappearance.
+    /// - `TmuxServer.newSession` spawns `tmux new-session -d`, and logs itself.
     ///
     /// Logged before the write, not after. If the write is the last thing this
     /// process ever does, the record still exists.

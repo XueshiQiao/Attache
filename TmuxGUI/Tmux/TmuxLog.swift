@@ -19,6 +19,13 @@ import Foundation
 ///
 /// Keystrokes are never recorded. `send-keys` carries whatever the user typed,
 /// a password prompt included; only its size is logged.
+///
+/// That is the only redaction, and it is worth being exact about the limit:
+/// `rename-window` and `rename-session` carry text the user typed and it is
+/// logged verbatim. A window name is not a secret — it is in every `tmux ls`
+/// and drawn on the tab — and a rename is a write operation, which is what
+/// this file exists to record. But "keystrokes are never recorded" would be
+/// too strong a reading, so: keystrokes *sent to a pane* are never recorded.
 enum TmuxLog {
     /// How much damage a command can do.
     ///

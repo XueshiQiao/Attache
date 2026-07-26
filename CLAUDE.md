@@ -113,7 +113,7 @@ directory is the target member, so a new file compiles without editing
 
 ## Verifying a change
 
-Reading the code is not verification. Three things actually work:
+Reading the code is not verification. Four things actually work:
 
 **The layout parser has a cross-check against a live server.** It walks every
 window tmux currently has and compares parsed geometry against `list-panes`.
@@ -123,6 +123,23 @@ Run it after touching `TmuxLayout.swift`:
 swiftc -O -o /tmp/layoutcheck TmuxGUI/Tmux/TmuxLayout.swift Tools/LayoutCheck/main.swift
 /tmp/layoutcheck
 ```
+
+**`TerminalReply` has one too, and it is the file with the worst record in the
+project.** It decides which bytes never reach the user's pane, so a false
+positive there is a keystroke the app silently ate. Three defects shipped from
+it in a single day — a cursor-position report that is byte-identical to
+Shift-F3, a mouse filter that also swallowed the scroll wheel, and a digit run
+that overflowed and killed the process. Every one would have been caught by a
+case in this table. Run it after touching `TerminalReply.swift`, and add the
+case *before* the fix:
+
+```sh
+swiftc -O -o /tmp/replycheck TmuxGUI/Tmux/TerminalReply.swift Tools/ReplyCheck/main.swift
+/tmp/replycheck
+```
+
+The half that matters is `keystrokes`. A reply that leaks is a cosmetic
+nuisance; a key that vanishes is the failure the file exists to prevent.
 
 **tmux itself is the oracle for anything protocol-shaped.** Before writing code
 against a notification or a command, run it: `tmux -C attach -t '=name'` over a
