@@ -87,6 +87,11 @@ can neither spawn tmux nor reach its socket under `/private/tmp/tmux-<uid>/`.
 `libghostty-spm` is a submodule pinned to a known-good commit. After cloning:
 `git submodule update --init --recursive`.
 
+The `.xcodeproj` is still hand-maintained — it was copied from the libghostty
+sample and edited by hand. Migrating it to XcodeGen is item 2 in TODO.md; until
+that lands, treat the pbxproj as something to change deliberately and check,
+not something to let a tool rewrite.
+
 ## Verifying a change
 
 Reading the code is not verification. Three things actually work:
