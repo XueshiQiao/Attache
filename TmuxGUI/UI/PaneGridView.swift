@@ -69,7 +69,7 @@ final class PaneGridView: NSView {
         focusedPaneID = focused
 
         let wanted = Set(layoutTree?.panes.map(\.id) ?? [])
-        for view in subviews where !(view is TerminalView) { view.removeFromSuperview() }
+        for view in subviews where !(view is TmuxTerminalView) { view.removeFromSuperview() }
         for (paneID, surface) in surfaces {
             if wanted.contains(paneID) {
                 if surface.view.superview !== self { addSubview(surface.view) }

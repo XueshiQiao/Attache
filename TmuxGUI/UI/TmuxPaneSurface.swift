@@ -6,6 +6,25 @@
 import Cocoa
 import GhosttyTerminal
 
+/// A terminal surface that lets the app's menu claim ⌘ combinations first.
+///
+/// libghostty's view treats ⌘ keys as candidates for its own keybinds and
+/// consumes them before the main menu is consulted, which silently kills ⌘T,
+/// ⌘W and ⌘1-9. Those are the native half of the promise that a tmux `prefix`
+/// binding and a Mac shortcut both work, so the menu gets first refusal and
+/// the terminal only sees what the menu declines. ⌘C and ⌘V still reach the
+/// terminal because the Edit menu routes them back down the responder chain.
+final class TmuxTerminalView: TerminalView {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command),
+           NSApp.mainMenu?.performKeyEquivalent(with: event) == true
+        {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
 /// One tmux pane, rendered by one libghostty surface.
 ///
 /// The surface never learns it is talking to tmux. It asks for bytes through
@@ -14,7 +33,7 @@ import GhosttyTerminal
 @MainActor
 final class TmuxPaneSurface {
     let paneID: String
-    let view: TerminalView
+    let view: TmuxTerminalView
     let terminalSession: InMemoryTerminalSession
 
     /// Cell geometry from the last resize. The pane grid needs it to place
@@ -37,7 +56,7 @@ final class TmuxPaneSurface {
         self.paneID = paneID
         self.sendKeys = sendKeys
 
-        view = TerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        view = TmuxTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
 
         // The surface's own resize callback is deliberately NOT wired to
         // `refresh-client`: a pane's size is decided by tmux's layout, not by

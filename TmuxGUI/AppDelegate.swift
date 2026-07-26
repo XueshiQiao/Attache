@@ -116,6 +116,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
 
+        mainMenu.addItem(makeWindowMenuItem())
+
         let probeItem = NSMenuItem()
         let probeMenu = NSMenu(title: "测量")
         let run = NSMenuItem(
@@ -129,6 +131,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(probeItem)
 
         NSApp.mainMenu = mainMenu
+    }
+
+    /// Native shortcuts for the things a tab strip should do.
+    ///
+    /// These sit alongside the user's tmux `prefix` bindings rather than
+    /// replacing them: ⌘T and `prefix + c` both end up calling `new-window`,
+    /// and the strip updates the same way whichever one was used. Nothing here
+    /// intercepts a key the terminal needs — ⌘ is free because tmux and the
+    /// programs inside it only ever see Control and Escape sequences.
+    private func makeWindowMenuItem() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "窗口")
+
+        func add(_ title: String, _ key: String, _ mask: NSEvent.ModifierFlags, _ action: Selector, tag: Int = 0) {
+            let entry = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            entry.keyEquivalentModifierMask = mask
+            entry.target = self
+            entry.tag = tag
+            menu.addItem(entry)
+        }
+
+        add("新建窗口", "t", [.command], #selector(newWindow))
+        add("隐藏当前标签", "w", [.command], #selector(hideCurrentWindow))
+        menu.addItem(.separator())
+        add("下一个窗口", "]", [.command, .shift], #selector(nextWindow))
+        add("上一个窗口", "[", [.command, .shift], #selector(previousWindow))
+        menu.addItem(.separator())
+        for slot in 1 ... 9 {
+            add("切到第 \(slot) 个", "\(slot)", [.command], #selector(selectWindowSlot(_:)), tag: slot)
+        }
+
+        item.submenu = menu
+        return item
+    }
+
+    @objc private func newWindow() { sessionController?.newWindow() }
+    @objc private func hideCurrentWindow() { sessionController?.hideActiveWindow() }
+    @objc private func nextWindow() { sessionController?.selectAdjacentWindow(offset: 1) }
+    @objc private func previousWindow() { sessionController?.selectAdjacentWindow(offset: -1) }
+
+    @objc private func selectWindowSlot(_ sender: NSMenuItem) {
+        sessionController?.selectWindow(atVisibleSlot: sender.tag - 1)
     }
 
     @objc private func runThroughputProbe() {

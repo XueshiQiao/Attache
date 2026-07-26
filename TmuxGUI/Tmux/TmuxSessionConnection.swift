@@ -132,12 +132,19 @@ final class TmuxSessionConnection {
         client.send("rename-window -t \(id) \(TmuxCommand.quote(name))")
     }
 
-    /// Move a window to a new index. `-r` renumbers the rest so indexes stay
-    /// contiguous, which is what makes ⌘1-9 keep matching the tab order.
+    /// Move a window to a new index, then renumber.
+    ///
+    /// `-b` inserts *before* the target and shuffles the rest up, which is the
+    /// behaviour a tab drag implies; a plain move to an occupied index fails.
+    /// The follow-up `-r` closes the gaps so indexes stay contiguous — that is
+    /// what keeps ⌘1-9 matching what the strip shows.
+    ///
+    /// The target has to be `session:index`; without the colon tmux reads
+    /// `$10` plus `4` as the single token `$104` and silently does nothing.
     func moveWindow(id: String, toIndex index: Int) {
         guard let target = sessionTarget else { return }
-        client.send("move-window -d -s \(id) -t \(target)\(index)")
-        client.send("move-window -r -s \(target) -t \(target)")
+        client.send("move-window -b -d -s \(id) -t \(target):\(index)")
+        client.send("move-window -r -t \(target)")
     }
 
     /// Resize a pane to an exact cell size — used when the user drags a
