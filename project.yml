@@ -1,0 +1,115 @@
+name: TmuxGUI
+
+options:
+  bundleIdPrefix: dev.xueshi
+  deploymentTarget:
+    macOS: "13.0"
+  # `syncedFolder` sources below need 2.44.
+  minimumXcodeGenVersion: "2.44.0"
+
+packages:
+  # A git submodule, not a remote package. `git submodule update --init
+  # --recursive` has to have run or this path does not exist and generation
+  # fails.
+  libghostty-spm:
+    path: Vendor/libghostty-spm
+
+schemes:
+  TmuxGUI:
+    build:
+      targets:
+        TmuxGUI: all
+
+targets:
+  TmuxGUI:
+    type: application
+    platform: macOS
+    sources:
+      # `syncedFolder` is Xcode 16's PBXFileSystemSynchronizedRootGroup: the
+      # directory itself is the target member, so adding a .swift file compiles
+      # it without anything here changing. Do not expand this into a file list —
+      # that is the churn this migration exists to remove. AppIcon.icon stays
+      # whole for the same reason.
+      - path: TmuxGUI
+        type: syncedFolder
+    dependencies:
+      # The package vends four libraries and the app links all four. `product:`
+      # (singular) takes one name; a bare `- package: libghostty-spm` would look
+      # for a product called libghostty-spm, which does not exist.
+      - package: libghostty-spm
+        products: [GhosttyKit, GhosttyTerminal, GhosttyTheme, ShellCraftKit]
+    postBuildScripts:
+      # Named by path rather than pasted in here: the body is shell, and a YAML
+      # block scalar mangles indentation-sensitive text quietly. XcodeGen copies
+      # the file's contents into the generated phase, so editing the .sh does
+      # nothing until `xcodegen generate` runs again.
+      # basedOnDependencyAnalysis: false mirrors alwaysOutOfDate = 1 in the phase
+      # this replaces — the script has no declared inputs or outputs, so Xcode
+      # would otherwise skip it.
+      - path: Scripts/normalize-libghostty.sh
+        name: Normalize libghostty Framework
+        shell: /bin/sh
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.xueshi.TmuxGUI
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+        # TmuxGUI/Entitlement.entitlements is an empty <dict/>. The sandbox is
+        # off because of ENABLE_APP_SANDBOX alone, and it has to stay off: a
+        # sandboxed process can neither spawn tmux nor reach its socket under
+        # /private/tmp/tmux-<uid>/. Dropping this setting fails at launch, not
+        # at build, so a green build does not catch it.
+        CODE_SIGN_ENTITLEMENTS: TmuxGUI/Entitlement.entitlements
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 964G86XT2P
+
+        # Xcode's Signing & Capabilities toggles, carried over verbatim from the
+        # old pbxproj. They describe entitlements that only exist under the
+        # sandbox, so with it off nothing here is believed to change; they are
+        # kept rather than pruned because that belief was not tested.
+        ENABLE_INCOMING_NETWORK_CONNECTIONS: YES
+        ENABLE_OUTGOING_NETWORK_CONNECTIONS: YES
+        ENABLE_USER_SELECTED_FILES: readonly
+        REGISTER_APP_GROUPS: YES
+
+        SWIFT_VERSION: "5.0"
+        SWIFT_APPROACHABLE_CONCURRENCY: YES
+        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+        SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+        STRING_CATALOG_GENERATE_SYMBOLS: YES
+      configs:
+        Debug:
+          # Debug only, exactly as the old pbxproj had it. Debug is the only
+          # configuration where the normalize script does any work, and what it
+          # does is write into TARGET_BUILD_DIR with no declared outputs — the
+          # thing script sandboxing exists to stop.
+          ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+# TmuxGUIUITests/ is deliberately not a target here. The one test in it asserts
+# that the app launches and reaches live tmux state, which needs a tmux server in
+# a known state to mean anything — see TODO.md. The file is kept so whoever
+# writes that gets a starting point; adding it back is a `type:
+# bundle.ui-testing` target with `dependencies: [- target: TmuxGUI]`.
+
+settings:
+  base:
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    GCC_C_LANGUAGE_STANDARD: gnu17
+    CLANG_CXX_LANGUAGE_STANDARD: "gnu++20"
+  configs:
+    Debug:
+      # Guards TmuxGUI/Debug/, the inspector, and every #if DEBUG path in
+      # TmuxLog and TmuxPaneSurface. Lose it and all of that compiles to
+      # nothing, with no error.
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG $(inherited)"
+      GCC_PREPROCESSOR_DEFINITIONS: ["DEBUG=1", "$(inherited)"]

@@ -17,12 +17,12 @@
 import Foundation
 
 let replies: [(String, Data)] = [
-    ("SGR mouse press", Data("\u{1b}[<35;100;20M".utf8)),
-    ("SGR mouse release", Data("\u{1b}[<0;5;5m".utf8)),
-    ("SGR mouse, two in one write", Data("\u{1b}[<35;1;1M\u{1b}[<35;2;1M".utf8)),
-    ("X10 mouse", Data([0x1b, 0x5b, 0x4d, 0x20, 0x21, 0x22])),
-    ("X10 mouse carrying an ESC byte", Data([0x1b, 0x5b, 0x4d, 0x20, 0x1b, 0x22])),
-    ("urxvt mouse (1015)", Data("\u{1b}[35;100;20M".utf8)),
+    ("SGR bare motion", Data("\u{1b}[<35;100;20M".utf8)),
+    ("SGR bare motion, shift held", Data("\u{1b}[<39;100;20M".utf8)),
+    ("SGR bare motion, two in one write", Data("\u{1b}[<35;1;1M\u{1b}[<35;2;1M".utf8)),
+    ("X10 bare motion", Data([0x1b, 0x5b, 0x4d, 0x23 + 32, 0x21, 0x22])),
+    ("X10 bare motion carrying an ESC byte", Data([0x1b, 0x5b, 0x4d, 0x23 + 32, 0x1b, 0x22])),
+    ("urxvt bare motion (1015)", Data("\u{1b}[67;100;20M".utf8)),
     ("extended cursor position report (DECXCPR)", Data("\u{1b}[?57;190R".utf8)),
     ("primary device attributes", Data("\u{1b}[?62;22;52c".utf8)),
     ("secondary device attributes", Data("\u{1b}[>1;4000;29c".utf8)),
@@ -70,6 +70,21 @@ let keystrokes: [(String, Data)] = [
     ("ctrl-F3", Data("\u{1b}[1;5R".utf8)),
     ("plain cursor position report — leaks, see TerminalReply", Data("\u{1b}[57;190R".utf8)),
     ("DCS terminated by BEL is not a complete reply", Data("\u{1b}P1+r5463\u{07}".utf8)),
+
+    // Everything below is the user doing something with the mouse. Withholding
+    // any of it is how scrolling died the first time round: a wheel turn is a
+    // mouse report, so a filter that drops mouse reports drops scrolling.
+    ("wheel up", Data("\u{1b}[<64;10;5M".utf8)),
+    ("wheel down", Data("\u{1b}[<65;10;5M".utf8)),
+    ("wheel down, ctrl held", Data("\u{1b}[<81;10;5M".utf8)),
+    ("left press", Data("\u{1b}[<0;10;5M".utf8)),
+    ("left release", Data("\u{1b}[<0;10;5m".utf8)),
+    ("middle press", Data("\u{1b}[<1;10;5M".utf8)),
+    ("right press", Data("\u{1b}[<2;10;5M".utf8)),
+    ("drag with left held", Data("\u{1b}[<32;10;5M".utf8)),
+    ("X10 left press", Data([0x1b, 0x5b, 0x4d, 0x20, 0x21, 0x22])),
+    ("X10 wheel up", Data([0x1b, 0x5b, 0x4d, 0x60, 0x21, 0x22])),
+    ("urxvt left press (1015)", Data("\u{1b}[32;100;20M".utf8)),
 ]
 
 var failures = 0

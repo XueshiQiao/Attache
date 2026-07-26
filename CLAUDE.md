@@ -71,6 +71,7 @@ tab hides it. A window may have an agent mid-run; there is no undo.
 ## Building and running
 
 ```sh
+xcodegen generate            # only when project.yml changed, or after a fresh clone
 xcodebuild -project TmuxGUI.xcodeproj -scheme TmuxGUI -configuration Debug \
   -destination 'platform=macOS,arch=arm64' -derivedDataPath /tmp/dd \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
@@ -87,10 +88,24 @@ can neither spawn tmux nor reach its socket under `/private/tmp/tmux-<uid>/`.
 `libghostty-spm` is a submodule pinned to a known-good commit. After cloning:
 `git submodule update --init --recursive`.
 
-The `.xcodeproj` is still hand-maintained — it was copied from the libghostty
-sample and edited by hand. Migrating it to XcodeGen is item 2 in TODO.md; until
-that lands, treat the pbxproj as something to change deliberately and check,
-not something to let a tool rewrite.
+**`project.yml` is the project; `TmuxGUI.xcodeproj` is a build artifact.**
+It is gitignored and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+(`brew install xcodegen`) regenerates it. Change a build setting in `project.yml`
+and regenerate — a change made in Xcode's build-settings editor lasts until the
+next `xcodegen generate` and then vanishes, with no sign it was ever there.
+
+Two things in `project.yml` are load-bearing and fail at *launch* rather than at
+build, so a green build does not tell you they are still right:
+
+- `ENABLE_APP_SANDBOX: NO`. `TmuxGUI/Entitlement.entitlements` is an empty
+  `<dict/>`, so this setting is the only thing keeping the sandbox off.
+- `SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG $(inherited)"` on the Debug
+  config. Without it `TmuxGUI/Debug/` and every `#if DEBUG` path compiles away
+  silently and the inspector is simply not there.
+
+`TmuxGUI/` is listed as a `syncedFolder`, Xcode 16's synchronized group: the
+directory is the target member, so a new file compiles without editing
+`project.yml`. Do not turn it into a file list.
 
 ## Verifying a change
 

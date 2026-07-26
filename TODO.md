@@ -44,54 +44,46 @@ That is the combination this project keeps finding bugs in.
 
 ---
 
-## 2 · Generate the Xcode project from `project.yml`
+## 2 · Generate the Xcode project from `project.yml` — done
 
-`TmuxGUI.xcodeproj` is currently hand-maintained — it was copied from
-libghostty-spm's sample app and edited with `sed`. That is workable for one
-person for a week and bad for everything after: the pbxproj is unreviewable in
-a diff, merge conflicts in it are unresolvable by hand, and the settings that
-actually matter are buried among a few hundred lines of generated noise.
+`project.yml` is the project now; `TmuxGUI.xcodeproj` is gitignored and
+`xcodegen generate` rebuilds it. Everything the hand-maintained pbxproj carried
+came across: the "Normalize libghostty Framework" post-build script (its body
+now lives in `Scripts/normalize-libghostty.sh`, which `project.yml` names by
+path and XcodeGen inlines into the generated phase), `ENABLE_APP_SANDBOX = NO`,
+the local package reference with all four of its products, and `TmuxGUI/` as a
+synchronized folder rather than a file list. Checked by diffing `xcodebuild
+-showBuildSettings` for Debug and Release against the old project, then building
+a fresh clone and launching it.
 
-Move to [XcodeGen](https://github.com/yonaskolb/XcodeGen), the way `AnyDrag`
-next door does it: `project.yml` is the single source of truth, `.xcodeproj` is
-gitignored and never committed, and `xcodegen generate` rebuilds it.
-`brew install xcodegen`; see `~/Code/AnyDrag/project.yml` for the house style.
+Three things left deliberately different, noted here so they are not mistaken
+for oversights:
 
-Things that must survive the migration — each one breaks the app if dropped:
-
-- [ ] **The "Normalize libghostty Framework" run script.** In Debug it moves the
-      XCFramework's flat layout into the `Versions/A` shape macOS requires and
-      re-signs it. Without it the app does not launch. It is a
-      `PBXShellScriptBuildPhase` today; in XcodeGen it becomes a
-      `postCompileScripts` or `postBuildScripts` entry on the target. Copy the
-      script body verbatim out of the current pbxproj before deleting it.
-- [ ] **`ENABLE_APP_SANDBOX = NO`.** A sandboxed process can neither spawn tmux
-      nor reach its socket. This is the setting most likely to be silently
-      reset to the template default.
-- [ ] **The local package reference** to `Vendor/libghostty-spm`. XcodeGen takes
-      it as `packages: <name>: {path: Vendor/libghostty-spm}`.
-- [ ] `CODE_SIGN_ENTITLEMENTS`, `PRODUCT_BUNDLE_IDENTIFIER` (`dev.xueshi.TmuxGUI`),
-      `MACOSX_DEPLOYMENT_TARGET 13.0`, `ENABLE_HARDENED_RUNTIME`.
-- [ ] The `TmuxGUI/` folder is a `PBXFileSystemSynchronizedRootGroup` — files are
-      picked up automatically without touching the project. XcodeGen's `sources`
-      behaves the same way, so keep it that way; do not go back to listing files.
-
-Worth dropping rather than migrating:
-
-- [ ] The `TmuxGUIUITests` target contains nothing but the sample's placeholder.
-      Either write a real test or leave the target out.
+- [ ] **The `TmuxGUIUITests` target is gone; the file is not.**
+      `TmuxGUIUITests/TmuxGUIUITests.swift` is still in git and nothing compiles
+      it. Its one test asserts that the app launches and reaches live tmux
+      state, which only means something against a tmux server in a known state —
+      a throwaway session created, driven and torn down by the test. Write that
+      and add the target back (`type: bundle.ui-testing`, `dependencies: [-
+      target: TmuxGUI]`), or delete the file.
+- [ ] **The SwiftPM lock file is no longer in git.**
+      `TmuxGUI.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
+      used to be committed with the project and pinned MSDisplayLink — the one
+      transitive dependency, which `libghostty-spm`'s `Package.swift` takes as
+      `from: "2.1.0"` and can therefore float across the whole 2.x range. It
+      lives inside the now-gitignored `.xcodeproj`, so a fresh clone resolves it
+      afresh. It resolved to the same 2.1.0 revision today, but nothing holds it
+      there. Fixing it means un-ignoring that one path, which needs a chain of
+      `!` rules through every parent directory.
+- [ ] **Code coverage instrumentation is off now, and was silently on before.**
+      `xcodebuild -showBuildSettings` on the old project reported
+      `CLANG_COVERAGE_MAPPING = YES` when asked via `-scheme` and not when asked
+      via `-target`, so it came from the old shared scheme, not from the
+      project — which also explains the `default.profraw` the app kept dropping
+      in the repo root. Its cost was never measured. If coverage is wanted it
+      belongs in the scheme's test action on purpose.
 
 (`LookInsideServer` was already removed — see section 3.)
-
-Afterwards:
-
-- [ ] Add `*.xcodeproj` to `.gitignore` and `git rm -r --cached` the existing one.
-- [ ] Update the build instructions in `README.md` and `CLAUDE.md` to run
-      `xcodegen generate` first.
-- [ ] Verify by generating from scratch in a clean clone, building, launching,
-      and confirming the app attaches to tmux — the framework normalisation
-      failure mode is a launch crash, not a build error, so a green build proves
-      nothing on its own.
 
 ---
 

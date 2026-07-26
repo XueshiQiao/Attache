@@ -104,16 +104,22 @@ swiftc -O -o /tmp/layoutcheck TmuxGUI/Tmux/TmuxLayout.swift Tools/LayoutCheck/ma
 
 ## Building
 
-Needs Xcode and tmux.
+Needs Xcode, tmux, and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+(`brew install xcodegen`).
 
 ```sh
 git clone --recurse-submodules https://github.com/XueshiQiao/tmux-gui.git && cd tmux-gui
+xcodegen generate
 xcodebuild -project TmuxGUI.xcodeproj -scheme TmuxGUI -configuration Debug \
   -destination 'platform=macOS,arch=arm64' \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 ```
 
 Already cloned: `git submodule update --init --recursive`.
+
+`project.yml` is the project. `TmuxGUI.xcodeproj` is generated from it and is
+not in git — run `xcodegen generate` after pulling, and never edit project
+settings in Xcode's UI, because the next generate throws them away.
 
 **The app sandbox must be off.** A sandboxed process can neither spawn tmux nor
 reach its socket under `/private/tmp/tmux-<uid>/`.

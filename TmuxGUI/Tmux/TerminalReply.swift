@@ -92,12 +92,15 @@ enum TerminalReply {
         // before the parameter scan.
         if privateMarker == nil, index < bytes.count, bytes[index] == 0x4d {
             let end = index + 4
-            return end <= bytes.count ? end - start : nil
+            guard end <= bytes.count else { return nil }
+            // The button byte is biased by 32 in X10.
+            return isBareMotion(Int(bytes[index + 1]) - 32) ? end - start : nil
         }
 
         let parameterStart = index
         while index < bytes.count, (0x30 ... 0x3b).contains(bytes[index]) { index += 1 }
         let hasParameters = index > parameterStart
+        let firstParameter = Self.firstParameter(bytes[parameterStart ..< index])
 
         while index < bytes.count, (0x20 ... 0x2f).contains(bytes[index]) { index += 1 }
 
@@ -107,9 +110,14 @@ enum TerminalReply {
         let isReply: Bool = switch privateMarker {
         case UInt8(0x3c):
             // SGR mouse (1006) and SGR-pixel mouse (1016): press/motion `M`,
-            // release `m`. This is the encoding every modern program asks for
-            // and it was 100% of the traffic this fix was written for.
-            final == 0x4d || final == 0x6d
+            // release `m`.
+            //
+            // Only *bare motion* is withheld — see `isBareMotion`. Withholding
+            // every mouse report was the first attempt and it broke scrolling
+            // in every full-screen program: a wheel turn is a mouse report too,
+            // and dropping it means the program is never told the user
+            // scrolled.
+            (final == 0x4d || final == 0x6d) && isBareMotion(firstParameter)
         case UInt8(0x3f), UInt8(0x3e), UInt8(0x3d):
             // Private answers: device attributes (`c`), mode report (`$y`),
             // kitty keyboard flags (`u`), status (`n`), extended cursor
@@ -128,11 +136,49 @@ enum TerminalReply {
             // recoverable; a key that never arrives is the failure this file
             // exists to avoid. Only the private form above can be told apart.
             final == 0x6e
-                || (final == 0x4d && hasParameters)
+                || (final == 0x4d && hasParameters && isBareMotion(firstParameter - 32))
                 || ((final == 0x49 || final == 0x4f) && !hasParameters)
         }
 
         return isReply ? index + 1 - start : nil
+    }
+
+    /// Whether a mouse button code describes the pointer merely *passing over*
+    /// the surface, with no button down and no wheel.
+    ///
+    /// This is the whole of the distinction the filter rests on. A terminal
+    /// reports the pointer for three different reasons and only one of them is
+    /// noise here:
+    ///
+    /// - **Bare motion** (bit 5 set, buttons reading 3 = none): sent because
+    ///   the pointer is somewhere, not because the user did anything. tmux does
+    ///   not give a control-mode client a mouse, so the coordinate is whatever
+    ///   the surface last saw, re-sent. Nobody asked for it and nothing wants
+    ///   it. Withheld.
+    /// - **The wheel** (bit 6): a deliberate act. Withholding it is how the
+    ///   first version of this filter silently broke scrolling in every
+    ///   full-screen program — the pane simply never learned the user scrolled.
+    /// - **Buttons and drags** (buttons reading 0/1/2, with or without bit 5):
+    ///   also deliberate. Forwarded.
+    ///
+    /// Anything that does not parse is treated as *not* bare motion, so it is
+    /// forwarded. Same direction as the rest of this file: leak rather than eat.
+    private static func isBareMotion(_ buttonCode: Int) -> Bool {
+        guard buttonCode >= 0 else { return false }
+        let isMotion = buttonCode & 0b10_0000 != 0
+        let isWheel = buttonCode & 0b100_0000 != 0
+        let noButtonHeld = buttonCode & 0b11 == 0b11
+        return isMotion && !isWheel && noButtonHeld
+    }
+
+    /// First semicolon-separated parameter, or -1 when there is not one.
+    private static func firstParameter(_ bytes: ArraySlice<UInt8>) -> Int {
+        var value = -1
+        for byte in bytes {
+            guard (0x30 ... 0x39).contains(byte) else { break }
+            value = max(value, 0) * 10 + Int(byte - 0x30)
+        }
+        return value
     }
 
     /// `DCS`/`OSC` reply, up to its terminator.
