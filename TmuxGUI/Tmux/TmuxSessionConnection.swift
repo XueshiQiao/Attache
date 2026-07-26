@@ -201,14 +201,22 @@ final class TmuxSessionConnection {
     /// This is how the GUI gets scrollback at all — tmux owns the history and
     /// never replays it to a joining client, so a surface that is only fed
     /// live `%output` can scroll back exactly as far as the moment it opened.
-    func captureScrollback(paneID: String, lines: Int, completion: @escaping ([String]) -> Void) {
-        client.run("capture-pane -p -e -t \(paneID) -S -\(lines)") { output, failed in
+    ///
+    /// Bytes, not `String`. What comes back is a pane's screen with its colour
+    /// sequences in it, headed for a terminal parser, and that is the same
+    /// argument `%output` already wins — a `String` round trip replaces
+    /// anything that is not valid UTF-8 with U+FFFD and there is no way back.
+    /// tmux 3.6a happens not to hand us such a byte here, because it replaces
+    /// invalid input with U+FFFD in its own grid before we ever ask; that is
+    /// tmux's guarantee to keep or break, not this app's.
+    func captureScrollback(paneID: String, lines: Int, completion: @escaping ([Data]) -> Void) {
+        client.runBytes("capture-pane -p -e -t \(paneID) -S -\(lines)") { output, failed in
             completion(failed ? [] : Self.trimmingTrailingBlanks(output))
         }
     }
 
-    func capturePane(paneID: String, completion: @escaping ([String]) -> Void) {
-        client.run("capture-pane -p -e -t \(paneID)") { output, failed in
+    func capturePane(paneID: String, completion: @escaping ([Data]) -> Void) {
+        client.runBytes("capture-pane -p -e -t \(paneID)") { output, failed in
             completion(failed ? [] : Self.trimmingTrailingBlanks(output))
         }
     }
@@ -219,15 +227,22 @@ final class TmuxSessionConnection {
     /// lands at the bottom of an otherwise empty screen instead of following
     /// the text. Dropping the trailing blanks puts the cursor where the
     /// content actually ends.
-    private static func trimmingTrailingBlanks(_ lines: [String]) -> [String] {
+    private static func trimmingTrailingBlanks(_ lines: [Data]) -> [Data] {
         var lines = lines
-        while let last = lines.last,
-              last.trimmingCharacters(in: .whitespaces).isEmpty
-                  || TmuxText.plain(last).isEmpty
-        {
-            lines.removeLast()
-        }
+        while let last = lines.last, isBlank(last) { lines.removeLast() }
         return lines
+    }
+
+    /// Decide blankness on a lossy reading and keep the bytes themselves.
+    ///
+    /// Everything the test looks for — spaces, and the CSI sequences
+    /// `TmuxText.plain` strips — is ASCII, so no byte a lossy decode mangles
+    /// can change the answer. A line made entirely of undecodable bytes reads
+    /// as U+FFFD, which is not blank, which is the right answer for a line
+    /// that has something on it.
+    private static func isBlank(_ line: Data) -> Bool {
+        let text = String(decoding: line, as: UTF8.self)
+        return text.trimmingCharacters(in: .whitespaces).isEmpty || TmuxText.plain(text).isEmpty
     }
 
     private var sessionTarget: String? { sessionID }

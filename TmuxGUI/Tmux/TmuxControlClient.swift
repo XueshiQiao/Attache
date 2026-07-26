@@ -35,8 +35,19 @@ final class TmuxControlClient {
 
     // Command replies. tmux answers each command with a `%begin`/`%end` pair,
     // and promises notifications never appear inside a block.
-    private var replyLines: [String]?
-    private var completions = [([String], Bool) -> Void]()
+    //
+    // Held as bytes for the same reason `%output` is — see `TmuxOctal` — but
+    // arriving at it from the opposite direction. Verified on tmux 3.6a by
+    // driving `tmux -C attach` over a pipe and reading the raw stream: tmux
+    // escapes nothing inside a reply block, so a `capture-pane -e` reply
+    // carries ESC as the byte 0x1b, not as `\033`. A reply line is therefore
+    // an arbitrary byte string with only the newline reserved, and decoding it
+    // to `String` on the way past is a lossy step no later code can undo.
+    private var replyLines: [Data]?
+    /// The command number tmux gave the block currently open. What tells a real
+    /// terminator from a pane displaying one — see `isBlockTerminator`.
+    private var openBlockNumber: Int?
+    private var completions = [([Data], Bool) -> Void]()
     private let stateLock = NSLock()
 
     /// tmux emits one unsolicited `%begin`/`%end` block during the attach
@@ -44,7 +55,7 @@ final class TmuxControlClient {
     /// would let our first command's reply be matched against tmux's own block,
     /// so commands are held until the handshake completes.
     private var handshakeComplete = false
-    private var queuedCommands = [(String, (([String], Bool) -> Void)?)]()
+    private var queuedCommands = [(String, (([Data], Bool) -> Void)?)]()
 
     init(tmuxPath: String, sessionName: String, callbackQueue: DispatchQueue = .main) {
         self.tmuxPath = tmuxPath
@@ -116,11 +127,36 @@ final class TmuxControlClient {
         enqueue(command, caller: caller, completion: nil)
     }
 
-    /// Send a command and receive its reply block. `failed` mirrors `%error`.
+    /// Send a command and receive its reply block as text. `failed` mirrors
+    /// `%error`.
+    ///
+    /// Lossy, and only safe because of what the callers ask for. `String
+    /// (decoding:as:)` substitutes U+FFFD for anything that is not valid
+    /// UTF-8, which is fine for tmux's own format output: verified on 3.6a
+    /// that `list-windows -F` renders a byte above 0x7f in a window name as
+    /// the four ASCII characters `\351`, so that reply is ASCII whatever the
+    /// user called the window. Anything carrying a pane's own bytes wants
+    /// `runBytes` instead.
     func run(
         _ command: String,
         caller: StaticString = #function,
         completion: @escaping (_ lines: [String], _ failed: Bool) -> Void
+    ) {
+        runBytes(command, caller: caller) { lines, failed in
+            completion(lines.map { String(decoding: $0, as: UTF8.self) }, failed)
+        }
+    }
+
+    /// Send a command and receive its reply block as raw bytes, exactly as
+    /// tmux wrote them.
+    ///
+    /// The path a `capture-pane` snapshot takes. It is the reply-block
+    /// counterpart of the rule `%output` already follows: what comes back is a
+    /// pane's screen, and a pane's screen is bytes.
+    func runBytes(
+        _ command: String,
+        caller: StaticString = #function,
+        completion: @escaping (_ lines: [Data], _ failed: Bool) -> Void
     ) {
         enqueue(command, caller: caller, completion: completion)
     }
@@ -154,7 +190,7 @@ final class TmuxControlClient {
     ///
     /// Logged before the write, not after. If the write is the last thing this
     /// process ever does, the record still exists.
-    private func enqueue(_ command: String, caller: StaticString, completion: (([String], Bool) -> Void)?) {
+    private func enqueue(_ command: String, caller: StaticString, completion: (([Data], Bool) -> Void)?) {
         TmuxLog.command(command, session: sessionName, caller: caller)
 
         stateLock.lock()
@@ -202,12 +238,13 @@ final class TmuxControlClient {
         // Inside a reply block every line is command output, not a
         // notification — tmux guarantees notifications never interleave.
         stateLock.lock()
+        let openBlock = openBlockNumber
         let insideBlock = replyLines != nil
         stateLock.unlock()
 
-        if insideBlock, !isBlockTerminator(line) {
+        if insideBlock, !isBlockTerminator(line, closing: openBlock) {
             stateLock.lock()
-            replyLines?.append(String(decoding: line, as: UTF8.self))
+            replyLines?.append(Data(line))
             stateLock.unlock()
             return
         }
@@ -218,15 +255,17 @@ final class TmuxControlClient {
         case .output(let pane, let data):
             onPaneOutput?(pane, data)
 
-        case .begin:
+        case .begin(let number):
             stateLock.lock()
             replyLines = []
+            openBlockNumber = number
             stateLock.unlock()
 
         case .end(_, let failed):
             stateLock.lock()
             let lines = replyLines ?? []
             replyLines = nil
+            openBlockNumber = nil
             let completion = completions.isEmpty ? nil : completions.removeFirst()
             stateLock.unlock()
             if let completion {
@@ -245,8 +284,46 @@ final class TmuxControlClient {
         }
     }
 
-    private func isBlockTerminator(_ line: [UInt8]) -> Bool {
-        line.starts(with: Array("%end ".utf8)) || line.starts(with: Array("%error ".utf8))
+    /// Whether this line ends the open reply block, as opposed to being a line
+    /// of that block's content that merely looks like one.
+    ///
+    /// Matching on the `%end `/`%error ` prefix alone is not enough, and the
+    /// counter-example is not hostile input — it is this project's own subject
+    /// matter. A reply block carries a pane's screen verbatim, and a pane
+    /// showing a captured control mode transcript has lines beginning `%end `
+    /// on it. Closing the block there truncates that reply, fires the wrong
+    /// completion, and leaves the FIFO in `completions` shifted by one, so
+    /// from then on every command receives the *previous* command's reply —
+    /// `list-windows` answered with a pane's screen, layouts parsed from the
+    /// wrong bytes. It is silent and it is permanent for that connection.
+    ///
+    /// tmux stamps `%begin` and its matching `%end`/`%error` with the same
+    /// command number. Verified on 3.6a by reading the raw stream over a pipe,
+    /// across four consecutive blocks: 303/303, 308/308, 309/309, 311/311,
+    /// including an `%error`, which carries the number the same way. That
+    /// number is a per-server command counter the pane's content has no way to
+    /// know, so requiring it to match is what tells the terminator apart from
+    /// a pane that happens to be displaying one.
+    private func isBlockTerminator(_ line: [UInt8], closing openBlock: Int?) -> Bool {
+        guard line.starts(with: Array("%end ".utf8)) || line.starts(with: Array("%error ".utf8)) else {
+            return false
+        }
+        guard let openBlock,
+              case .end(let number, _)? = TmuxNotification.parse(line: line)
+        else { return false }
+        guard number == openBlock else {
+            // Either a pane is displaying a transcript — the case above, now
+            // handled — or a future tmux stopped matching the numbers, which
+            // would strand this block and every reply after it. Logged so the
+            // second one is diagnosable instead of looking like a hang.
+            TmuxLog.lifecycle(
+                "ignoring a line inside reply block \(openBlock) that looks like its terminator"
+                    + " but is numbered \(number) — treating it as content",
+                session: sessionName
+            )
+            return false
+        }
+        return true
     }
 
     /// Release commands held during the attach handshake, in submission order.
