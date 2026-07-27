@@ -22,7 +22,9 @@ final class SessionSidebarView: NSView {
         let hasActivity: Bool
     }
 
-    private let header = NSTextField(labelWithString: "SESSIONS")
+    private let appIcon = NSImageView()
+    private let appName = NSTextField(labelWithString: "TmuxGUI")
+    private let appVersion = NSTextField(labelWithString: "")
     private let newButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
@@ -74,8 +76,25 @@ final class SessionSidebarView: NSView {
     required init?(coder _: NSCoder) { fatalError("not supported") }
 
     private func setUp() {
-        header.font = .systemFont(ofSize: 10, weight: .semibold)
-        addSubview(header)
+        // The same brand block the settings sidebar opens with — app icon,
+        // name, version — instead of a small all-caps "SESSIONS". The two
+        // lists sit in the same app and were reported for not looking like it,
+        // and a section header above a list of five is not carrying enough to
+        // be worth the difference.
+        appIcon.image = NSApp.applicationIconImage
+        appIcon.imageScaling = .scaleProportionallyUpOrDown
+        appIcon.wantsLayer = true
+        appIcon.layer?.cornerRadius = 8
+        appIcon.layer?.masksToBounds = true
+        addSubview(appIcon)
+
+        appName.font = .systemFont(ofSize: 14, weight: .bold)
+        addSubview(appName)
+
+        appVersion.stringValue = "v" + ((Bundle.main
+            .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "?")
+        appVersion.font = .systemFont(ofSize: 11)
+        addSubview(appVersion)
 
         newButton.title = "+  New session"
         newButton.font = .systemFont(ofSize: 11.5)
@@ -105,7 +124,8 @@ final class SessionSidebarView: NSView {
     /// would otherwise keep the old colours until one arrived.
     func applyChromeTheme() {
         let theme = ChromeTheme.current
-        header.textColor = theme.faintText
+        appName.textColor = theme.text
+        appVersion.textColor = theme.faintText
         newButton.contentTintColor = theme.faintText
         statusLabel.textColor = theme.mutedText
         detailLabel.textColor = theme.faintText
@@ -151,12 +171,17 @@ final class SessionSidebarView: NSView {
     override func layout() {
         super.layout()
         let inset: CGFloat = 10
-        header.frame = CGRect(
-            x: inset + 2, y: contentTopInset,
-            width: bounds.width - inset * 2, height: 14
+        appIcon.frame = CGRect(x: inset + 6, y: contentTopInset, width: 34, height: 34)
+        appName.frame = CGRect(
+            x: appIcon.frame.maxX + 10, y: contentTopInset + 2,
+            width: max(0, bounds.width - appIcon.frame.maxX - 18), height: 17
+        )
+        appVersion.frame = CGRect(
+            x: appName.frame.minX, y: contentTopInset + 19,
+            width: appName.frame.width, height: 14
         )
 
-        var y = contentTopInset + 22
+        var y = contentTopInset + 34 + 12
         for row in itemViews {
             row.frame = CGRect(x: 6, y: y, width: bounds.width - 12, height: rowHeight)
             y += rowHeight + gap
@@ -289,6 +314,8 @@ final class SessionRowView: NSView {
     private let label = NSTextField(labelWithString: "")
     private let countLabel = NSTextField(labelWithString: "")
     private let activityDot = NSView()
+    private let icon = NSImageView()
+    private let iconTile = NSView()
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
     private var pressed = false
@@ -312,6 +339,28 @@ final class SessionRowView: NSView {
         countLabel.alignment = .right
         addSubview(countLabel)
 
+        // A coloured tile with a glyph, the same 26pt rounded square the
+        // settings sidebar puts beside every page. Without it the two lists
+        // read as different applications: one is icon-plus-label, the other is
+        // a bare line of text.
+        //
+        // The hue is derived from the session's own name rather than assigned,
+        // because sessions are not a fixed list the way settings pages are.
+        // Same name, same colour, every launch — which makes it a weak
+        // identifier rather than decoration.
+        iconTile.wantsLayer = true
+        iconTile.layer?.cornerRadius = 6
+        iconTile.layer?.backgroundColor = Self.tileColor(for: entry.name).cgColor
+        addSubview(iconTile)
+
+        icon.image = NSImage(
+            systemSymbolName: "terminal.fill",
+            accessibilityDescription: nil
+        )?.withSymbolConfiguration(.init(pointSize: 12, weight: .semibold))
+        icon.contentTintColor = .white
+        icon.imageScaling = .scaleProportionallyDown
+        iconTile.addSubview(icon)
+
         activityDot.wantsLayer = true
         activityDot.layer?.cornerRadius = 3
         // Left as the system orange on purpose. This is a status signal, not
@@ -326,6 +375,23 @@ final class SessionRowView: NSView {
 
     @available(*, unavailable)
     required init?(coder _: NSCoder) { fatalError("not supported") }
+
+    /// A stable colour for a session name.
+    ///
+    /// The settings sidebar hands each page a colour by hand because there are
+    /// four of them and they never change. Sessions come and go, so the colour
+    /// is hashed out of the name instead — deterministic, so a session keeps
+    /// its colour across launches, and drawn from the same set the settings
+    /// pages use so the two lists look related.
+    private static func tileColor(for name: String) -> NSColor {
+        let palette: [NSColor] = [
+            .systemBlue, .systemPurple, .systemTeal, .systemPink,
+            .systemIndigo, .systemGreen, .systemOrange, .systemBrown,
+        ]
+        var hash: UInt64 = 5381
+        for byte in name.utf8 { hash = hash &* 33 &+ UInt64(byte) }
+        return palette[Int(hash % UInt64(palette.count))]
+    }
 
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -349,7 +415,11 @@ final class SessionRowView: NSView {
 
     override func layout() {
         super.layout()
-        var left: CGFloat = 10
+        let tile: CGFloat = 26
+        iconTile.frame = CGRect(x: 7, y: (bounds.height - tile) / 2, width: tile, height: tile)
+        icon.frame = CGRect(x: 0, y: 0, width: tile, height: tile)
+
+        var left = iconTile.frame.maxX + 9
         if !activityDot.isHidden {
             activityDot.frame = CGRect(x: left, y: (bounds.height - 6) / 2, width: 6, height: 6)
             left += 11
