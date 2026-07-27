@@ -168,41 +168,47 @@ func optionRow(
 
 // MARK: - Root view
 
-struct SettingsRootView: View {
+/// The sidebar half, on its own so AppKit can own the split.
+///
+/// It used to be SwiftUI's `NavigationSplitView`. On macOS 26 that renders the
+/// sidebar as an inset rounded panel with the traffic lights sitting in the
+/// band above it, which is not the standard sidebar — the grey should run to
+/// the top of the window with the lights inside it. `NSSplitViewController`
+/// with a sidebar item gets that for free, and the main window already proved
+/// it, so the settings window uses the same shell and keeps its pages as
+/// SwiftUI.
+struct SettingsSidebarView: View {
     @EnvironmentObject var store: SettingsStore
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $store.page) {
-                ForEach(SettingsPage.allCases, id: \.self) { page in
-                    HStack(spacing: 9) {
-                        SidebarIcon(symbol: page.symbol, color: page.color)
-                        Text(page.title)
-                    }
-                    .padding(.vertical, 2)
-                    .tag(page)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("nav.\(page.axID)")
+        List(selection: $store.page) {
+            ForEach(SettingsPage.allCases, id: \.self) { page in
+                HStack(spacing: 9) {
+                    SidebarIcon(symbol: page.symbol, color: page.color)
+                    Text(page.title)
                 }
+                .padding(.vertical, 2)
+                .tag(page)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("nav.\(page.axID)")
             }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 200, ideal: 206, max: 240)
-            .safeAreaInset(edge: .top, spacing: 0) { brand }
-        } detail: {
-            Group {
-                switch store.page {
-                case .terminal: TerminalPage()
-                case .appearance: AppearancePage()
-                case .behaviour: BehaviourPage()
-                case .about: AboutPage()
-                }
-            }
-            .accessibilityIdentifier("page.\(store.page.axID)")
-            .environment(\.defaultMinListRowHeight, 34)
-            .scrollContentBackground(.hidden)
-            .settingsBackground()
         }
-        .frame(minWidth: 760, minHeight: 560)
+        // `.plain`, not `.sidebar`. On macOS 26 the sidebar list style draws
+        // its own inset rounded panel, which is what kept the traffic lights in
+        // a band above the grey instead of inside it — the split view item was
+        // already full height, the list was just not filling it. Plain leaves
+        // the item's own material as the background and the rows are styled
+        // here instead.
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .safeAreaInset(edge: .top, spacing: 0) { brand }
+        // Fill the whole split view item, including the band the system keeps
+        // clear for the traffic lights. Without this the content stops below
+        // them and the grey reads as an inset panel with the lights floating
+        // above it, which is the thing this window was reported for. The brand
+        // block's own top padding is what keeps the lights from landing on the
+        // app icon.
+        .ignoresSafeArea(.all)
     }
 
     private var brand: some View {
@@ -216,10 +222,32 @@ struct SettingsRootView: View {
             }
             Spacer()
         }
-        .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
+        // Top padding clears the traffic lights, which now sit over this view
+        // rather than in a band above it.
+        .padding(.horizontal, 16).padding(.top, 30).padding(.bottom, 12)
     }
 
     private var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+    }
+}
+
+/// The page half.
+struct SettingsDetailView: View {
+    @EnvironmentObject var store: SettingsStore
+
+    var body: some View {
+        Group {
+            switch store.page {
+            case .terminal: TerminalPage()
+            case .appearance: AppearancePage()
+            case .behaviour: BehaviourPage()
+            case .about: AboutPage()
+            }
+        }
+        .accessibilityIdentifier("page.\(store.page.axID)")
+        .environment(\.defaultMinListRowHeight, 34)
+        .scrollContentBackground(.hidden)
+        .settingsBackground()
     }
 }

@@ -183,14 +183,64 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     init(probe: @escaping (@escaping (String) -> Void) -> Void) {
         store = SettingsStore(probe: probe)
 
-        let hosting = NSHostingController(rootView: SettingsRootView().environmentObject(store))
-        window = NSWindow(contentViewController: hosting)
+        // An AppKit split view controller rather than SwiftUI's
+        // `NavigationSplitView`. On macOS 26 the SwiftUI one draws the sidebar
+        // as an inset rounded panel and leaves the traffic lights in a band
+        // above it; the standard sidebar runs the full height of the window
+        // with the lights inside it. `NSSplitViewItem(sidebarWithViewController:)`
+        // is what produces that, and it also brings the sidebar material the
+        // panel version does not have. The pages stay SwiftUI — only who owns
+        // the split changed.
+        let split = NSSplitViewController()
+        // Plain item plus our own material, not `sidebarWithViewController:`.
+        // The sidebar behaviour draws an inset rounded panel on macOS 26, which
+        // is what left the traffic lights in a band above the grey instead of
+        // inside it — the same thing the main window's rail was reported for.
+        let sidebarHost = NSHostingController(
+            rootView: SettingsSidebarView().environmentObject(store)
+        )
+        let backdrop = NSVisualEffectView()
+        backdrop.material = .sidebar
+        backdrop.blendingMode = .behindWindow
+        backdrop.state = .followsWindowActiveState
+        sidebarHost.view.translatesAutoresizingMaskIntoConstraints = false
+        backdrop.addSubview(sidebarHost.view)
+        NSLayoutConstraint.activate([
+            sidebarHost.view.topAnchor.constraint(equalTo: backdrop.topAnchor),
+            sidebarHost.view.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor),
+            sidebarHost.view.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor),
+            sidebarHost.view.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor),
+        ])
+        let sidebarShell = NSViewController()
+        sidebarShell.view = backdrop
+        sidebarShell.addChild(sidebarHost)
+        let sidebarItem = NSSplitViewItem(viewController: sidebarShell)
+        sidebarItem.minimumThickness = 200
+        sidebarItem.maximumThickness = 240
+        // Full-height layout is the part that puts the traffic lights over the
+        // sidebar instead of above it.
+        sidebarItem.titlebarSeparatorStyle = .none
+        split.addSplitViewItem(sidebarItem)
+
+        let detailItem = NSSplitViewItem(
+            viewController: NSHostingController(
+                rootView: SettingsDetailView().environmentObject(store)
+            )
+        )
+        detailItem.titlebarSeparatorStyle = .none
+        split.addSplitViewItem(detailItem)
+
+        window = NSWindow(contentViewController: split)
         window.title = "TmuxGUI Settings"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
-        window.toolbarStyle = .unified
+        // No `toolbarStyle`. This window has no toolbar, and asking for the
+        // unified style without one reserves the title-bar band anyway — which
+        // is what pushed the sidebar down and left the traffic lights sitting
+        // above the grey instead of inside it. The main window never set it and
+        // never had the problem.
         window.setContentSize(NSSize(width: 820, height: 620))
         window.setFrameAutosaveName("TmuxGUISettings")
         window.center()

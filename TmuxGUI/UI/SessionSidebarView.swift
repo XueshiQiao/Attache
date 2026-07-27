@@ -39,7 +39,18 @@ final class SessionSidebarView: NSView {
     /// the rail itself is told 10. A hand-rolled 38 would have pushed the
     /// header a further 28pt down for no reason.
     private var contentTopInset: CGFloat {
-        safeAreaInsets.top + 6
+        // The rail is a plain split view item now, so the system contributes no
+        // safe area for the traffic lights — the whole point of the change was
+        // to stop it inseting the column. Measure the buttons instead, the way
+        // this did before, and keep the safe-area reading as the answer when
+        // there is one, so nothing depends on which kind of item is in use.
+        if safeAreaInsets.top > 0 { return safeAreaInsets.top + 6 }
+        guard let button = window?.standardWindowButton(.closeButton),
+              let frame = button.superview?.convert(button.frame, to: nil),
+              let height = window?.frame.height
+        else { return 38 }
+        // Button frame is in window coordinates measured from the bottom.
+        return height - frame.minY + 6
     }
     private var entries = [Entry]()
     private var selectedName: String?
@@ -176,8 +187,23 @@ final class SessionSidebarView: NSView {
     ///
     /// The right-hand hairline that used to be drawn here is gone; the split
     /// view's own divider is that line now.
+    /// A tint over the sidebar material, not a fill instead of it.
+    ///
+    /// The rail used to paint `ChromeTheme.background` opaque, which made the
+    /// chrome follow the terminal theme — asked for — but also painted over the
+    /// system's sidebar material, so the window lost the translucency every
+    /// other Mac sidebar has. Also asked for. The two are only in conflict if
+    /// the theme colour is opaque.
+    ///
+    /// So it goes on at partial alpha: the material still samples what is
+    /// behind the window and still shifts as things move under it, and the
+    /// theme still decides what colour that glass reads as. `NSVisualEffectView`
+    /// draws first because it is the split view item's own backing view; this
+    /// only has to leave enough of it showing.
+    private static let tintAlpha: CGFloat = 0.55
+
     override func draw(_ dirtyRect: NSRect) {
-        ChromeTheme.current.background.setFill()
+        ChromeTheme.current.background.withAlphaComponent(Self.tintAlpha).setFill()
         dirtyRect.fill()
     }
 

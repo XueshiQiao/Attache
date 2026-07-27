@@ -94,7 +94,13 @@ final class MainViewController: NSSplitViewController {
     // MARK: - Chrome
 
     private func installSidebar() {
-        let sidebarItem = NSSplitViewItem(sidebarWithViewController: Hosting(view: sidebar))
+        // A plain item, not `sidebarWithViewController:`. The sidebar *behavior*
+        // is what draws the rail as an inset rounded panel on macOS 26, and that
+        // panel is what leaves the traffic lights in a band above the grey
+        // rather than inside it. It was invisible while the rail painted itself
+        // opaque over the whole column; asking for frosted glass is what
+        // uncovered it. `Hosting` supplies the material instead, edge to edge.
+        let sidebarItem = NSSplitViewItem(viewController: Hosting(view: sidebar))
         // Not collapsible. Collapsing is standard sidebar behaviour and comes
         // free, but the only ways back are a toolbar button and a View menu
         // item, and this window has neither — a user who drags the divider
@@ -102,11 +108,6 @@ final class MainViewController: NSSplitViewController {
         sidebarItem.canCollapse = false
         sidebarItem.minimumThickness = AppSettings.sidebarWidthRange.lowerBound
         sidebarItem.maximumThickness = AppSettings.sidebarWidthRange.upperBound
-        // What puts the traffic lights on the rail: with the window's
-        // `.fullSizeContentView`, the sidebar runs the whole height and the
-        // buttons float over it. Default is already YES; stated because the
-        // window's style mask and this flag only work as a pair.
-        sidebarItem.allowsFullHeightLayout = true
         self.sidebarItem = sidebarItem
         addSplitViewItem(sidebarItem)
         addSplitViewItem(NSSplitViewItem(viewController: content))
@@ -130,7 +131,34 @@ final class MainViewController: NSSplitViewController {
         @available(*, unavailable)
         required init?(coder _: NSCoder) { fatalError("not supported") }
 
-        override func loadView() { view = hosted }
+        /// The rail sits on a vibrancy view this controller owns, rather than
+        /// on whatever the split view item provides.
+        ///
+        /// macOS 26 draws a sidebar item's own background as an inset rounded
+        /// panel, which leaves the traffic lights sitting in a band *above* the
+        /// grey instead of inside it. That was invisible for as long as the rail
+        /// painted itself opaque and covered the whole item; it appears the
+        /// moment the fill goes translucent, which is what asking for frosted
+        /// glass does. Supplying the material here fills the item edge to edge,
+        /// so the lights land on the rail and the glass is still glass.
+        override func loadView() {
+            let backdrop = NSVisualEffectView()
+            backdrop.material = .sidebar
+            // Behind the window, so it samples the desktop and whatever is
+            // under it rather than the window's own content.
+            backdrop.blendingMode = .behindWindow
+            backdrop.state = .followsWindowActiveState
+
+            hosted.translatesAutoresizingMaskIntoConstraints = false
+            backdrop.addSubview(hosted)
+            NSLayoutConstraint.activate([
+                hosted.topAnchor.constraint(equalTo: backdrop.topAnchor),
+                hosted.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor),
+                hosted.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor),
+                hosted.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor),
+            ])
+            view = backdrop
+        }
     }
 
     /// The right-hand half, and the parent of whichever session is on screen.
