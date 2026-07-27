@@ -20,6 +20,16 @@ struct TmuxWindow: Equatable, Identifiable {
     /// True when tmux flagged unseen output — reused rather than tracked
     /// separately so the GUI's dot means exactly what tmux's `#` means.
     var hasActivity: Bool
+    /// The pane tmux considers active in this window.
+    ///
+    /// Comes from tmux like everything else, and it has to: the app used to
+    /// keep its own idea of which pane was focused, seeded with "the first one
+    /// in the layout" and moved only by a GUI click. `prefix + o` never touched
+    /// it, and neither did a click that landed on a terminal surface — which is
+    /// every click inside a pane. The focus ring drew wherever that guess had
+    /// got to, which was usually the left-hand pane, while the keystrokes went
+    /// to whichever surface the click had made first responder.
+    var activePaneID: String
     var layoutText: String
 
     var layout: TmuxLayoutNode? {
@@ -45,20 +55,26 @@ extension TmuxWindow {
     /// anything a program can print, spaces and pipes included.
     static func parse(listLine: String) -> TmuxWindow? {
         let fields = listLine.components(separatedBy: "\u{01}")
-        guard fields.count >= 6, let index = Int(fields[1]) else { return nil }
+        guard fields.count >= 7, let index = Int(fields[1]) else { return nil }
         return TmuxWindow(
             id: fields[0],
             index: index,
             name: fields[2],
             isActive: fields[3] == "1",
             hasActivity: fields[4] == "1",
-            layoutText: fields[5]
+            activePaneID: fields[5],
+            layoutText: fields[6]
         )
     }
 
+    /// `#{pane_id}` in a `list-windows` format is not "some pane" — a
+    /// pane-scoped variable asked of a window resolves against that window's
+    /// *active* pane. Verified on tmux 3.6a: with two panes and `%1` selected
+    /// it reports `%1`, and after `select-pane` on the other it reports `%0`.
+    /// That is the whole reason the active pane costs no extra round trip.
     static let listFormat = [
         "#{window_id}", "#{window_index}", "#{window_name}",
-        "#{window_active}", "#{window_activity_flag}", "#{window_layout}",
+        "#{window_active}", "#{window_activity_flag}", "#{pane_id}", "#{window_layout}",
     ].joined(separator: "\u{01}")
 }
 

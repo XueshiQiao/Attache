@@ -420,10 +420,15 @@ final class SessionViewController: NSViewController {
             makeSurface(for: paneID)
         }
 
-        if focusedPaneID == nil || !layout.panes.contains(where: { $0.id == focusedPaneID }) {
-            focusedPaneID = layout.panes.first?.id
-            if let focusedPaneID { connection.focus(paneID: focusedPaneID) }
-        }
+        // tmux's answer, not a guess this controller keeps. `#{pane_id}` on the
+        // window is its active pane, and every path that can change it —
+        // `prefix + o`, a click that reached the surface, another terminal —
+        // arrives here as a refresh. The one thing left to check is that the
+        // pane is really in this layout; the two come from the same reply, so
+        // they can only disagree if tmux sent something impossible.
+        focusedPaneID = layout.panes.contains { $0.id == window.activePaneID }
+            ? window.activePaneID
+            : layout.panes.first?.id
 
         gridView.setContent(layout: layout, surfaces: surfaces, focused: focusedPaneID)
         if let focusedPaneID, let surface = surfaces[focusedPaneID],
@@ -677,6 +682,7 @@ final class SessionViewController: NSViewController {
             }
             self.gridView.calibrate(paneID: paneID, metrics: metrics)
         }
+        surface.onFocusRequested = { [weak self] pane in self?.focusPane(pane) }
         surfaces[paneID] = surface
 
         // Live output starts flowing immediately and whatever tmux already
@@ -686,18 +692,19 @@ final class SessionViewController: NSViewController {
         connection.router.register(paneID: paneID, session: surface.terminalSession)
     }
 
+    /// Tell tmux which pane the keyboard is in, and stop there.
+    ///
+    /// It used to move the ring itself and then inform tmux, which is the one
+    /// shape this codebase does not allow: the GUI deciding and tmux catching
+    /// up. Now the command goes out and the ring moves when tmux says so, by
+    /// exactly the path `prefix + o` in another terminal takes.
+    ///
+    /// Gated on tmux's current answer rather than on a local memory, so the
+    /// `makeFirstResponder` that `syncWithModel` does after every refresh
+    /// cannot bounce a redundant `select-pane` back out.
     private func focusPane(_ paneID: String) {
-        guard focusedPaneID != paneID else { return }
-        focusedPaneID = paneID
+        guard connection.activeWindow?.activePaneID != paneID else { return }
         connection.focus(paneID: paneID)
-        if let surface = surfaces[paneID] {
-            view.window?.makeFirstResponder(surface.view)
-        }
-        gridView.setContent(
-            layout: connection.activeWindow?.layout,
-            surfaces: surfaces,
-            focused: paneID
-        )
     }
 
     // MARK: - Teardown

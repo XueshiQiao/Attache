@@ -34,6 +34,7 @@ enum AppSettings {
         static let scrollbackPrimeLines = "TmuxGUIScrollbackPrimeLines"
         static let sidebarWidth         = "TmuxGUISidebarWidth"
         static let closingTabKills      = "TmuxGUIClosingTabKills"
+        static let paneFocusRing        = "TmuxGUIPaneFocusRing"
     }
 
     /// Posted after any setting changes, with `ChromeTheme.current` already
@@ -167,6 +168,19 @@ enum AppSettings {
     static var closingTabKillsWindow: Bool {
         get { store.object(forKey: Key.closingTabKills) as? Bool ?? false }
         set { store.set(newValue, forKey: Key.closingTabKills) }
+    }
+
+    /// Whether the split window marks its active pane with an outline.
+    ///
+    /// Absent reads as `true`: with a split, keystrokes go to one pane and
+    /// nothing else on screen says which. Off is for people who find any mark
+    /// around the pane they are reading a distraction and would rather find
+    /// the cursor — nothing is drawn at all, not a fainter version.
+    /// `object(forKey:) as? Bool` rather than `bool(forKey:)`, because only the
+    /// former can tell an absent key from a stored `false`.
+    static var showsPaneFocusRing: Bool {
+        get { store.object(forKey: Key.paneFocusRing) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.paneFocusRing) }
     }
 
     // ─── Derived values ──────────────────────────────────────────────────────

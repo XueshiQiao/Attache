@@ -15,6 +15,23 @@ import GhosttyTerminal
 /// the terminal only sees what the menu declines. ⌘C and ⌘V still reach the
 /// terminal because the Edit menu routes them back down the responder chain.
 final class TmuxTerminalView: TerminalView {
+    /// This surface has taken the keyboard.
+    ///
+    /// The only reliable place to learn that a pane was clicked. The pane grid
+    /// hands every point that is not on a splitter to the surface underneath,
+    /// so a click inside a pane never reaches the grid's own `mouseDown` — its
+    /// `onPaneClicked` fires for gaps and nothing else. Meanwhile the surface
+    /// quietly becomes first responder and the keystrokes start going there.
+    /// That divergence is what left the focus ring on the pane the app had
+    /// guessed while the typing went somewhere else.
+    var onBecameFirstResponder: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { onBecameFirstResponder?() }
+        return accepted
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command),
            NSApp.mainMenu?.performKeyEquivalent(with: event) == true
@@ -49,6 +66,8 @@ final class TmuxPaneSurface {
     /// learn the cell size and to keep checking that the surface really ends
     /// up with the column count it was placed for.
     var onGridMetrics: ((TerminalGridMetrics) -> Void)?
+    /// This pane took the keyboard, so tmux should be told to make it the
+    /// active one. Carries the pane id because the view does not know it.
     var onFocusRequested: ((String) -> Void)?
 
     private let sendKeys: (String, Data) -> Void
@@ -108,6 +127,11 @@ final class TmuxPaneSurface {
         view.configuration = TerminalSurfaceOptions(backend: .inMemory(terminalSession))
         view.setAccessibilityElement(true)
         view.setAccessibilityLabel("tmux pane \(paneID)")
+        // After every stored property is set, because the closure captures
+        // `self`. The id is captured too rather than read back, so the closure
+        // needs nothing from a surface that may already be going away.
+        let id = paneID
+        view.onBecameFirstResponder = { [weak self] in self?.onFocusRequested?(id) }
     }
 
     /// Hidden panes stay attached to tmux and keep receiving output, so

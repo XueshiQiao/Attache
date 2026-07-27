@@ -132,6 +132,27 @@ struct AppearancePage: View {
             }
 
             Section {
+                Toggle(isOn: Binding(
+                    get: { store.showsPaneFocusRing },
+                    set: { store.setShowsPaneFocusRing($0) }
+                )) {
+                    iconLabel(
+                        "square.dashed.inset.filled",
+                        store.showsPaneFocusRing ? .blue : .gray,
+                        "Outline the pane you are typing in"
+                    )
+                }
+            } footer: {
+                Text(
+                    "Only ever drawn on a split window — one pane has nothing to be "
+                        + "distinguished from. Off draws nothing at all, and the terminal "
+                        + "cursor is what says which pane has the keyboard."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
                 Picker(selection: Binding(
                     get: { isEditingDarkSlot },
                     set: { editingDarkSlot = $0; query = "" }

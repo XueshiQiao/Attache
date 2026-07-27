@@ -486,12 +486,21 @@ final class PaneGridView: NSView {
 
         // A one-pane window needs no focus ring; with several, the active one
         // has to be obvious at a glance or keystrokes go somewhere surprising.
-        guard let focusedPaneID, (layoutTree?.panes.count ?? 0) > 1,
+        //
+        // Quiet, because it is drawn around the thing being read. It was 2pt of
+        // full accent, which on a scheme with a bright accent framed the pane
+        // you were working in like a selection rather than marking it — and it
+        // sat there being wrong, which is a lot of ink to spend on a lie. What
+        // it marks now is tmux's own active pane, so it is at least true; a
+        // hairline at partial alpha is enough to answer "which one am I in"
+        // without competing with the text inside it.
+        guard AppSettings.showsPaneFocusRing, let focusedPaneID,
+              (layoutTree?.panes.count ?? 0) > 1,
               let frame = layoutTree?.panes.first(where: { $0.id == focusedPaneID })?.frame
         else { return }
-        let path = NSBezierPath(rect: rect(for: frame).insetBy(dx: -1, dy: -1))
-        theme.accent.setStroke()
-        path.lineWidth = 2
+        let path = NSBezierPath(rect: rect(for: frame).insetBy(dx: -0.5, dy: -0.5))
+        theme.accent.withAlphaComponent(0.55).setStroke()
+        path.lineWidth = 1
         path.stroke()
     }
 
