@@ -119,6 +119,12 @@ final class PaneGridView: NSView {
             if wanted.contains(paneID) {
                 if surface.view.superview !== self { addSubview(surface.view) }
                 surface.setVisible(true)
+                // Pushed on every pass, not just when a pane appears. It is the
+                // only way a surface ever hears that it does not have the
+                // keyboard, and the answer changes whenever tmux moves its
+                // active pane. The focused one is handed the keyboard by
+                // `SessionViewController`, which is the other half of this.
+                if paneID != focused { surface.view.relinquishFocusIfNotFirstResponder() }
             } else {
                 surface.setVisible(false)
             }

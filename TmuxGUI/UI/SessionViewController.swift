@@ -170,6 +170,21 @@ final class SessionViewController: NSViewController {
     /// disagreement this whole codebase is built to avoid.
     static let titleBandHeight: CGFloat = 28
 
+    /// Air between the rail and the first column of text.
+    ///
+    /// The sidebar is an inset rounded panel with its own margin, and the split
+    /// divider sits just outside it — so with the grid starting at zero the
+    /// terminal's leftmost character butted straight up against the app's own
+    /// chrome, with the divider as the only thing between them. The gap is on
+    /// the left only: that is the edge with something on the other side of it.
+    ///
+    /// It costs a column when it crosses a cell boundary, and that is fine —
+    /// `PaneGridView` counts columns from its own bounds and reports what it
+    /// counts, so tmux is told the smaller number and the two still agree.
+    /// Nothing here may ever *assume* a column count; the whole file is built
+    /// on measuring one.
+    static let gridLeftInset: CGFloat = 8
+
     private func installSubviews() {
         gridView.translatesAutoresizingMaskIntoConstraints = false
         titleBand.translatesAutoresizingMaskIntoConstraints = false
@@ -187,7 +202,9 @@ final class SessionViewController: NSViewController {
             titleBand.heightAnchor.constraint(equalToConstant: Self.titleBandHeight),
 
             gridView.topAnchor.constraint(equalTo: titleBand.bottomAnchor),
-            gridView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            gridView.leadingAnchor.constraint(
+                equalTo: view.leadingAnchor, constant: Self.gridLeftInset
+            ),
             gridView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             gridView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
@@ -592,14 +609,14 @@ final class SessionViewController: NSViewController {
             return
         }
 
-        connection.capturePane(paneID: paneID) { [weak self] lines in
+        connection.capturePane(paneID: paneID) { [weak self] lines, cursor in
             guard let self, !lines.isEmpty else { return }
             // Through the router, not straight at the surface: the check and
             // the hand-off have to happen under the lock the reader queue
             // takes, or live output can be enqueued between them.
             let painted = self.connection.router.deliverSnapshot(
                 paneID: paneID,
-                data: Self.replayPayload(lines, clearingScreen: true),
+                data: Self.replayPayload(lines, clearingScreen: true, cursor: cursor),
                 ifDeliveryCountIs: since
             )
             guard !painted else { return }
@@ -649,7 +666,9 @@ final class SessionViewController: NSViewController {
     /// nothing between tmux and libghostty's parser reinterprets it. CR LF
     /// between rows, since the surface is a terminal and a bare LF would step
     /// down a row without returning to column one.
-    private static func replayPayload(_ lines: [Data], clearingScreen: Bool) -> Data {
+    private static func replayPayload(
+        _ lines: [Data], clearingScreen: Bool, cursor: TmuxSessionConnection.PaneCursor? = nil
+    ) -> Data {
         var payload = Data()
         // Home, then erase: a repaint is replacing the screen, not adding to
         // it. Omitted for the first paint of a pane, which is appending
@@ -658,6 +677,20 @@ final class SessionViewController: NSViewController {
         for (index, line) in lines.enumerated() {
             if index > 0 { payload.append(contentsOf: [0x0d, 0x0a]) }
             payload.append(line)
+        }
+
+        // Put the cursor back where tmux has it. Writing the rows leaves it
+        // after the last byte of the last one — the end of the bottom-most line
+        // with anything on it, which for a full-screen program is its status
+        // bar. It corrected itself the moment the program next drew anything,
+        // which is why it only ever looked wrong on arriving at a window.
+        //
+        // Only meaningful next to the erase above: that is what makes row one
+        // of the payload row one of the screen, so tmux's zero-based row maps
+        // onto it. The first paint of a pane replays scrollback that scrolled
+        // off the top, where no such correspondence exists — hence the default.
+        if clearingScreen, let cursor {
+            payload.append(contentsOf: Array("\u{1b}[\(cursor.row + 1);\(cursor.column + 1)H".utf8))
         }
         return payload
     }

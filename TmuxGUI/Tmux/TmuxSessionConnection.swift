@@ -321,10 +321,49 @@ final class TmuxSessionConnection {
         }
     }
 
-    func capturePane(paneID: String, completion: @escaping ([Data]) -> Void) {
-        client.runBytes("capture-pane -p -e -t \(paneID)") { output, failed in
-            completion(failed ? [] : Self.trimmingTrailingBlanks(output))
+    /// Where tmux says a pane's cursor is, zero-based from the top-left of the
+    /// visible screen.
+    struct PaneCursor {
+        let column: Int
+        let row: Int
+    }
+
+    /// A pane's visible screen, and the cursor position that goes with it.
+    ///
+    /// Both, because a captured screen without one is a screen whose cursor
+    /// ends up wherever the last byte of the last line happened to leave it.
+    /// Replaying one over a pane therefore parked the cursor at the end of the
+    /// bottom-most line with anything on it — for a full-screen program that is
+    /// its status bar, which is nowhere near the prompt the user is looking at.
+    /// Nothing was actually broken underneath: the next keystroke made the
+    /// program redraw and the cursor jumped back, which is what made it look
+    /// like a rendering glitch rather than a missing instruction.
+    ///
+    /// The two commands go down one pipe back to back, so tmux runs them in
+    /// order, and the caller only asks at all once the pane has stopped
+    /// writing — so they describe the same screen.
+    func capturePane(
+        paneID: String,
+        completion: @escaping ([Data], PaneCursor?) -> Void
+    ) {
+        client.runBytes("capture-pane -p -e -t \(paneID)") { [weak self] output, failed in
+            guard let self, !failed else {
+                completion([], nil)
+                return
+            }
+            let lines = Self.trimmingTrailingBlanks(output)
+            client.run("display-message -p -t \(paneID) '#{cursor_x},#{cursor_y}'") { reply, failed in
+                completion(lines, failed ? nil : Self.parseCursor(reply.first))
+            }
         }
+    }
+
+    private static func parseCursor(_ reply: String?) -> PaneCursor? {
+        let parts = (reply ?? "").split(separator: ",")
+        guard parts.count == 2, let column = Int(parts[0]), let row = Int(parts[1]),
+              column >= 0, row >= 0
+        else { return nil }
+        return PaneCursor(column: column, row: row)
     }
 
     /// `capture-pane` returns one line per row of the pane, blanks included.

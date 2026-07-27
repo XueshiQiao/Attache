@@ -32,6 +32,28 @@ final class TmuxTerminalView: TerminalView {
         return accepted
     }
 
+    /// Tell the surface it does not have the keyboard.
+    ///
+    /// libghostty learns "not focused" from exactly one place —
+    /// `resignFirstResponder` — which by definition cannot fire for a surface
+    /// that was never focused in the first place. `ghostty_surface_set_focus`
+    /// is therefore never called for it and the terminal core keeps its own
+    /// default, which is focused: a second pane appearing in a window drew a
+    /// solid blinking cursor next to the one that really had the keyboard.
+    /// The window is already key by then, so no `windowDidBecomeKey` arrives
+    /// to correct it either — which is why clicking any pane fixed it, that
+    /// being the first thing to produce a become/resign pair.
+    ///
+    /// Calling the responder callback by hand is the only channel the library
+    /// offers for this. Guarded so it can never contradict AppKit: a view that
+    /// really is the first responder keeps its focus, because taking it away
+    /// would leave keystrokes arriving at a surface that believes it is not
+    /// being typed into.
+    func relinquishFocusIfNotFirstResponder() {
+        guard window?.firstResponder !== self else { return }
+        _ = resignFirstResponder()
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command),
            NSApp.mainMenu?.performKeyEquivalent(with: event) == true
