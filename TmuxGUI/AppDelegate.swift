@@ -81,6 +81,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // colour across the tab strip; while both were the system grey the
         // mismatch was invisible, and a theme is exactly what exposes it.
         window.backgroundColor = ChromeTheme.current.background
+        // An empty toolbar, and it is load-bearing rather than decoration.
+        // `NSSplitViewItem.allowsFullHeightLayout` only lifts the sidebar into
+        // the titlebar band — which is what puts the traffic lights inside the
+        // rail's rounded panel instead of above it — when the window actually
+        // has a toolbar. Unified style, no items: the tab strip occupies that
+        // band visually, so nothing should be drawn in it.
+        let toolbar = NSToolbar(identifier: "TmuxGUIMain")
+        toolbar.showsBaselineSeparator = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
         window.contentMinSize = minimumContentSize
         window.contentViewController = controller
         // Assigning a content view controller resizes the window to fit that

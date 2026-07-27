@@ -198,6 +198,17 @@ one of them presents as "the code is obviously correct and yet".
   not clipped. Whichever sibling is added last wins. A view can have a correct
   frame, `isHidden == false`, alpha 1, and confirmed `draw(_:)` calls, and still
   render nothing. Check `addSubview` order first.
+- **A sidebar's inset panel is the design, not a defect — and
+  `allowsFullHeightLayout` needs a toolbar.** On macOS 26 an
+  `NSSplitViewItem` with sidebar behaviour draws the rail as an inset rounded
+  panel. The traffic lights belong *inside* that panel, and
+  `allowsFullHeightLayout` is what lifts it into the titlebar band to put them
+  there — but the flag does nothing unless `window.toolbar` is set. An empty
+  `NSToolbar` is enough, and the main window carries one for exactly this and
+  no other reason. Both windows here were "fixed" twice by deleting the panel
+  instead, which produced a flat rail with the lights above it: the opposite of
+  the ask, arrived at because the first window happened to come right when a
+  toolbar item was added for an unrelated reason and nobody asked why.
 - **libghostty claims ⌘ keys.** Its terminal view treats them as candidates for
   its own keybinds before the main menu is consulted. `TmuxTerminalView`
   overrides `performKeyEquivalent` to give the menu first refusal.
