@@ -12,6 +12,42 @@ struct BehaviourPage: View {
 
     var body: some View {
         Form {
+            // First on the page on purpose. It is the only setting here that
+            // can end a process, and it used to sit below two steppers and a
+            // three-line footer — far enough down that the owner of the app
+            // asked twice for a setting that was already there.
+            Section {
+                Picker(selection: Binding(
+                    get: { store.closingTabKillsWindow },
+                    set: { store.setClosingTabKillsWindow($0) }
+                )) {
+                    Text("Hide the tab — tmux keeps running").tag(false)
+                    Text("Kill the tmux window").tag(true)
+                } label: {
+                    iconLabel("xmark.square.fill", store.closingTabKillsWindow ? .red : .gray, "Closing a tab")
+                }
+
+                if store.closingTabKillsWindow {
+                    Label(
+                        "Killing ends every process in the window, including an agent mid-run, "
+                            + "and there is no undo. The ✕ still asks first.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text("Tabs")
+            } footer: {
+                Text(
+                    "Hiding removes the tab from this app's strip and sends tmux nothing at "
+                        + "all; the window is still there in `tmux attach` and the strip's "
+                        + "hidden badge brings it back."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
             Section {
                 HStack {
                     featureLabel(
@@ -71,38 +107,6 @@ struct BehaviourPage: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
 
-            Section {
-                Picker(selection: Binding(
-                    get: { store.closingTabKillsWindow },
-                    set: { store.setClosingTabKillsWindow($0) }
-                )) {
-                    Text("Hide the tab — tmux keeps running").tag(false)
-                    Text("Kill the tmux window").tag(true)
-                } label: {
-                    iconLabel("xmark.square.fill", store.closingTabKillsWindow ? .red : .gray, "Closing a tab")
-                }
-
-                if store.closingTabKillsWindow {
-                    Label(
-                        "Killing ends every process in the window, including an agent mid-run, "
-                            + "and there is no undo. The ✕ still asks first.",
-                        systemImage: "exclamationmark.triangle.fill"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-            } header: {
-                Text("Tabs")
-            } footer: {
-                Text(
-                    "Hiding removes the tab from this app's strip and sends tmux nothing at "
-                        + "all; the window is still there in `tmux attach` and the strip's "
-                        + "hidden badge brings it back."
-                )
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
         }
         .formStyle(.grouped)
         .navigationTitle("Behaviour")
