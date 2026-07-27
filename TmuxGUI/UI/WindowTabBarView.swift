@@ -404,7 +404,6 @@ final class WindowTabItemView: NSView {
     private func setUp() {
         wantsLayer = true
         layer?.cornerRadius = 6
-        layer?.borderWidth = isActive ? 1 : 0
         applyColors()
         toolTip = "\(tmuxWindow.index): \(tmuxWindow.name)"
 
@@ -433,18 +432,28 @@ final class WindowTabItemView: NSView {
         addSubview(closeButton)
     }
 
+    /// The same shape the session rail draws a selected row in.
+    ///
+    /// The active tab used to be a 18%-alpha wash inside a one-point accent
+    /// border. Beside a rail whose selected row is a solid pill, that read as
+    /// two different controls in two different apps — and the border is what
+    /// dated it. Solid fill, no border, text in `onAccent` so it stays legible
+    /// when a scheme's accent is a light colour.
     private func applyColors() {
         let theme = ChromeTheme.current
         if isActive {
-            layer?.backgroundColor = theme.accent.withAlphaComponent(0.18).cgColor
-            layer?.borderColor = theme.accent.cgColor
+            layer?.backgroundColor = theme.accent.cgColor
         } else if isHovering {
             layer?.backgroundColor = theme.hover.cgColor
         } else {
             layer?.backgroundColor = NSColor.clear.cgColor
         }
-        label.textColor = isActive ? theme.text : theme.mutedText
-        closeButton.contentTintColor = theme.mutedText
+        label.textColor = isActive
+            ? theme.onAccent
+            : (isHovering ? theme.text : theme.mutedText)
+        closeButton.contentTintColor = isActive
+            ? theme.onAccent.withAlphaComponent(0.75)
+            : theme.mutedText
     }
 
     override func layout() {
