@@ -281,6 +281,40 @@ snapshot to land on top of it.
 
 ## 5 · Features not started
 
+- [ ] **Translucency, the way Ghostty does it.** Asked for 2026-07-27, after
+      the window tabs moved into the rail: the app should read as one piece of
+      frosted glass rather than as flat fills.
+
+      Half of it already exists and is worth reading before starting.
+      `SessionSidebarView.draw` paints `ChromeTheme.background` at **0.55
+      alpha** over the `NSVisualEffectView` the sidebar split view item
+      supplies, which is what makes the rail sample the desktop behind the
+      window while still taking its colour from the terminal scheme. The pane
+      side is the opposite: `PaneGridView` fills `ChromeTheme.background`
+      opaque, the window is `isOpaque = true`, and the surfaces are built with
+      `withBackgroundOpacity(0)` so the grid's fill is what shows through
+      between glyphs.
+
+      So the work is on the pane side, and the order matters:
+
+      1. `window.isOpaque = false` plus a background colour with alpha, or an
+         `NSVisualEffectView` behind the content half.
+      2. A user setting for the opacity, and one for whether the blur follows
+         the window or the desktop (`.behindWindow` vs `.withinWindow`).
+      3. Measure it. Ghostty's own docs warn that background blur costs real
+         GPU time; this app already has a throughput probe, and the question
+         "does 19 MB/s still arrive on time through a blurred window" is
+         exactly the kind it answers.
+
+      Two traps are already known and both will bite here. `PaneGridView.draw`
+      must keep matching `window.backgroundColor`, because on macOS 26 that
+      view's backing layer runs 66pt past its bounds and paints the *window's*
+      colour in the overhang — with translucency the two being different stops
+      being invisible. And `ChromeTheme` derives every colour from the terminal
+      scheme's foreground/background pair on the assumption they are opaque; a
+      contrast floor computed against a colour that is now translucent is no
+      longer a contrast floor.
+
 - [ ] **Search** within a pane's scrollback. libghostty has
       `TerminalSurfaceSearchDelegate`; the buffer is already populated.
 - [ ] **Copy mode.** tmux has its own; decide whether to drive `copy-mode` or

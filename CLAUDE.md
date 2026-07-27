@@ -17,7 +17,7 @@ and never applies a change locally before tmux confirms it.
 That is what makes `tmux attach` from an ordinary terminal agree with the app,
 and it is the invariant to protect. If a feature seems to need locally authored
 state, look for the tmux format variable that already holds it. The one
-deliberate exception is the set of tab-hidden window ids in
+deliberate exception is the set of hidden window ids in
 `SessionViewController`, and it is commented as such.
 
 ## Layers
@@ -29,12 +29,27 @@ TmuxServer            one connection per tmux session
      ├─ TmuxOutputRouter     pane id → surface, thread-safe, off the main queue
      └─ TmuxMetrics          throughput and stall measurement
 
-MainViewController     session rail + the current session's view
- └─ SessionViewController    window tab strip + pane grid for one session
-     ├─ WindowTabBarView     second-level tabs
+MainViewController     the two-level rail + the current session's panes
+ ├─ SessionSidebarView       both levels: sessions, and the windows of any open one
+ │   └─ SidebarRows          the heading / window / hidden-count row views
+ └─ SessionViewController    one session's content half
+     ├─ TitleBandView        28pt drag band over the panes; draws nothing
      └─ PaneGridView         panes placed on tmux's character grid
          └─ TmuxPaneSurface  one pane ↔ one libghostty surface
 ```
+
+The rail draws the window level but does not own it: it outlives every session
+it displays, so hiding, killing and the hidden-window set live in
+`SessionViewController`, and `MainViewController.wireSidebar` routes each click
+to the controller of the session the *row* belonged to — never to whichever
+session happens to be current when the callback fires. `inSession` makes that
+controller if there is not one yet, because the rail lists the windows of every
+session it has open and acting on one of them is not conditional on having
+looked at it.
+
+Two things in the UI are authored locally and nothing else is: the hidden window
+ids in `SessionViewController`, and `expandedSessions` in `SessionSidebarView`.
+tmux has no opinion about either.
 
 `TmuxGUI/Tmux/` has no AppKit imports and should stay that way.
 `TmuxGUI/UI/` is the only place that touches views.
@@ -65,8 +80,12 @@ accumulates into unreadable overdraw wherever a TUI rewrites a region.
 adds beyond `columns × cellWidth` rather than assuming it. Do not replace that
 measurement with a constant.
 
-**Anything destructive needs a confirmation and separate wording.** Closing a
-tab hides it. A window may have an agent mid-run; there is no undo.
+**Anything destructive needs a confirmation and separate wording.** Hiding a
+window takes its row out of the rail and sends tmux nothing; killing is a
+different menu item, worded as what it is, and asks first. A window may have an
+agent mid-run; there is no undo. `closingTabKillsWindow` decides which of the
+two comes first in the menu — it never removes either, because a preference
+that silently deletes a capability is worse than one that reorders a menu.
 
 ## Building and running
 
@@ -154,12 +173,35 @@ here; `cliclick` (Homebrew) delivers events the app actually receives:
 cliclick c:x,y                  # click
 cliclick dc:x,y                 # double-click
 cliclick kd:cmd t:4 ku:cmd      # ⌘4
-cliclick m:x1,y1 dd:x1,y1 m:x2,y2 du:x2,y2   # drag
+cliclick dd:x1,y1 dm:xa,ya dm:x2,y2 du:x2,y2   # drag
 ```
+
+**A drag needs `dm`, not `m`.** This recipe used to read `m:` for the steps
+between `dd` and `du`, and it silently does not work: `m` posts a *mouse moved*
+event, which AppKit delivers as `mouseMoved(with:)`, so a view that implements
+`mouseDragged(with:)` — every draggable thing in this app — sees nothing at all
+and the gesture ends as a plain click. `dm` is the one that continues a drag.
+Give it two or three intermediate points; one jump can land past the threshold
+a view uses to tell a drag from a shaky click.
 
 Then screenshot and look: `screencapture -x -o -R x,y,w,h out.png`. Move the
 window to a known position first — the coordinates are global and a second
 display puts it at a negative x.
+
+**Do not `screencapture` between `dd` and `du`.** Observed here: capturing
+mid-drag sometimes ends the gesture, so the `du` arrives with nothing to deliver
+to and the drop is lost. It looks exactly like the app dropping the action.
+Capture the mid-drag state in one run and re-do the same drag without a capture
+to check the result.
+
+**Check what is frontmost before sending keystrokes.** `cliclick t:` and
+`osascript ... keystroke` both go to whatever app is in front, and this app
+loses front regularly during a test — anything the pointer touches that opens a
+browser tab or a text-selection popup takes it. Every stray keystroke lands
+somewhere real. `osascript -e 'tell application "System Events" to get name of
+first application process whose frontmost is true'` before, and put the
+`set frontmost of process "TmuxGUI" to true` in the *same* AppleScript as the
+keystroke so nothing can get between them.
 
 **Test against a throwaway tmux *server*, not a throwaway session, and reach it
 with `-L` on every single command.** The user's real sessions have long-running
@@ -219,8 +261,11 @@ one of them presents as "the code is obviously correct and yet".
   `session:index`; without the colon tmux reads it as the single token `$104`
   and does nothing at all — no error.
 - **Selecting on mouse down destroys the gesture.** Selection sends a tmux
-  command, tmux replies, the strip rebuilds, and the view being dragged is gone.
-  Select on mouse up.
+  command, tmux replies, the rail rebuilds, and the view being dragged is gone.
+  Select on mouse up. The same applies to a reorder drag: the rail draws an
+  insertion line while dragging and sends `move-window` once, on mouse up.
+  Committing on every drag step is what the window-tab strip did, and it pulled
+  the dragged view out from under the pointer on the first step.
 - **`clickCount == 1` is not a reliable click test.** Synthesised events carry
   0. Track that a press started on the view instead.
 - **Autocorrect eats Return in inline editors.** The system completion popup
@@ -244,6 +289,27 @@ one of them presents as "the code is obviously correct and yet".
   and `$TMUX` set, `TMUX_TMPDIR=… tmux ls` lists the *real* sessions, while
   `TMUX_TMPDIR=… tmux -L probe ls` correctly resolves under the custom
   directory. `-L` is what isolates. See "Verifying a change".
+- **`move-window` moves the active flag off the window it moves.** `-d` means
+  "do not select the newly linked window", and a move is an unlink followed by
+  a link — so moving the window that is *currently active* leaves it wherever
+  it was asked to go with tmux's active flag handed to something else. Verified
+  on tmux 3.6a: with w5 active, `move-window -b -d -s @4 -t t:1` puts w5 at
+  index 1 and `window_active` on w1. A drag that moved the selection off the
+  row being dragged is what this presents as. `TmuxSessionConnection` sends
+  `select-window` afterwards when, and only when, the moved window was the
+  active one.
+- **`move-window -b` cannot append, and says nothing about it.** Given windows
+  at 0-3, `-b -t t:5` does not put the window at 5 — it clamps to the last
+  window and inserts before *that*. The end of a session is reachable only by a
+  plain move (no `-b`) onto a free index, and a plain move onto an *occupied*
+  one fails with `index in use` and a non-zero status. Both measured on tmux
+  3.6a against an isolated `-L` server.
+- **Hiding the active window used to undo itself.** Hiding sends tmux nothing
+  about hiding — only a `select-window` for the row to move to — and the sync
+  that follows ran before tmux could answer, so tmux still named the row that
+  had just been hidden and the "tmux made it active again, put it back" rule
+  fired on it. ⌘W therefore only ever switched windows. `hidingActiveWindow`
+  is the latch that tells the two apart.
 - **`capture-pane` returns one line per row including blanks.** Painting all of
   them parks the cursor on the bottom row, so a prompt redrawn after SIGWINCH
   lands at the bottom of an empty screen. Trim trailing blanks.

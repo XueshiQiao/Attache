@@ -166,19 +166,125 @@ final class TmuxSessionConnection {
         client.send("rename-window -t \(id) \(TmuxCommand.quote(name))")
     }
 
-    /// Move a window to a new index, then renumber.
+    /// Put a window immediately before the one currently at `index`, then
+    /// renumber.
     ///
     /// `-b` inserts *before* the target and shuffles the rest up, which is the
-    /// behaviour a tab drag implies; a plain move to an occupied index fails.
-    /// The follow-up `-r` closes the gaps so indexes stay contiguous — that is
-    /// what keeps ⌘1-9 matching what the strip shows.
+    /// behaviour a drag implies; a plain move to an occupied index fails with
+    /// `index in use`. The follow-up `-r` closes the gaps so indexes stay
+    /// contiguous — that is what keeps ⌘1-9 matching what the rail shows.
+    ///
+    /// `index` must be an index a window actually has. Measured on tmux 3.6a
+    /// against an isolated `-L` server: given windows at 0-3, `-b -t t:5` does
+    /// **not** append — it clamps to the last window and inserts before *that*,
+    /// so a drag to the bottom of the list would land one short of where the
+    /// insertion line promised. `moveWindow(id:toFreeIndex:)` is the end of the
+    /// list; this one is every other position.
     ///
     /// The target has to be `session:index`; without the colon tmux reads
     /// `$10` plus `4` as the single token `$104` and silently does nothing.
-    func moveWindow(id: String, toIndex index: Int) {
-        guard let target = sessionTarget else { return }
+    @discardableResult
+    func moveWindow(id: String, beforeIndex index: Int) -> Bool {
+        guard let target = sessionTarget else { return false }
         client.send("move-window -b -d -s \(id) -t \(target):\(index)")
         client.send("move-window -r -t \(target)")
+        reselectIfItWasActive(id)
+        return true
+    }
+
+    /// Put a window in this session, before the one with `anchor` — or after
+    /// everything when `anchor` is nil or names a window this session no longer
+    /// has. Returns false when nothing was sent.
+    ///
+    /// The index is worked out here, at the last possible moment, from this
+    /// session's current window list. That is the whole point of taking an id:
+    /// an index captured when the user let go of the mouse can name a different
+    /// window by the time the command goes out — another client reorders, or a
+    /// confirmation sits open for a few seconds — and `move-window -b` onto an
+    /// occupied index does not fail, it quietly inserts in the wrong place.
+    @discardableResult
+    func moveWindow(id: String, before anchor: String?) -> Bool {
+        guard let anchor, let index = windows.first(where: { $0.id == anchor })?.index else {
+            guard let free = freeIndexAtEnd else { return false }
+            return moveWindow(id: id, toFreeIndex: free)
+        }
+        return moveWindow(id: id, beforeIndex: index)
+    }
+
+    /// An index no window in this session uses, above every one that does — the
+    /// argument `moveWindow(id:toFreeIndex:)` wants, worked out in the one place
+    /// that knows this session's window list.
+    ///
+    /// A margin rather than one past the highest, because one past the highest
+    /// is exactly the index `new-window` takes: another client creating a window
+    /// between reading this and tmux running the move would collide, and a plain
+    /// move onto an occupied index fails outright.
+    ///
+    /// Clamped, and `nil` when there is no room: tmux keeps a window index in an
+    /// `int`, so a margin added blindly to an index already near `INT_MAX` names
+    /// an index tmux cannot represent. Read from tmux's own list rather than
+    /// assuming 1...n — `base-index` is a user option and a session whose
+    /// windows were killed without a renumber has gaps.
+    var freeIndexAtEnd: Int? {
+        let last = windows.map(\.index).max() ?? 0
+        let ceiling = Int(Int32.max)
+        guard last < ceiling else { return nil }
+        return min(last + 1000, ceiling)
+    }
+
+    /// Move a window to an index nothing occupies, then renumber — the only
+    /// way to put one at the *end* of its session.
+    ///
+    /// No `-b`, because that is what makes tmux take the index literally rather
+    /// than as "before whatever is there". The caller owes the guarantee that
+    /// the index is free: measured on tmux 3.6a, a plain move onto an occupied
+    /// index fails outright with `index in use: 2` and a non-zero status, so
+    /// getting this wrong is a move that silently does not happen.
+    @discardableResult
+    func moveWindow(id: String, toFreeIndex index: Int) -> Bool {
+        guard let target = sessionTarget else { return false }
+        client.send("move-window -d -s \(id) -t \(target):\(index)")
+        client.send("move-window -r -t \(target)")
+        reselectIfItWasActive(id)
+        return true
+    }
+
+    /// Whether this session's windows currently hold `id`.
+    ///
+    /// Asked before a move that a human has been sitting in front of a
+    /// confirmation for: `move-window -s @25` takes the window from wherever it
+    /// is *now*, and the sentence the user agreed to named a particular session.
+    func holds(windowID id: String) -> Bool {
+        windows.contains { $0.id == id }
+    }
+
+    /// Put the selection back on a window that was just moved.
+    ///
+    /// `-d` is what stops a drag of a *background* window from also switching
+    /// to it, and it is needed for that. But a move is an unlink followed by a
+    /// link, so when the window being moved is the one that is *currently
+    /// active*, `-d` also means it does not get selected again — tmux hands the
+    /// active flag to whatever else is in the session.
+    ///
+    /// Verified on tmux 3.6a against an isolated `-L` server: with w5 active,
+    /// `move-window -b -d -s @4 -t t:1` leaves w5 where it was asked to go and
+    /// `window_active` on w1 instead. Reordering must not move the selection —
+    /// dragging the row you are looking at and landing on a different pane is
+    /// exactly the surprise a mirror-of-tmux GUI should not produce — so it
+    /// goes back. Sent unconditionally rather than after checking a reply,
+    /// because `select-window` on the window that is already active is a no-op
+    /// and tmux answers a redundant one without complaint.
+    ///
+    /// The guard is also what makes these two methods safe to call on a *other*
+    /// session's connection, which is how a window is dragged from one session
+    /// into another: an arriving foreign window cannot be this session's active
+    /// one, so nothing is sent — and nothing should be. Verified on tmux 3.6a
+    /// that `-d` holds across sessions, so the destination's current window
+    /// does not move; a `select-window` here would flip it for every client
+    /// attached there.
+    private func reselectIfItWasActive(_ id: String) {
+        guard activeWindowID == id else { return }
+        client.send("select-window -t \(id)")
     }
 
     /// Resize a pane to an exact cell size — used when the user drags a

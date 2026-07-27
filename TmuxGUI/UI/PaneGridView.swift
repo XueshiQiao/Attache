@@ -97,13 +97,29 @@ final class PaneGridView: NSView {
         adoptCellSizeForLayout(isNewsFromTmux: isNewsFromTmux)
 
         let wanted = Set(layoutTree?.panes.map(\.id) ?? [])
-        for view in subviews where !(view is TmuxTerminalView) { view.removeFromSuperview() }
+        let keep = Set(
+            surfaces.filter { wanted.contains($0.key) }.map { ObjectIdentifier($0.value.view) }
+        )
+
+        // Driven by what is actually on screen, not by what is in `surfaces`.
+        // Deciding from the dictionary leaves a terminal view stranded the
+        // moment its surface stops being in it — and a stranded view keeps
+        // drawing the last frame it had, over the top of the window the user
+        // switched to. Two panes' output visibly interleaved in one rectangle
+        // is what that looks like.
+        for view in subviews {
+            guard view is TmuxTerminalView else {
+                view.removeFromSuperview()
+                continue
+            }
+            if !keep.contains(ObjectIdentifier(view)) { view.removeFromSuperview() }
+        }
+
         for (paneID, surface) in surfaces {
             if wanted.contains(paneID) {
                 if surface.view.superview !== self { addSubview(surface.view) }
                 surface.setVisible(true)
-            } else if surface.view.superview === self {
-                surface.view.removeFromSuperview()
+            } else {
                 surface.setVisible(false)
             }
         }
@@ -455,7 +471,7 @@ final class PaneGridView: NSView {
         let theme = ChromeTheme.current
         // Must match the window's own background colour. On macOS 26 this
         // view's backing layer runs 66pt past its bounds and paints the
-        // *window's* colour over the tab strip; the two agreeing is what keeps
+        // *window's* colour in the overhang; the two agreeing is what keeps
         // that from being visible the moment a theme leaves the system grey.
         theme.background.setFill()
         dirtyRect.fill()

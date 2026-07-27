@@ -71,24 +71,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "TmuxGUI"
-        // No visible title bar. The content runs to the top of the window and
-        // the window-tab strip occupies that band instead; the traffic lights
-        // float over the session rail, which leaves room for them.
+        // No visible title bar. The content runs to the top of the window: the
+        // rail on the left, with the traffic lights floating over it, and panes
+        // on the right all the way up. The window-tab strip used to fill that
+        // band on the right; the tabs are rows in the rail now and nothing
+        // replaced it, which is why `isMovableByWindowBackground` below and the
+        // rail's own `mouseDownCanMoveWindow` are the only ways left to drag
+        // this window by its inside.
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.isOpaque = true
         // Has to match `PaneGridView`'s fill. That view's backing layer runs
-        // 66pt past its own bounds on macOS 26 and paints the *window's*
-        // colour across the tab strip; while both were the system grey the
-        // mismatch was invisible, and a theme is exactly what exposes it.
+        // 66pt past its own bounds on macOS 26 and paints the *window's* colour
+        // in the overhang; while both were the system grey the mismatch was
+        // invisible, and a theme is exactly what exposes it.
         window.backgroundColor = ChromeTheme.current.background
         // An empty toolbar, and it is load-bearing rather than decoration.
         // `NSSplitViewItem.allowsFullHeightLayout` only lifts the sidebar into
         // the titlebar band — which is what puts the traffic lights inside the
         // rail's rounded panel instead of above it — when the window actually
-        // has a toolbar. Unified style, no items: the tab strip occupies that
-        // band visually, so nothing should be drawn in it.
+        // has a toolbar. Unified style, no items: nothing is supposed to be
+        // drawn in that band on the content side — panes run up into it.
         let toolbar = NSToolbar(identifier: "TmuxGUIMain")
         toolbar.showsBaselineSeparator = false
         window.toolbar = toolbar
@@ -180,16 +184,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(item)
     }
 
-    /// Native shortcuts for the things a tab strip should do.
+    /// Native shortcuts for the window level, which lives in the rail.
     ///
     /// These sit alongside the user's tmux `prefix` bindings rather than
     /// replacing them: ⌘T and `prefix + c` both end up calling `new-window`,
-    /// and the strip updates the same way whichever one was used.
+    /// and the rail updates the same way whichever one was used.
     private func makeWindowMenuItem() -> NSMenuItem {
         let item = NSMenuItem()
         let menu = NSMenu(title: "Window")
         entry(menu, "New Window", "t", [.command], #selector(newWindow))
-        entry(menu, "Hide Current Tab", "w", [.command], #selector(hideCurrentWindow))
+        entry(menu, "Hide Current Window", "w", [.command], #selector(hideCurrentWindow))
         menu.addItem(.separator())
         entry(menu, "Next Window", "]", [.command, .shift], #selector(nextWindow))
         entry(menu, "Previous Window", "[", [.command, .shift], #selector(previousWindow))

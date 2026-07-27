@@ -5,14 +5,19 @@ any ordinary terminal and you get the ordinary tmux — the processes never
 notice this app exists.
 
 ```
-tmux session  →  a row in the left rail
-tmux window   →  a tab in the top strip
+tmux session  →  a group heading in the left rail
+tmux window   →  a row under that heading
 tmux pane     →  a split in the content area
 ```
 
+Both levels are in one list. Windows used to be a strip of tabs across the top
+of the content area; they are rows under their session now. Any session can be
+opened, not only the one on screen, and a window can be dragged out of one
+session's list and into another's.
+
 The interface holds no state of its own. Clicking, reordering, renaming and
 splitting all turn into tmux commands and only take visible effect when tmux
-reports back — so `prefix + c` typed in another terminal adds a tab here by
+reports back — so `prefix + c` typed in another terminal adds a row here by
 exactly the same path a click on **+** does.
 
 ## How it works
@@ -39,20 +44,29 @@ That leaves three wires:
   `columns × rows` goes at exactly `(x·cellWidth, y·cellHeight)`. Both sides
   work from one grid, so the splitters cannot drift apart.
 - **Drag a splitter** → `resize-pane`. tmux follows the GUI, not the reverse.
-- **Drag a tab** → `move-window`. **Double-click a tab** → `rename-window`.
-- **Closing a tab only hides it — it never kills anything.** A window may have
-  an AI agent mid-run and there is no undo for that. Killing is a separate
-  context-menu item with explicit wording and a confirmation. Hidden windows
-  come back from the counter at the right of the strip.
+- **Drag a row up or down** → `move-window`. **Double-click** → `rename-window`.
+- **Drag a row into another session** → the same `move-window`, aimed at that
+  session. Dropping on a closed heading puts the window at the end of it.
+  Moving a session's *last* window destroys that session — tmux does not keep
+  an empty one — so that one drop asks first. Nothing running is harmed either
+  way; the window and its panes arrive intact.
+- **Hiding a window never kills anything.** A window may have an AI agent
+  mid-run and there is no undo for that, so hiding only takes the row out of
+  the rail and sends tmux nothing at all. Killing is a separate context-menu
+  item with explicit wording and a confirmation. Hidden windows come back from
+  the `N hidden` row under their session.
 - **Scrollback.** A pane is seeded with tmux's history the first time it is
   shown.
 - **Shortcuts**, alongside your own tmux `prefix` bindings rather than
-  replacing them: ⌘T new window, ⌘W hide tab, ⌘1-9 select window,
+  replacing them: ⌘T new window, ⌘W hide window, ⌘1-9 select window,
   ⌘⇧[ ] previous/next window; ⌃⌘1-9 select session, ⌃⌘[ ] previous/next
   session, ⌘⇧N new session; Shift+PageUp/PageDown/Home/End for scrollback.
 - **Activity dots** reuse tmux's own activity flag, so they mean the same
   thing as the `#` in a tmux status line.
-- **No title bar.** The window-tab strip occupies that band instead.
+- **A title bar you have to look for.** A 28pt band over the panes, painted by
+  nothing at all — the window background shows through it — carrying the active
+  window's name and nothing else. It is what the window is dragged by, and what
+  keeps terminal text out from under the rounded top corners.
 
 ## Throughput probe
 
@@ -128,8 +142,8 @@ reach its socket under `/private/tmp/tmux-<uid>/`.
 
 - On macOS 26 a sibling view that draws gets a backing layer 66pt taller than
   itself — the title-bar scroll-edge effect — and that overhang is not clipped.
-  Whichever view is added last wins. The tab strip was invisible for a while
-  because the content area was painting over it.
+  Whichever view is added last wins. The window-tab strip was invisible for a
+  while because the content area was painting over it.
 - libghostty's terminal view claims ⌘ combinations before the main menu sees
   them. A subclass gives the menu first refusal.
 - libghostty reserves window padding by default, and at a normal font size that
@@ -142,7 +156,7 @@ reach its socket under `/private/tmp/tmux-<uid>/`.
   every connection at whichever client moved last.
 - `move-window` needs `session:index`; without the colon tmux silently does
   nothing.
-- Selecting a tab on mouse *down* rebuilds the strip from tmux's reply and
+- Selecting a row on mouse *down* rebuilds the rail from tmux's reply and
   destroys the view mid-gesture. Selection happens on mouse up.
 
 ## Working on it

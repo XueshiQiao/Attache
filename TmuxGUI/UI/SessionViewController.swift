@@ -6,8 +6,15 @@
 import Cocoa
 import GhosttyTerminal
 
-/// Shows one tmux session: a tab per window, and the active window's panes
-/// laid out as tmux has them.
+/// Shows one tmux session: the active window's panes, laid out as tmux has
+/// them, filling the whole content area.
+///
+/// The window tabs used to be a strip across the top of this view. They are
+/// rows in the rail now, so this controller draws panes and nothing else — but
+/// it still *owns* the window level, because the hidden-window set and the
+/// kill confirmation belong to a session rather than to a rail that outlives
+/// every session it displays. `MainViewController` routes the rail's clicks
+/// here.
 ///
 /// Holds the pane surfaces for every window visited so far, not just the
 /// visible one. tmux streams output for the whole session down one pipe
@@ -18,8 +25,8 @@ import GhosttyTerminal
 final class SessionViewController: NSViewController {
     let connection: TmuxSessionConnection
 
-    private let tabBar = WindowTabBarView(frame: .zero)
     private let gridView = PaneGridView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+    private let titleBand = TitleBandView(frame: .zero)
     /// Three layers, and which one a setting belongs in matters: the base
     /// template below is what this app needs to be true of any surface, the
     /// user's font goes in the per-session overrides, and the colours go in
@@ -58,13 +65,27 @@ final class SessionViewController: NSViewController {
     private var adoptedCellSize = false
     private var focusedPaneID: String?
 
-    /// Windows the user closed from the tab strip.
+    /// Windows the user hid from the rail.
     ///
-    /// Closing a tab must never kill anything — an AI agent mid-run is the
-    /// expensive case and there is no undo for it. But the strip is a mirror
-    /// of tmux's window list, so "closed" has to be remembered here or the tab
-    /// simply reappears on the next sync.
-    private var hiddenWindowIDs = Set<String>()
+    /// Hiding must never kill anything — an AI agent mid-run is the expensive
+    /// case and there is no undo for it. But the rail is a mirror of tmux's
+    /// window list, so "hidden" has to be remembered here or the row simply
+    /// reappears on the next sync. This set is the app's one piece of state
+    /// tmux cannot contradict, and the only one.
+    private(set) var hiddenWindowIDs = Set<String>()
+
+    /// A window hidden while it was the active one, until tmux reports that the
+    /// selection has actually moved off it.
+    ///
+    /// Hiding sends tmux nothing about hiding — only a `select-window` for the
+    /// row to move to. Until that comes back, tmux's idea of the active window
+    /// is still the row that was just hidden, and the "tmux made it active
+    /// again, so put it back" rule in `syncWithModel` reads that as tmux
+    /// undoing the hide. It fired on every ⌘W: the window was hidden, restored
+    /// a microsecond later, and all that survived was the selection change —
+    /// which on a two-window session looks exactly like ⌘W toggling between
+    /// window 1 and window 2, because that is what it was doing.
+    private var hidingActiveWindow: String?
 
     /// Last geometry each pane was painted at. tmux reflows a pane when the
     /// layout changes but does not make the program inside repaint, so a pane
@@ -88,6 +109,10 @@ final class SessionViewController: NSViewController {
     private var syncScheduled = false
 
     var onStatusChange: ((String) -> Void)?
+    /// Something about this session's window list changed and the rail draws
+    /// it. Not the same signal as the connection's model observer: hiding and
+    /// restoring never reach tmux, so nothing else would ever announce them.
+    var onWindowsChanged: (() -> Void)?
 
     init(connection: TmuxSessionConnection) {
         self.connection = connection
@@ -106,7 +131,6 @@ final class SessionViewController: NSViewController {
         super.viewDidLoad()
         installSubviews()
         wireGrid()
-        wireTabBar()
 
         connection.addModelObserver { [weak self] in self?.setNeedsSync() }
         connection.onStatusChange = { [weak self] status in self?.onStatusChange?(status) }
@@ -116,24 +140,53 @@ final class SessionViewController: NSViewController {
     // connected whether or not it is on screen, which is what keeps the
     // sidebar's activity dots live and switching instant.
 
+    /// A title bar restored to the top of the content half, and the pane grid
+    /// under it.
+    ///
+    /// The band exists for two mechanical reasons, not for what it says. With
+    /// the window-tab strip gone this half had nothing with
+    /// `mouseDownCanMoveWindow`, and the window has no title bar, so the only
+    /// way left to drag it was the rail's empty space — which runs out as soon
+    /// as a session has enough windows to fill the list. And terminal text ran
+    /// straight up under the window's rounded top corners.
+    ///
+    /// It is deliberately not painted. `window.backgroundColor` is already
+    /// `ChromeTheme.background` and `PaneGridView` fills the same colour, so a
+    /// view that never draws is pixel-identical to one painting the theme
+    /// background, under every scheme, with nothing to keep in sync. That is
+    /// also what "merged with the background" has to mean here — a fill of its
+    /// own would be a second thing to get wrong, and a separator hairline would
+    /// be the one obtrusive line in a band whose whole point is to disappear.
+    /// The edge is already there without one: chrome sits 6% off the terminal
+    /// background, so the top pane starts at a just-perceptible tonal step.
+    ///
+    /// 28pt is the standard macOS title-bar height for a titled window with no
+    /// toolbar — the thing being restored — and it clears the window's corner
+    /// radius. The old strip's 34pt was sized to hold 26pt tabs that no longer
+    /// exist.
+    ///
+    /// The grid is *shrunk*, not overlaid: a band laid over a full-height grid
+    /// would hide a row tmux still counts, which is the app-versus-tmux grid
+    /// disagreement this whole codebase is built to avoid.
+    static let titleBandHeight: CGFloat = 28
+
     private func installSubviews() {
-        tabBar.translatesAutoresizingMaskIntoConstraints = false
         gridView.translatesAutoresizingMaskIntoConstraints = false
-        // The tab bar must be ABOVE the grid. On macOS 26 AppKit gives the
-        // grid's drawn content a window-sized backing layer (ContentLayer,
-        // 66pt taller than the grid) for the titlebar scroll-edge effect;
-        // that unclipped overhang paints windowBackgroundColor across the
-        // tab-bar strip and hides anything z-ordered below the grid.
+        titleBand.translatesAutoresizingMaskIntoConstraints = false
+        // Band after the grid, for the reason recorded in CLAUDE.md: on macOS 26
+        // a view that draws gets a backing layer 66pt taller than itself and the
+        // overhang is not clipped, so whichever sibling is added last wins. The
+        // band itself never draws, but the label in it does.
         view.addSubview(gridView)
-        view.addSubview(tabBar)
+        view.addSubview(titleBand)
 
         NSLayoutConstraint.activate([
-            tabBar.topAnchor.constraint(equalTo: view.topAnchor),
-            tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tabBar.heightAnchor.constraint(equalToConstant: WindowTabBarView.preferredHeight),
+            titleBand.topAnchor.constraint(equalTo: view.topAnchor),
+            titleBand.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            titleBand.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            titleBand.heightAnchor.constraint(equalToConstant: Self.titleBandHeight),
 
-            gridView.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            gridView.topAnchor.constraint(equalTo: titleBand.bottomAnchor),
             gridView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             gridView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             gridView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -153,23 +206,6 @@ final class SessionViewController: NSViewController {
                 columns: drag.isVertical ? drag.cells : nil,
                 rows: drag.isVertical ? nil : drag.cells
             )
-        }
-    }
-
-    private func wireTabBar() {
-        tabBar.onSelect = { [weak self] id in self?.connection.selectWindow(id: id) }
-        tabBar.onNew = { [weak self] in self?.connection.newWindow() }
-        tabBar.onRename = { [weak self] id, name in
-            self?.connection.renameWindow(id: id, to: name)
-        }
-        tabBar.onReorder = { [weak self] id, index in
-            self?.connection.moveWindow(id: id, toIndex: index)
-        }
-        tabBar.onKill = { [weak self] id in self?.connection.killWindow(id: id) }
-        tabBar.onHide = { [weak self] id in self?.hideWindow(id) }
-        tabBar.onRestoreHidden = { [weak self] in
-            self?.hiddenWindowIDs.removeAll()
-            self?.syncWithModel()
         }
     }
 
@@ -216,11 +252,11 @@ final class SessionViewController: NSViewController {
         }
         controller.setTheme(AppSettings.terminalTheme())
 
-        tabBar.applyChromeTheme()
         gridView.applyChromeTheme()
+        titleBand.applyChromeTheme()
     }
 
-    // MARK: - Commands the menu drives
+    // MARK: - Commands the menu and the rail drive
 
     func selectWindow(atVisibleSlot slot: Int) {
         let visible = connection.windows.filter { !hiddenWindowIDs.contains($0.id) }
@@ -239,28 +275,94 @@ final class SessionViewController: NSViewController {
 
     func newWindow() { connection.newWindow() }
 
+    func selectWindow(id: String) { connection.selectWindow(id: id) }
+
+    func renameWindow(id: String, to name: String) {
+        connection.renameWindow(id: id, to: name)
+    }
+
+    /// `anchor` is the window this one should land in front of, or nil for
+    /// "after everything else" — which needs a different tmux command, because
+    /// `move-window -b` cannot append. See `TmuxSessionConnection`.
+    func moveWindow(id: String, before anchor: String?) {
+        guard connection.moveWindow(id: id, before: anchor) else {
+            TmuxLog.lifecycle(
+                "not moving \(id) — \(connection.sessionName) has no free index above its"
+                    + " windows, or has not learned its session id yet",
+                session: connection.sessionName
+            )
+            return
+        }
+    }
+
     func hideActiveWindow() {
         guard let id = connection.activeWindowID else { return }
         hideWindow(id)
     }
 
-    private func hideWindow(_ id: String) {
+    func hideWindow(_ id: String) {
         // Hiding sends nothing to tmux, so it leaves no trace there. Logged
-        // anyway: "the tab is gone" has two causes and only one of them lost
+        // anyway: "the row is gone" has two causes and only one of them lost
         // anything, and telling them apart afterwards is otherwise guesswork.
         TmuxLog.lifecycle(
-            "hiding window \(id) from the strip (tmux is untouched, nothing is killed)",
+            "hiding window \(id) from the rail (tmux is untouched, nothing is killed)",
             session: connection.sessionName
         )
         hiddenWindowIDs.insert(id)
         let visible = connection.windows.filter { !hiddenWindowIDs.contains($0.id) }
         if connection.activeWindowID == id, let next = visible.first {
+            hidingActiveWindow = id
             connection.selectWindow(id: next.id)
         } else if visible.isEmpty {
             // Never leave the user staring at nothing with no way back.
             hiddenWindowIDs.remove(id)
         }
         syncWithModel()
+    }
+
+    func restoreHiddenWindows() {
+        hiddenWindowIDs.removeAll()
+        hidingActiveWindow = nil
+        syncWithModel()
+    }
+
+    /// The one destructive thing the rail can do, and the only place in the app
+    /// that ends a process.
+    ///
+    /// Lives here rather than in the rail because the confirmation names the
+    /// window and the log line names the session, and because the rail outlives
+    /// every session it draws — this controller is what a kill actually belongs
+    /// to. The wording is the wording the tab strip used; nothing about the
+    /// stakes changed when the tabs became rows.
+    func confirmKillWindow(id: String) {
+        guard let window = connection.windows.first(where: { $0.id == id }) else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Kill window \(window.index):\(window.name)?"
+        alert.informativeText = "Every process in the window ends, including any AI agent mid-run."
+            + "\nTo just get it out of the way, use Hide From The Sidebar."
+        alert.addButton(withTitle: "Kill")
+        alert.addButton(withTitle: "Cancel")
+
+        // Both outcomes are logged, and the prompt itself is logged before it
+        // is shown. If work disappears, the question is whether this dialog was
+        // ever put in front of a human — a GUI driven by automation can answer
+        // it without one, and the log is the only place that shows the
+        // difference.
+        TmuxLog.destructive(
+            "kill confirmation shown for \(window.id) (\(window.index):\(window.name))",
+            session: connection.sessionName
+        )
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            TmuxLog.lifecycle("kill cancelled for \(window.id)", session: connection.sessionName)
+            return
+        }
+        TmuxLog.destructive(
+            "kill CONFIRMED for \(window.id) (\(window.index):\(window.name)) — every process in it ends",
+            session: connection.sessionName
+        )
+        connection.killWindow(id: window.id)
     }
 
     // MARK: - Model → view
@@ -292,16 +394,25 @@ final class SessionViewController: NSViewController {
         // A window that came back on its own — tmux made it active again —
         // should not stay hidden; that would leave the GUI showing something
         // other than what tmux says is current.
-        if let active = connection.activeWindowID, hiddenWindowIDs.contains(active) {
-            hiddenWindowIDs.remove(active)
+        //
+        // Except while this controller is the one moving away from it. Hiding
+        // the active window sends a `select-window` and then runs this
+        // immediately, long before tmux can answer, so tmux still names the row
+        // that was just hidden — which is not tmux putting it back, it is tmux
+        // not having been told yet. See `hidingActiveWindow`.
+        if let active = connection.activeWindowID {
+            if active == hidingActiveWindow {
+                // Still waiting on our own select-window.
+            } else {
+                hidingActiveWindow = nil
+                hiddenWindowIDs.remove(active)
+            }
         }
         hiddenWindowIDs.formIntersection(Set(connection.windows.map(\.id)))
 
-        tabBar.update(
-            windows: connection.windows,
-            activeID: connection.activeWindowID,
-            hidden: hiddenWindowIDs
-        )
+        onWindowsChanged?()
+        titleBand.show(name: connection.activeWindow?.name)
+        releaseSurfacesForDepartedPanes()
 
         guard let window = connection.activeWindow, let layout = window.layout else { return }
 
@@ -322,6 +433,54 @@ final class SessionViewController: NSViewController {
         }
 
         scheduleRepaint(of: layout.panes.filter { paintedFrames[$0.id] != $0.frame })
+    }
+
+    /// Give up the surfaces of panes this session no longer has.
+    ///
+    /// Surfaces are deliberately kept for every window visited, not just the
+    /// one on screen — that is what makes switching windows instant with
+    /// content already current. But "every window visited" was being read as
+    /// "for ever": nothing dropped a surface when its pane stopped belonging to
+    /// this session, so a window killed from another terminal, or dragged into
+    /// a different session, left its surfaces alive and still registered with
+    /// this session's router until the whole session went away. Dragging a
+    /// window between sessions makes that a normal thing to do rather than an
+    /// accident, and the destination builds its own surfaces for the same
+    /// panes — two live copies of one pane, one of which can never receive
+    /// another byte.
+    ///
+    /// Every window's panes, not the active window's: an off-screen window's
+    /// surfaces are the ones being protected here.
+    private func releaseSurfacesForDepartedPanes() {
+        // Only against a window list that can actually answer the question. An
+        // empty list, or a window whose layout has not arrived or did not
+        // parse, reports *no* panes — and read as evidence that would condemn
+        // every surface in the session on a half-delivered refresh.
+        guard !connection.windows.isEmpty,
+              connection.windows.allSatisfy({ $0.layout != nil }) else { return }
+
+        let live = Set(connection.windows.flatMap(\.paneIDs))
+        let departed = surfaces.keys.filter { !live.contains($0) }
+        guard !departed.isEmpty else { return }
+
+        TmuxLog.lifecycle(
+            "releasing \(departed.count) surface(s) whose panes left"
+                + " \(connection.sessionName): \(departed.sorted().joined(separator: ", "))",
+            session: connection.sessionName
+        )
+        for paneID in departed {
+            connection.router.unregister(paneID: paneID)
+            // Out of the view tree *before* it leaves the dictionary. The grid
+            // no longer decides what to remove from `surfaces`, but a view left
+            // behind here would still be one nothing owns.
+            surfaces[paneID]?.view.removeFromSuperview()
+            surfaces[paneID]?.setVisible(false)
+            surfaces.removeValue(forKey: paneID)
+            paintedFrames.removeValue(forKey: paneID)
+            pendingRepaints.removeValue(forKey: paneID)
+            repaintRetryItems.removeValue(forKey: paneID)?.cancel()
+        }
+        if let focusedPaneID, !live.contains(focusedPaneID) { self.focusedPaneID = nil }
     }
 
     /// Re-snapshot panes whose geometry changed.
@@ -608,7 +767,7 @@ final class SessionViewController: NSViewController {
                 windows: connection.windows.map {
                     DebugInspector.WindowReport(
                         window: $0,
-                        isHiddenFromStrip: hiddenWindowIDs.contains($0.id)
+                        isHiddenFromSidebar: hiddenWindowIDs.contains($0.id)
                     )
                 },
                 surfaces: surfaces.sorted { $0.key < $1.key }.map { paneID, surface in

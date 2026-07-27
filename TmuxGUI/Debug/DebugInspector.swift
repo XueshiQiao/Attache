@@ -751,18 +751,18 @@
             let name: String
             let isActive: Bool
             let hasActivity: Bool
-            let isHiddenFromStrip: Bool
+            let isHiddenFromSidebar: Bool
             let layoutText: String
             let panes: [PaneReport]
             let layoutError: String?
 
-            init(window: TmuxWindow, isHiddenFromStrip: Bool) {
+            init(window: TmuxWindow, isHiddenFromSidebar: Bool) {
                 id = window.id
                 index = window.index
                 name = window.name
                 isActive = window.isActive
                 hasActivity = window.hasActivity
-                self.isHiddenFromStrip = isHiddenFromStrip
+                self.isHiddenFromSidebar = isHiddenFromSidebar
                 layoutText = window.layoutText
                 do {
                     let node = try TmuxLayout.parse(window.layoutText)
@@ -825,7 +825,7 @@
                 },
                 grid: nil,
                 windows: connection.windows.map {
-                    DebugInspector.WindowReport(window: $0, isHiddenFromStrip: false)
+                    DebugInspector.WindowReport(window: $0, isHiddenFromSidebar: false)
                 },
                 surfaces: []
             )

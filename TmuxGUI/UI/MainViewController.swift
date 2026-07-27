@@ -10,9 +10,15 @@ import Cocoa
 ///
 /// The three levels the app exists to provide, top to bottom:
 ///
-///     tmux session  →  a row in the left rail
-///     tmux window   →  a tab in the top strip
+///     tmux session  →  a group heading in the left rail
+///     tmux window   →  a row under that heading
 ///     tmux pane     →  a split in the content area
+///
+/// The first two used to be separate controls in separate halves of the window.
+/// They are one list now, so this controller has one more job than it had: the
+/// rail is a single view that outlives every session, and the window level it
+/// draws belongs to whichever `SessionViewController` is on screen. Routing
+/// those clicks is what `wireSidebar` does.
 ///
 /// Session controllers are kept once created, so switching back to a session
 /// shows content that stayed current while it was off screen — the connection
@@ -70,11 +76,7 @@ final class MainViewController: NSSplitViewController {
             Task { @MainActor in AppSettings.notifyIfAppearanceSelectsAnotherTheme() }
         }
 
-        sidebar.onSelect = { [weak self] name in self?.show(sessionNamed: name) }
-        sidebar.onNew = { [weak self] in self?.server.newSession() }
-        sidebar.onRename = { [weak self] old, new in
-            self?.server.connection(for: old)?.renameSession(to: new)
-        }
+        wireSidebar()
 
         server.onChange = { [weak self] in self?.refreshSidebar() }
         server.start()
@@ -89,6 +91,240 @@ final class MainViewController: NSSplitViewController {
 
     deinit {
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
+    }
+
+    /// The rail's clicks, both levels of them.
+    ///
+    /// Session-level ones go to the server. Window-level ones go to the
+    /// controller of the session the *rows* belonged to, which the rail hands
+    /// over with every callback — deliberately not `currentSession`. The rail
+    /// stops rebuilding while a rename field is open or a drag is in flight, so
+    /// those rows can outlive a session switch: a drag blocks other clicks but
+    /// not ⌃⌘2, and an open editor blocks nothing. Routing a reorder to the
+    /// session that happens to be on screen when the mouse comes up would send
+    /// `move-window -t <that session>:<index>` and move the window into it.
+    ///
+    /// **+** on a heading is the one action that is *supposed* to reach another
+    /// session: making a window somewhere you are not looking and then not
+    /// going there would leave no sign it happened, so it switches too.
+    private func wireSidebar() {
+        sidebar.onSelect = { [weak self] name in self?.show(sessionNamed: name) }
+        sidebar.onNew = { [weak self] in self?.server.newSession() }
+        sidebar.onRename = { [weak self] old, new in
+            self?.server.connection(for: old)?.renameSession(to: new)
+        }
+
+        sidebar.onNewWindow = { [weak self] name in
+            guard let self, let connection = server.connection(for: name) else { return }
+            connection.newWindow()
+            if currentName != name { show(sessionNamed: name) }
+        }
+        // Clicking a window in a session that is not the one on screen means
+        // "show me that window", so it switches first. The rail can list any
+        // session's windows now, which makes this reachable in a way it was not
+        // when only the current session had rows.
+        sidebar.onSelectWindow = { [weak self] session, id in
+            guard let self else { return }
+            show(sessionNamed: session)
+            inSession(session) { $0.selectWindow(id: id) }
+        }
+        sidebar.onRenameWindow = { [weak self] session, id, name in
+            self?.inSession(session) { $0.renameWindow(id: id, to: name) }
+        }
+        sidebar.onMoveWindow = { [weak self] from, id, to, anchor in
+            guard let self else { return }
+            guard from != to else {
+                inSession(from) { $0.moveWindow(id: id, before: anchor) }
+                return
+            }
+            moveWindow(id: id, from: from, to: to, before: anchor)
+        }
+        sidebar.onHideWindow = { [weak self] session, id in
+            self?.inSession(session) { $0.hideWindow(id) }
+        }
+        sidebar.onKillWindow = { [weak self] session, id in
+            self?.inSession(session) { $0.confirmKillWindow(id: id) }
+        }
+        sidebar.onRestoreHidden = { [weak self] session in
+            self?.inSession(session) { $0.restoreHiddenWindows() }
+        }
+    }
+
+    /// Move a window out of one session and into another.
+    ///
+    /// This is the one drag that is not a reorder: the window leaves its
+    /// session, and two things follow from that.
+    ///
+    /// The command goes out on the **destination's** connection, because `-t` is
+    /// session-relative and resolves through that connection's `sessionTarget`.
+    /// The source connection is not involved at all — `-s @25` names the window
+    /// by an id that is unique across the whole server, which is the same
+    /// property that makes every other command here safe to target by id.
+    ///
+    /// And tmux destroys a session the moment its last window leaves, so
+    /// dragging the only window out of a session deletes that session. Nothing
+    /// running dies — the window and its panes arrive intact on the other side —
+    /// but the session, its name and anything set on it are gone, and any other
+    /// client attached to it is detached. That is not something to do silently
+    /// on a drag that could have been a slip, so it asks first.
+    private func moveWindow(id: String, from: String, to: String, before anchor: String?) {
+        guard let source = server.connection(for: from),
+              server.connection(for: to) != nil else { return }
+
+        // tmux's window list, not the rail's rows: a session with one visible
+        // window and two hidden ones survives the move, and counting rows would
+        // put a warning in front of the user that is simply not true.
+        let emptied = source.windows.count == 1 && source.windows.first?.id == id
+
+        // Whether this is the window on screen, decided before anything is
+        // sent. If it is, the app goes with it — see `send`.
+        let following = from == currentName && id == source.activeWindowID
+
+        // On the next turn, so the drag has finished unwinding before a modal
+        // spins its own event loop inside it. The command is built from ids and
+        // an index captured at drop time, so it does not matter that the rail
+        // rebuilds behind the alert.
+        guard !emptied else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, confirmMoveEmptying(session: from, into: to) else { return }
+                // Re-checked after the human, not before: the sentence they
+                // agreed to named this session, and `move-window -s @25` takes
+                // the window from wherever it is by the time it runs. Another
+                // client moving it away while the alert was open would turn a
+                // confirmed "empty this session" into a move out of a session
+                // nobody was asked about.
+                guard let source = server.connection(for: from), source.holds(windowID: id) else {
+                    TmuxLog.lifecycle(
+                        "not moving \(id) — it left \(from) while the confirmation was open",
+                        session: from
+                    )
+                    return
+                }
+                send(id: id, from: from, to: to, before: anchor,
+                     emptying: true, following: following)
+            }
+            return
+        }
+        send(id: id, from: from, to: to, before: anchor,
+             emptying: false, following: following)
+    }
+
+    /// Issue the move, and go with the window when it is the one being looked
+    /// at.
+    ///
+    /// Following is not the app deciding to navigate: dragging the row you are
+    /// reading is a request to keep reading it, and leaving the user behind in
+    /// the session they just emptied — or on some other window of it — is the
+    /// screen doing something they did not ask for. So the destination is told
+    /// to select the window, and the app shows that session.
+    ///
+    /// `select-window` is deliberate here and deliberately absent everywhere
+    /// else in this file. `-d` is what stops an ordinary cross-session drop
+    /// from yanking the destination's current window away from whoever else is
+    /// attached there; sending it back only for the followed case keeps that
+    /// true for every other drop.
+    private func send(
+        id: String, from: String, to: String,
+        before anchor: String?, emptying: Bool, following: Bool
+    ) {
+        guard let destination = server.connection(for: to) else { return }
+        TmuxLog.lifecycle(
+            "moving window \(id) from \(from) into \(to)"
+                + (emptying ? " — \(from) has no other window and tmux will destroy it" : "")
+                + (following ? " — it is the window on screen, so the app follows it" : ""),
+            session: from
+        )
+
+        // Nothing follows a move that was never issued. A destination whose
+        // connection has not yet learned its session id refuses every
+        // session-relative command, and switching the app to it anyway would
+        // leave the window where it was while the screen moved on — the app
+        // showing something tmux was never told to do.
+        guard destination.moveWindow(id: id, before: anchor) else {
+            TmuxLog.lifecycle(
+                "the move was not sent — \(to) has no session id yet, or no free index"
+                    + " above its windows; staying put",
+                session: to
+            )
+            return
+        }
+
+        guard following else { return }
+        // Down the destination's own pipe, after its move, so tmux runs them in
+        // that order. Selecting before the window has arrived would name a
+        // window that is not in this session yet.
+        destination.selectWindow(id: id)
+        show(sessionNamed: to)
+    }
+
+    /// Asked before a move that will take a session with it. Same shape as the
+    /// kill confirmation, deliberately: both are "there is no undo for this".
+    private func confirmMoveEmptying(session: String, into destination: String) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Move the last window out of \(session)?"
+        alert.informativeText =
+            "tmux destroys a session when its last window leaves, so \(session) will be gone —"
+                + " with its name, its options, and any other terminal attached to it."
+                + "\nNothing running ends: the window and its panes arrive in \(destination)."
+        alert.addButton(withTitle: "Move")
+        alert.addButton(withTitle: "Cancel")
+
+        TmuxLog.destructive(
+            "confirmation shown for emptying \(session) by moving its last window to \(destination)",
+            session: session
+        )
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            TmuxLog.lifecycle("move cancelled — \(session) keeps its last window", session: session)
+            return false
+        }
+        return true
+    }
+
+    /// Run a window-level action against the session it was aimed at, making
+    /// that session's controller if this is the first time anything has needed
+    /// one.
+    ///
+    /// Creating it here is not an optimisation, it is the fix for a real gap:
+    /// the rail lists the windows of every session it has open, so hiding,
+    /// renaming or killing a window in a session that has never been *shown* is
+    /// an ordinary thing to do — and a controller is what owns the hidden set
+    /// and the kill confirmation. Before this, those clicks reached a nil
+    /// lookup and vanished, leaving nothing but a log line.
+    ///
+    /// The lookup can still miss, and that is what the log line is for now.
+    /// Sessions are keyed by *name* throughout this app — `controllers`,
+    /// `TmuxServer.connection(for:)` — so a session renamed by another client
+    /// becomes, as far as this app is concerned, a different session, and an
+    /// action aimed at the old name has nowhere to go. Keying by tmux's `$17`
+    /// is the real fix and is bigger than this file.
+    private func inSession(_ name: String, _ action: (SessionViewController) -> Void) {
+        guard let controller = controller(forSessionNamed: name) else {
+            TmuxLog.lifecycle(
+                "dropping a window action aimed at \(name) — the server has no"
+                    + " connection under that name, most likely renamed elsewhere",
+                session: name
+            )
+            return
+        }
+        action(controller)
+    }
+
+    /// This session's controller, made on demand. One per session for the life
+    /// of the session, because it holds the pane surfaces and the hidden set.
+    private func controller(forSessionNamed name: String) -> SessionViewController? {
+        if let existing = controllers[name] { return existing }
+        guard let connection = server.connection(for: name) else { return nil }
+
+        let controller = SessionViewController(connection: connection)
+        controller.onStatusChange = { [weak self] status in self?.onStatusChange?(status) }
+        // Hiding and restoring never reach tmux, so `server.onChange` — which is
+        // fed by connection notifications — cannot see them. Without this the
+        // row a user just hid would stay in the rail until tmux happened to say
+        // something else.
+        controller.onWindowsChanged = { [weak self] in self?.refreshSidebar() }
+        controllers[name] = controller
+        return controller
     }
 
     // MARK: - Chrome
@@ -211,12 +447,21 @@ final class MainViewController: NSSplitViewController {
     private func refreshSidebar() {
         discardControllersForVanishedSessions()
 
+        // Every session's windows, not just the one on screen: any of them can
+        // be opened in the rail now. The lists are already in hand — each
+        // connection stays attached whether or not its session is displayed —
+        // so this costs a walk, not a round trip.
         let entries = server.sessionNames.map { name -> SessionSidebarView.Entry in
             let connection = server.connection(for: name)
             return SessionSidebarView.Entry(
                 name: name,
-                windowCount: connection?.windows.count ?? 0,
-                hasActivity: connection?.hasActivity ?? false
+                hasActivity: connection?.hasActivity ?? false,
+                windows: connection?.windows ?? [],
+                activeWindowID: connection?.activeWindowID,
+                // Only a session that has been shown has a controller, and
+                // therefore a hidden set. One that has not cannot have hidden
+                // anything, which is what the empty default says.
+                hiddenIDs: controllers[name]?.hiddenWindowIDs ?? []
             )
         }
 
@@ -261,16 +506,8 @@ final class MainViewController: NSSplitViewController {
     }
 
     func show(sessionNamed name: String) {
-        guard currentName != name, let connection = server.connection(for: name) else { return }
-
-        let controller: SessionViewController
-        if let existing = controllers[name] {
-            controller = existing
-        } else {
-            controller = SessionViewController(connection: connection)
-            controller.onStatusChange = { [weak self] status in self?.onStatusChange?(status) }
-            controllers[name] = controller
-        }
+        guard currentName != name, let connection = server.connection(for: name),
+              let controller = controller(forSessionNamed: name) else { return }
 
         currentName = name
         content.show(controller)

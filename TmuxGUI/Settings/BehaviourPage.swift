@@ -21,16 +21,25 @@ struct BehaviourPage: View {
                     get: { store.closingTabKillsWindow },
                     set: { store.setClosingTabKillsWindow($0) }
                 )) {
-                    Text("Hide the tab — tmux keeps running").tag(false)
-                    Text("Kill the tmux window").tag(true)
+                    // The menu items' own wording, verbatim. A picker that
+                    // paraphrases what it selects makes the user match two
+                    // different sentences to the same thing, and these two
+                    // are exactly long enough to be truncated if anything is
+                    // appended — measured in the window at its default size.
+                    Text("Hide From The Sidebar").tag(false)
+                    Text("Kill This tmux Window…").tag(true)
                 } label: {
-                    iconLabel("xmark.square.fill", store.closingTabKillsWindow ? .red : .gray, "Closing a tab")
+                    iconLabel(
+                        "contextualmenu.and.cursorarrow",
+                        store.closingTabKillsWindow ? .red : .gray,
+                        "First item on a window's menu"
+                    )
                 }
 
                 if store.closingTabKillsWindow {
                     Label(
                         "Killing ends every process in the window, including an agent mid-run, "
-                            + "and there is no undo. The ✕ still asks first.",
+                            + "and there is no undo. It still asks first.",
                         systemImage: "exclamationmark.triangle.fill"
                     )
                     .font(.caption)
@@ -38,12 +47,19 @@ struct BehaviourPage: View {
                     .fixedSize(horizontal: false, vertical: true)
                 }
             } header: {
-                Text("Tabs")
+                Text("Windows")
             } footer: {
+                // What this setting used to be: what the ✕ on a window tab did.
+                // There are no tabs and no ✕ — the windows are rows in the rail
+                // — so it moved to the only close gesture left rather than being
+                // retired. It cannot take a capability away: both items are in
+                // the menu whichever way it is set, so all it decides is which
+                // one the pointer lands on first.
                 Text(
-                    "Hiding removes the tab from this app's strip and sends tmux nothing at "
-                        + "all; the window is still there in `tmux attach` and the strip's "
-                        + "hidden badge brings it back."
+                    "Both actions are always in the menu; this only decides which one comes "
+                        + "first. Hiding removes the row from the sidebar and sends tmux nothing "
+                        + "at all — the window is still there in `tmux attach`, and the "
+                        + "\"N hidden\" row under the session brings it back."
                 )
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
