@@ -62,11 +62,14 @@
 
         private static func tmuxReport() -> TmuxReport {
             guard let main else {
-                return TmuxReport(tmuxPath: nil, shownSession: nil, sessions: [])
+                return TmuxReport(
+                    tmuxPath: nil, shownSession: nil, sessionControllers: [], sessions: []
+                )
             }
             return TmuxReport(
                 tmuxPath: main.server.tmuxPath,
                 shownSession: main.debugShownSessionName,
+                sessionControllers: main.debugSessionControllerNames,
                 sessions: main.debugSessionReports()
             )
         }
@@ -680,6 +683,16 @@
             let tmuxPath: String?
             /// Which session the content area is showing right now.
             let shownSession: String?
+            /// Every session the app is holding a view controller for, whether
+            /// or not tmux still has that session.
+            ///
+            /// `sessions` below is generated from what tmux currently has, so
+            /// a controller for a session that is gone does not appear in it at
+            /// all — the one piece of app state a leftover could hide in was
+            /// the only thing this dump could not see. A name here that is
+            /// missing from `sessions` is a controller, its GPU surfaces and
+            /// its panes still registered to a router nobody feeds.
+            let sessionControllers: [String]
             let sessions: [SessionReport]
         }
 

@@ -30,7 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             return
         }
-        guard !TmuxControlClient.listSessions(tmuxPath: tmuxPath).isEmpty else {
+        // Both answers fail the same way here: tmux that will not run and a
+        // server with nothing in it leave the app with nothing to show.
+        guard let names = TmuxControlClient.listSessions(tmuxPath: tmuxPath), !names.isEmpty else {
             fail(
                 "No tmux sessions",
                 "The tmux server is not running, or it has no sessions. Create one in a terminal first."

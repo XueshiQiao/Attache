@@ -39,13 +39,11 @@ final class TmuxMetrics {
         var recentOtherBytes = 0
         var recentSpan: TimeInterval = 0
 
-        var watchedBytesPerSecond: Double {
-            elapsed > 0 ? Double(watchedBytes) / elapsed : 0
-        }
-
-        var totalBytesPerSecond: Double {
-            elapsed > 0 ? Double(watchedBytes + otherBytes) / elapsed : 0
-        }
+        // Lifetime rates — `watchedBytesPerSecond`, `totalBytesPerSecond` —
+        // went with the report that was their only caller. The counters they
+        // divided are still here because the probe reads them, but an average
+        // over the whole connection answers no question anyone asks: the footer
+        // wants the last two seconds and the probe wants its own window.
 
         var recentWatchedBytesPerSecond: Double {
             recentSpan > 0 ? Double(recentWatchedBytes) / recentSpan : 0
@@ -204,20 +202,15 @@ extension TmuxMetrics.Snapshot {
         return "pane \(watched) · session \(total)"
     }
 
-    /// Multi-line report for the log.
-    var report: String {
-        """
-        ── control mode throughput ───────────────
-        window        \(String(format: "%.1f", elapsed)) s
-        this pane     \(watchedBytes) bytes / \(watchedChunks) chunks = \(Self.formatRate(watchedBytesPerSecond))
-        other panes   \(otherBytes) bytes / \(otherChunks) chunks
-        session total \(Self.formatRate(totalBytesPerSecond))
-        arrival gaps  median \(String(format: "%.1f", medianGap * 1000))ms \
-        · p99 \(String(format: "%.1f", p99Gap * 1000))ms \
-        · worst \(String(format: "%.1f", worstGap * 1000))ms
-        ──────────────────────────────────────────
-        """
-    }
+    // A multi-line `report` used to live here and was deleted rather than
+    // fixed. Nothing called it — the sidebar footer takes `titleSummary` and
+    // the probe formats its own comparison — and what it printed was the
+    // problem: the arrival gap statistics laid out as a general-purpose
+    // readout, which is the reading `titleSummary` above exists to refuse. A
+    // gap only means latency when something was waiting to be sent, and the
+    // one place that is true by construction is the A/B probe's heartbeat. It
+    // already renders them, in `TmuxSessionConnection.compare(baseline:loaded:)`,
+    // next to the baseline that gives them a scale.
 
     private static func formatRate(_ bytesPerSecond: Double) -> String {
         if bytesPerSecond >= 1_048_576 {

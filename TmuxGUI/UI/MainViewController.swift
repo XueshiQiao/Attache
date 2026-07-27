@@ -209,6 +209,8 @@ final class MainViewController: NSSplitViewController {
     // MARK: - Sessions
 
     private func refreshSidebar() {
+        discardControllersForVanishedSessions()
+
         let entries = server.sessionNames.map { name -> SessionSidebarView.Entry in
             let connection = server.connection(for: name)
             return SessionSidebarView.Entry(
@@ -227,6 +229,37 @@ final class MainViewController: NSSplitViewController {
         sidebar.update(entries: entries, selected: currentName)
     }
 
+    /// Give up the controller of a session the server no longer has.
+    ///
+    /// `TmuxServer` reconciles the *connections* against `list-sessions` and is
+    /// the only thing that stops one; the controllers are this object's, and
+    /// nothing was reconciling them. What a left-behind one holds is not
+    /// abstract: its GPU surfaces, and its panes still registered to a router
+    /// whose connection has been stopped — so it keeps memory alive for a
+    /// session that can never produce another byte. And because `show` looks
+    /// the controller up by *name*, a new session created with the name of an
+    /// old one would have been handed the stale controller, pointing at the
+    /// dead connection, for as long as the app ran.
+    ///
+    /// A session can vanish without this app doing anything — killed from any
+    /// terminal — so this runs from `refreshSidebar`, on the same reconcile the
+    /// connection set is dropped by, rather than from anything the UI does.
+    private func discardControllersForVanishedSessions() {
+        let live = Set(server.sessionNames)
+        for (name, controller) in controllers where !live.contains(name) {
+            TmuxLog.lifecycle(
+                "dropping the view controller for \(name) — the session is gone from the server",
+                session: name
+            )
+            controller.releaseSurfaces()
+            controller.view.removeFromSuperview()
+            if controller.parent != nil { controller.removeFromParent() }
+            controllers.removeValue(forKey: name)
+            // Leaves the fallback below to pick a session that still exists.
+            if currentName == name { currentName = nil }
+        }
+    }
+
     func show(sessionNamed name: String) {
         guard currentName != name, let connection = server.connection(for: name) else { return }
 
@@ -241,6 +274,26 @@ final class MainViewController: NSSplitViewController {
 
         currentName = name
         content.show(controller)
+
+        // Draw what tmux has already said, rather than waiting to be told
+        // again. A controller learns its session from notifications, and the
+        // ones that describe an existing session arrived when the connection
+        // attached — long before there was a controller to hear them. What has
+        // been masking that is the grid report this show triggers:
+        // `refresh-client -C` resizes the session's windows and a resize comes
+        // back as `%layout-change`. Verified on tmux 3.6a that tmux sends that
+        // notification even when the size did not change — but
+        // `TmuxSessionConnection` drops one whose layout text is identical,
+        // correctly, because nothing changed. So a session whose windows tmux
+        // will not resize renders nothing at all and gets no second chance: a
+        // window put on `window-size manual` (which `resize-window` does
+        // permanently), or a `window-size smallest` session with a smaller
+        // client attached somewhere else.
+        //
+        // After `content.show`, not inside the controller's `viewDidLoad`: the
+        // sync also hands first responder to the focused pane, and at
+        // `viewDidLoad` the view is not in a window yet.
+        controller.syncWithModel()
 
         connection.announceStatus()
         refreshSidebar()
@@ -284,6 +337,13 @@ final class MainViewController: NSSplitViewController {
 
     extension MainViewController {
         var debugShownSessionName: String? { currentName }
+
+        /// Names this controller is holding a `SessionViewController` for.
+        ///
+        /// The one thing `debugSessionReports()` cannot show: it walks tmux's
+        /// current session list, so a controller whose session is gone is
+        /// absent from that report rather than flagged in it.
+        var debugSessionControllerNames: [String] { controllers.keys.sorted() }
 
         /// A session's controller by name, on screen or not. The off-screen
         /// ones are the interesting half: a font change reaches every one of

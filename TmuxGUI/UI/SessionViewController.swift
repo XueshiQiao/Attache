@@ -72,6 +72,15 @@ final class SessionViewController: NSViewController {
     /// it — which for an idle shell can be never.
     private var paintedFrames = [String: TmuxLayoutFrame]()
     private var repaintWorkItem: DispatchWorkItem?
+    /// Panes waiting for the coalesced snapshot, each with what it had produced
+    /// when its geometry last changed.
+    ///
+    /// Accumulated across batches rather than replaced by the latest one. The
+    /// timer is a single work item and rescheduling it cancels the one before,
+    /// so a batch whose pane set the next batch does not repeat used to be
+    /// dropped outright — and `paintedFrames` was already advanced for those
+    /// panes, so no later sync ever asked for them again. See `scheduleRepaint`.
+    private var pendingRepaints = [String: UInt64]()
     /// Per pane, because the panes that were still writing when the snapshot
     /// came due are re-checked on their own schedule — one shared item would
     /// let the second pane to be skipped cancel the first one's retry.
@@ -274,10 +283,12 @@ final class SessionViewController: NSViewController {
 
     /// Rebuild the visible pane set from whatever tmux currently says.
     ///
-    /// Called for every structural notification. Cheap because it is
+    /// Called for every structural notification, and once by `MainViewController`
+    /// when this controller is put on screen — see the call there for why a
+    /// controller cannot rely on being told a second time. Cheap because it is
     /// idempotent: surfaces already present are reused, and only genuinely new
     /// panes cost anything.
-    private func syncWithModel() {
+    func syncWithModel() {
         // A window that came back on its own — tmux made it active again —
         // should not stay hidden; that would leave the GUI showing something
         // other than what tmux says is current.
@@ -318,25 +329,44 @@ final class SessionViewController: NSViewController {
     /// Coalesced, because dragging a window edge produces a burst of layout
     /// changes and each repaint is a `capture-pane` round trip. Waiting for
     /// the resize to settle turns dozens of captures into one.
+    ///
+    /// Coalescing means *merging* the pane sets, not keeping the last one. Two
+    /// batches inside the same 150ms need not describe the same panes — a
+    /// window resize reflows the active window's panes, and selecting another
+    /// window immediately after produces a batch made entirely of that window's
+    /// panes — and cancelling the timer used to throw the earlier set away.
+    /// Measured against the pre-fix code: the app window resized and another
+    /// tmux window selected 134ms later, and the pane that had just been
+    /// reflowed received **no `capture-pane` at all**, permanently, because
+    /// `paintedFrames` had already been advanced for it on the way in and no
+    /// later sync could see it as changed. It kept text wrapped for its old
+    /// width until its geometry happened to change again.
     private func scheduleRepaint(of panes: [(id: String, frame: TmuxLayoutFrame)]) {
         guard !panes.isEmpty else { return }
-        for pane in panes { paintedFrames[pane.id] = pane.frame }
-
-        // What each pane had written as of the geometry change, to compare
-        // against when the snapshot comes due. The snapshot exists for a pane
-        // that will not repaint itself; painting one over a pane that is
-        // actively writing is a stale screen landing on a live one, and it can
-        // land in the middle of an escape sequence the pane is halfway through
-        // emitting. See `repaintWhenQuiet` for what happens when it has.
-        let outputBefore = panes.reduce(into: [String: UInt64]()) {
-            $0[$1.id] = connection.router.deliveryCount(paneID: $1.id)
+        for pane in panes {
+            paintedFrames[pane.id] = pane.frame
+            // What the pane had written as of this geometry change, to compare
+            // against when the snapshot comes due. The snapshot exists for a
+            // pane that will not repaint itself; painting one over a pane that
+            // is actively writing is a stale screen landing on a live one, and
+            // it can land in the middle of an escape sequence the pane is
+            // halfway through emitting. See `repaintWhenQuiet`.
+            //
+            // A pane already pending takes the newer reading: the question is
+            // whether it has been quiet since its *latest* geometry change, and
+            // that is the change the snapshot is now for.
+            pendingRepaints[pane.id] = connection.router.deliveryCount(paneID: pane.id)
         }
 
         repaintWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            for pane in panes {
-                guard let surface = self.surfaces[pane.id] else { continue }
+            let due = self.pendingRepaints
+            self.pendingRepaints.removeAll()
+            // Sorted only so the log reads the same way twice; the captures are
+            // independent round trips and their order carries no meaning.
+            for (paneID, outputBefore) in due.sorted(by: { $0.key < $1.key }) {
+                guard let surface = self.surfaces[paneID] else { continue }
 
                 // The first paint of a pane pulls history as well as the
                 // visible screen, so the wheel can scroll back into what
@@ -351,7 +381,7 @@ final class SessionViewController: NSViewController {
                     // should apply to the next pane opened rather than waiting
                     // for a relaunch.
                     self.connection.captureScrollback(
-                        paneID: pane.id,
+                        paneID: paneID,
                         lines: AppSettings.scrollbackPrimeLines
                     ) { lines in
                         guard !lines.isEmpty else { return }
@@ -361,8 +391,8 @@ final class SessionViewController: NSViewController {
                 }
 
                 self.repaintWhenQuiet(
-                    paneID: pane.id,
-                    since: outputBefore[pane.id] ?? 0,
+                    paneID: paneID,
+                    since: outputBefore,
                     attemptsLeft: Self.repaintRetryLimit
                 )
             }
@@ -523,6 +553,7 @@ final class SessionViewController: NSViewController {
     /// whether or not the connection has been torn down yet.
     func releaseSurfaces() {
         repaintWorkItem?.cancel()
+        pendingRepaints.removeAll()
         for item in repaintRetryItems.values { item.cancel() }
         repaintRetryItems.removeAll()
         for (paneID, surface) in surfaces {

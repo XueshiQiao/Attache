@@ -363,14 +363,22 @@ final class TmuxControlClient {
     /// A one-shot `tmux list-sessions` rather than a control mode command:
     /// picking which session to attach to has to happen before there is a
     /// control mode client to ask.
-    static func listSessions(tmuxPath: String) -> [String] {
+    ///
+    /// `nil` means the question could not be *asked*: `tmux` would not spawn.
+    /// An empty array is an answer, and a different one — tmux ran and listed
+    /// nothing, which here is the same event as the server being gone, because
+    /// a tmux server whose last session is killed exits. `TmuxServer`
+    /// reconciles its connections against this, so the two cannot share a
+    /// return value: one of them must drop every connection and the other must
+    /// change nothing.
+    static func listSessions(tmuxPath: String) -> [String]? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tmuxPath)
         process.arguments = ["list-sessions", "-F", "#{session_name}"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return [] }
+        guard (try? process.run()) != nil else { return nil }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return String(decoding: data, as: UTF8.self)

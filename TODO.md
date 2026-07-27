@@ -96,8 +96,10 @@ oversights:
 off unless `TMUXGUI_INSPECT=1` or the Debug menu turns it on, serving the
 view hierarchy (`/views` — including each layer's overhang, the field that
 explains a correct-looking view rendering nothing) and the app's tmux state
-(`/tmux`, shaped to diff against `list-windows`). The settings work added
-write routes so a font change can be driven without a pointer.
+(`/tmux`, shaped to diff against `list-windows`, plus `sessionControllers` for
+the one thing that dump could not otherwise show: a controller the app is
+holding for a session tmux no longer has). The settings work added write routes
+so a font change can be driven without a pointer.
 
 The closed-source inspector this replaces is gone for good: an agent could
 not read it, which made it pure cost here.
@@ -106,33 +108,119 @@ not read it, which made it pure cost here.
 
 ## 4 · Known defects
 
-- [ ] **A session shown for the first time can stay blank.**
-      `MainViewController.show(sessionNamed:)` never syncs the model itself; it
-      waits for tmux to send a notification. Normally masked, because the
-      `refresh-client -C` that follows triggers a reflow and the reflow
-      notifies. With a window whose size already matches, tmux sends nothing
-      and the pane grid stays empty until something else happens to change.
-      Found while fixing the font relayout, pre-existing and unrelated to it.
-- [ ] **A vanished session leaves its controller behind.**
-      `TmuxServer.refreshSessions()` stops the connection of a session that is
-      gone, but `MainViewController.controllers[name]` keeps the controller and
-      its surfaces, still registered to a router nobody feeds.
-- [ ] **A superseded repaint batch is never repainted.** `scheduleRepaint`
-      cancels one shared work item, so panes from the cancelled batch are
-      skipped entirely — and their `paintedFrames` were already updated, so
-      nothing comes back to them. The per-pane retry added for busy panes does
-      not cover this.
-- [ ] **`TmuxMetrics.Snapshot.report` is dead code** that still prints the gap
-      statistics as though they were a general-purpose readout. They mean
-      something only inside the A/B probe.
+One open, and it is the invariant this project cares most about:
+
+- [ ] **The app decides which pane is focused instead of reading it from tmux.**
+      `SessionViewController.syncWithModel` picks `layout.panes.first` whenever
+      it has no focused pane of its own and sends `select-pane`, so showing a
+      session for the first time can *move* tmux's active pane — for every
+      client attached to that session, not just this app. Demonstrated with
+      tmux alone: split a window, make the right pane active, and
+      `list-panes -s` reports `@0 %1 active=1` while `%0` is the layout's first
+      pane, which is the one the app would select. The mirror case is equally
+      wrong — a pane made active from another terminal is ignored for as long as
+      the app's own choice is still in the layout, and `send-keys` keeps
+      targeting the app's pane. This is the one place the app authors state tmux
+      owns.
+
+      It predates the first-show fix below; that fix only made it certain to run
+      in the case it addresses, and Codex found it while reviewing that fix.
+      Fixing it means the model carrying tmux's active pane, and the single
+      `list-windows` round trip cannot supply it: `#{window_active_pane}` does
+      not exist in tmux 3.6a — verified, it expands to empty. One extra query
+      per refresh does, for the whole session at once:
+      `list-panes -s -t $id -F '#{window_id} #{pane_id} #{pane_active}'`.
+      `%window-pane-changed` is already handled and already triggers a refresh,
+      so the notification side needs nothing new.
 
 The probe's modal is gone too — it was fixed by the settings work rather than
 here, and the bullet outlived it. The report renders inline on the About page;
 the only `runModal` calls left are the fatal "no tmux" startup alert and the
 confirmation before killing a window, and both should stay.
 
-Five others are fixed. None of them was quite what its bullet said, so what
-each turned out to be:
+Nine are fixed. None of them was quite what its bullet said, so what each turned
+out to be, most recent first:
+
+**A session shown for the first time could stay blank**, and the bullet had the
+cause wrong. It blamed tmux for sending nothing when the requested size already
+matched. Measured on tmux 3.6a by driving `tmux -C attach` over a pipe:
+`refresh-client -C` emits a `%layout-change` **every** time, including when the
+size asked for is the size the window already has. What swallows it is this app,
+and correctly — `TmuxSessionConnection.handle` drops a `%layout-change` whose
+layout text is unchanged, because nothing changed. So the symptom was real and
+its stated mechanism was not, and the fix is the same either way:
+`MainViewController.show` renders the model itself, right after the controller's
+view goes into the hierarchy, instead of waiting to be told something it has
+already been told. After `content.show` and not in the controller's
+`viewDidLoad`, because the sync also hands first responder to the focused pane
+and at `viewDidLoad` the view has no window yet. Reproduced before fixing, on a
+session whose window `resize-window` had put on `window-size manual` — tmux will
+not resize such a window for anybody, so no layout string ever changes: the
+inspector reported that session on screen with zero surfaces and no layout for
+as long as it was left there, and after the fix reports one surface and tmux's
+own 120x35 grid *in the same main-actor turn as the show*. Reaching it needs no
+unusual option, either — a `window-size smallest` session with a smaller client
+attached elsewhere does it too.
+
+**A vanished session left its controller behind**, and the inspector could not
+see that, which is why the fix came with a field rather than only a fix.
+`/tmux`'s session list is generated from what tmux currently has, so a
+controller for a session that is gone was absent from the dump instead of
+flagged in it; `TmuxReport.sessionControllers` now lists what
+`MainViewController` is actually holding, and a name in it that is missing from
+`sessions` is the leak. What the leak held: the controller's GPU surfaces, and
+its panes still registered to a router whose connection had been stopped. It
+also aimed a foot-gun at any new session created with an old one's name, since
+`show` looks controllers up by name and would have handed back the stale one
+pointing at the dead connection. `discardControllersForVanishedSessions` runs
+from `refreshSidebar`, on the same reconcile that drops the connection. Not
+hypothetical: this machine has a `_lazygit` popup session that comes and goes,
+and its controller was observed being dropped mid-run.
+
+That covered every case but the last one, and Codex found the gap: killing the
+*last* session takes the whole tmux server with it, and `refreshSessions` used
+to `return` on an empty `list-sessions` before reaching any of the cleanup — so
+`onChange` never fired, the dead connection and its controller stayed, and there
+was no route out, because every trigger that would re-ask arrives *on* a
+connection. The empty answer now reconciles like any other, which meant teaching
+`TmuxControlClient.listSessions` to distinguish "tmux would not spawn" (`nil`,
+change nothing) from "tmux answered and listed nothing" (`[]`, drop everything).
+Two consequences worth knowing about. The app has an empty state now — no rail
+rows, no content — where before it kept a frozen session on screen; and because
+nothing can notify an app with no connections, that state re-asks once a second
+until a server exists. Verified against a scratch tmux server the app was pointed
+at with `TMUX_TMPDIR` and administered exclusively through `-S <socket path>`:
+killing the only session emptied the app (`sessions=[]`, `sessionControllers=[]`,
+`shownSession` absent) and left it alive, and creating a session on that server
+again brought the app back on its own within one tick, attached and rendering,
+with nothing clicked. `stop()` sets a flag the re-ask checks, because control
+clients report their exit about a millisecond *after* teardown finishes and each
+of those exits schedules a refresh — today the process dies before the main
+queue turns again, which is not a guarantee to lean on once something waits a
+second.
+
+**A superseded repaint batch is merged into the next one** rather than thrown
+away. Measured with the same script before and after, on a scratch session with
+two windows: resize the app window (which reflows the active window's pane, so
+that pane is batch A), then select the other window within the 150ms coalescing
+delay (batch B, a pane set that does not include A's). Before: the switch landed
+134ms after the resize and pane A received **no `capture-pane` at all**, ever —
+`paintedFrames` had been advanced for it on the way in, so no later sync could
+see it as changed, and it kept text wrapped for its old width until its geometry
+happened to change again. After: the switch landed 37ms after the resize and both
+panes were captured 1ms apart, i.e. by one drain of the merged set. Panes now
+accumulate in `pendingRepaints`, and a pane already waiting takes the newer
+delivery-count baseline, because the question the snapshot asks is whether the
+pane has been quiet since its *latest* geometry change.
+
+**`TmuxMetrics.Snapshot.report` is gone** rather than made honest. Nothing called
+it — the sidebar footer takes `titleSummary`, the probe formats its own
+comparison — and what it printed was the problem: the arrival gap statistics laid
+out as a general-purpose readout, which is exactly the reading `titleSummary`
+exists to refuse. The two lifetime-rate properties it was the only caller of went
+with it. The counters they divided stay, because the probe reads them.
+
+The five from before:
 
 **Teardown ran twice per shown session.** `TmuxServer` owns every connection
 and is now the only thing that stops one; `SessionViewController.stop()` became
