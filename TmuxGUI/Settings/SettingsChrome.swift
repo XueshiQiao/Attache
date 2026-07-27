@@ -168,47 +168,67 @@ func optionRow(
 
 // MARK: - Root view
 
-/// The sidebar half, on its own so AppKit can own the split.
+/// The whole settings window, in SwiftUI, the way AnyDrag next door does it.
 ///
-/// It used to be SwiftUI's `NavigationSplitView`. On macOS 26 that renders the
-/// sidebar as an inset rounded panel with the traffic lights sitting in the
-/// band above it, which is not the standard sidebar — the grey should run to
-/// the top of the window with the lights inside it. `NSSplitViewController`
-/// with a sidebar item gets that for free, and the main window already proved
-/// it, so the settings window uses the same shell and keeps its pages as
-/// SwiftUI.
-struct SettingsSidebarView: View {
+/// This was briefly rebuilt on an `NSSplitViewController` to chase the sidebar
+/// look, and that was the wrong turn: `NavigationSplitView` with the sidebar
+/// list style is what produces the standard appearance — a grey that reaches
+/// the window's corner with the traffic lights inside it, and a selection drawn
+/// as an inset rounded pill rather than a full-width bar. Rebuilding it in
+/// AppKit got the grey right and the selection wrong.
+///
+/// The piece that was missing is the toolbar. With `toolbarStyle = .unified`
+/// and no toolbar items at all, the band is reserved and nothing fills it, and
+/// the sidebar starts below it. AnyDrag has a sidebar-toggle button there; so
+/// does this now, and it earns its place — the split view can collapse and
+/// there would otherwise be no way back.
+struct SettingsRootView: View {
     @EnvironmentObject var store: SettingsStore
 
     var body: some View {
-        List(selection: $store.page) {
-            ForEach(SettingsPage.allCases, id: \.self) { page in
-                HStack(spacing: 9) {
-                    SidebarIcon(symbol: page.symbol, color: page.color)
-                    Text(page.title)
+        NavigationSplitView {
+            List(selection: $store.page) {
+                ForEach(SettingsPage.allCases, id: \.self) { page in
+                    HStack(spacing: 9) {
+                        SidebarIcon(symbol: page.symbol, color: page.color)
+                        Text(page.title)
+                    }
+                    .padding(.vertical, 2)
+                    .tag(page)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("nav.\(page.axID)")
                 }
-                .padding(.vertical, 2)
-                .tag(page)
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("nav.\(page.axID)")
+            }
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 206, max: 240)
+            .safeAreaInset(edge: .top, spacing: 0) { brand }
+        } detail: {
+            Group {
+                switch store.page {
+                case .terminal: TerminalPage()
+                case .appearance: AppearancePage()
+                case .behaviour: BehaviourPage()
+                case .about: AboutPage()
+                }
+            }
+            .accessibilityIdentifier("page.\(store.page.axID)")
+            .environment(\.defaultMinListRowHeight, 34)
+            .scrollContentBackground(.hidden)
+            .settingsBackground()
+            .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        NSApp.keyWindow?.firstResponder?.tryToPerform(
+                            #selector(NSSplitViewController.toggleSidebar(_:)), with: nil
+                        )
+                    } label: {
+                        Image(systemName: "sidebar.leading")
+                    }
+                    .help("Show or hide the sidebar")
+                }
             }
         }
-        // `.plain`, not `.sidebar`. On macOS 26 the sidebar list style draws
-        // its own inset rounded panel, which is what kept the traffic lights in
-        // a band above the grey instead of inside it — the split view item was
-        // already full height, the list was just not filling it. Plain leaves
-        // the item's own material as the background and the rows are styled
-        // here instead.
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .safeAreaInset(edge: .top, spacing: 0) { brand }
-        // Fill the whole split view item, including the band the system keeps
-        // clear for the traffic lights. Without this the content stops below
-        // them and the grey reads as an inset panel with the lights floating
-        // above it, which is the thing this window was reported for. The brand
-        // block's own top padding is what keeps the lights from landing on the
-        // app icon.
-        .ignoresSafeArea(.all)
+        .frame(minWidth: 760, minHeight: 560)
     }
 
     private var brand: some View {
@@ -222,32 +242,10 @@ struct SettingsSidebarView: View {
             }
             Spacer()
         }
-        // Top padding clears the traffic lights, which now sit over this view
-        // rather than in a band above it.
-        .padding(.horizontal, 16).padding(.top, 30).padding(.bottom, 12)
+        .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
     }
 
     private var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-    }
-}
-
-/// The page half.
-struct SettingsDetailView: View {
-    @EnvironmentObject var store: SettingsStore
-
-    var body: some View {
-        Group {
-            switch store.page {
-            case .terminal: TerminalPage()
-            case .appearance: AppearancePage()
-            case .behaviour: BehaviourPage()
-            case .about: AboutPage()
-            }
-        }
-        .accessibilityIdentifier("page.\(store.page.axID)")
-        .environment(\.defaultMinListRowHeight, 34)
-        .scrollContentBackground(.hidden)
-        .settingsBackground()
     }
 }
