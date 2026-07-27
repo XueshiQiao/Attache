@@ -130,7 +130,71 @@ final class TmuxSessionConnection {
         guard columns > 0, rows > 0 else { return }
         guard lastReportedGrid?.columns != columns || lastReportedGrid?.rows != rows else { return }
         lastReportedGrid = (columns, rows)
+        reclaimedAt = nil
         client.send("refresh-client -C \(columns)x\(rows)")
+    }
+
+    /// The window size this connection last found itself losing an argument
+    /// about, and how many times it has argued. Cleared whenever the app's own
+    /// grid changes, because that is a new argument.
+    private var reclaimedAt: String?
+    private var reclaimAttempts = 0
+
+    /// More than one, because the first can lose a race rather than an
+    /// argument: the other client's `refresh-client` and this app's reaction to
+    /// the layout change it caused are milliseconds apart, and whichever lands
+    /// second wins. Bounded because a session whose `window-size` is `smallest`
+    /// or `manual` is one this app cannot win and should not keep trying — that
+    /// is the user's setting, not a fault.
+    private static let reclaimAttemptLimit = 3
+
+    /// Take the window size back when another terminal has taken it.
+    ///
+    /// tmux's default `window-size latest` sizes a session's windows to "the
+    /// client that had the most recent activity". Attaching a second terminal
+    /// to the same session therefore resizes every window in it to fit that
+    /// terminal — and this app goes on drawing panes at a size it no longer
+    /// has, leaving dead space below them until something else happens to make
+    /// the app's own grid change.
+    ///
+    /// Re-sending `refresh-client -C` does not take it back, which is the
+    /// non-obvious part. Measured on tmux 3.6a against an isolated server, with
+    /// client B holding the window: A re-sending its size, sending a genuinely
+    /// different size, and jiggling through a third value all leave the window
+    /// at B's. `refresh-client` is not *activity*. A command that is — a
+    /// `switch-client` to the session this client is already attached to, which
+    /// changes nothing — makes this client the latest, and the size that
+    /// follows it is honoured.
+    ///
+    /// Sent at most once per distinct size tmux is holding, so a session whose
+    /// `window-size` is `smallest` or `manual` — where this app cannot win and
+    /// should not — costs two commands rather than two per notification.
+    func reclaimWindowSizeIfTaken() {
+        guard let want = lastReportedGrid, let target = sessionTarget,
+              let size = activeWindow?.layout?.frame,
+              size.columns != want.columns || size.rows != want.rows
+        else {
+            reclaimedAt = nil
+            reclaimAttempts = 0
+            return
+        }
+
+        let disagreement = "\(size.columns)x\(size.rows)"
+        if reclaimedAt != disagreement {
+            reclaimedAt = disagreement
+            reclaimAttempts = 0
+        }
+        guard reclaimAttempts < Self.reclaimAttemptLimit else { return }
+        reclaimAttempts += 1
+
+        TmuxLog.lifecycle(
+            "window is \(disagreement) but this app is laid out for"
+                + " \(want.columns)x\(want.rows) — another client has the size;"
+                + " taking it back (attempt \(reclaimAttempts))",
+            session: sessionName
+        )
+        client.send("switch-client -t \(target)")
+        client.send("refresh-client -C \(want.columns)x\(want.rows)")
     }
 
     func sendKeys(paneID: String, data: Data) {

@@ -431,6 +431,12 @@ final class SessionViewController: NSViewController {
         titleBand.show(name: connection.activeWindow?.name)
         releaseSurfacesForDepartedPanes()
 
+        // Only for the session on screen. A session the user is not looking at
+        // has no business fighting another terminal over its size — this app's
+        // grid describes the window it is drawn in, and that window is showing
+        // exactly one session.
+        if isViewLoaded, view.window != nil { connection.reclaimWindowSizeIfTaken() }
+
         guard let window = connection.activeWindow, let layout = window.layout else { return }
 
         for paneID in layout.panes.map(\.id) where surfaces[paneID] == nil {
