@@ -73,7 +73,28 @@ final class TmuxControlClient {
     /// The command number tmux gave the block currently open. What tells a real
     /// terminator from a pane displaying one — see `isBlockTerminator`.
     private var openBlockNumber: Int?
-    private var completions = [([Data], Bool) -> Void]()
+    /// One entry per command written, in order, whether or not anybody wants
+    /// the reply.
+    ///
+    /// The optional is the whole point and it is load-bearing. tmux answers
+    /// **every** command with a `%begin`/`%end` block — a fire-and-forget
+    /// `send` is not exempt — so a queue that only held the commands with
+    /// completions went one out of step for each one of them, permanently, and
+    /// from then on every `run` received an earlier command's reply. That is
+    /// the same corruption `isBlockTerminator` documents, arrived at from the
+    /// other direction, and it was reachable without any unusual pane content
+    /// at all: `subscribeToActivity` alone was enough to make the first
+    /// `list-windows` parse a `refresh-client` block, which is empty, and
+    /// answer "this session has no windows".
+    ///
+    /// Found 2026-07-28 by adding two more subscriptions and watching the rail
+    /// go blank — with one offset the next refresh happened to look right, and
+    /// with three it never recovered.
+    /// Serialises the actual pipe writes, so their order on the wire is the
+    /// order they were appended to `completions` under the lock. See `enqueue`.
+    private let writeQueue = DispatchQueue(label: "tmuxgui.control.write")
+
+    private var completions = [(([Data], Bool) -> Void)?]()
     private let stateLock = NSLock()
 
     /// tmux emits one unsolicited `%begin`/`%end` block during the attach
@@ -144,6 +165,15 @@ final class TmuxControlClient {
         // whether teardown ran and in what order.
         TmuxLog.destructive("tearing down control client — sending detach-client, then SIGTERM",
                             session: sessionLabel)
+        // Through the FIFO like everything else, not straight to `write`.
+        // tmux answers `detach-client` with a block too, and a command that
+        // reaches the wire without a matching slot in `completions` shifts the
+        // queue by one for whatever is still outstanding — the same corruption
+        // `completions` exists to prevent. Teardown is the least likely place
+        // for it to matter and the easiest place to leave an exception behind.
+        stateLock.lock()
+        completions.append(nil)
+        stateLock.unlock()
         write(command: "detach-client")
         process.terminate()
     }
@@ -233,9 +263,23 @@ final class TmuxControlClient {
             stateLock.unlock()
             return
         }
-        if let completion { completions.append(completion) }
+        // Always, including the nil. See `completions`.
+        //
+        // The write is submitted while the lock is still held, and that is what
+        // makes the order an invariant rather than a likelihood: two threads
+        // enqueueing at once could otherwise append in one order and reach the
+        // pipe in the other, which desynchronises every reply after them.
+        // `async` on a serial queue does not block, so holding the lock across
+        // it costs nothing.
+        //
+        // Deliberately *not* writing inside the lock. That would order things
+        // too, and it can deadlock: `write` blocks when tmux's stdin buffer is
+        // full, tmux fills it when it is blocked writing its own output, and it
+        // is blocked writing output when the read thread is waiting for this
+        // very lock. A serial queue gives the ordering without the coupling.
+        completions.append(completion)
+        writeQueue.async { [weak self] in self?.write(command: command) }
         stateLock.unlock()
-        write(command: command)
     }
 
     private func write(command: String) {
@@ -300,7 +344,11 @@ final class TmuxControlClient {
             let lines = replyLines ?? []
             replyLines = nil
             openBlockNumber = nil
-            let completion = completions.isEmpty ? nil : completions.removeFirst()
+            // Typed rather than inferred: the element is already optional, and
+            // letting the ternary work it out yields a double optional whose
+            // `if let` unwraps one layer and silently never fires.
+            let completion: (([Data], Bool) -> Void)? =
+                completions.isEmpty ? nil : completions.removeFirst()
             stateLock.unlock()
             if let completion {
                 callbackQueue.async { completion(lines, failed) }
@@ -367,8 +415,18 @@ final class TmuxControlClient {
         handshakeComplete = true
         let queued = queuedCommands
         queuedCommands.removeAll()
-        for (_, completion) in queued where completion != nil {
-            completions.append(completion!)
+        // Every held command, nil completions included — tmux answers each of
+        // them with a block. Filtering here is the same off-by-one `enqueue`
+        // had, and it hit the whole handshake queue at once.
+        //
+        // Appended *and* submitted under the one lock, in step, for the reason
+        // written at `enqueue`: releasing the lock between the two let a fresh
+        // command overtake the held ones on the wire while sitting after them
+        // in `completions`. The log line below used to sit in that gap and
+        // widen it.
+        for (command, completion) in queued {
+            completions.append(completion)
+            writeQueue.async { [weak self] in self?.write(command: command) }
         }
         stateLock.unlock()
 
@@ -376,7 +434,6 @@ final class TmuxControlClient {
             "attach handshake complete — releasing \(queued.count) held command(s)",
             session: sessionLabel
         )
-        for (command, _) in queued { write(command: command) }
     }
 
     // A `-L <socket>` override was added here and deliberately removed. It
