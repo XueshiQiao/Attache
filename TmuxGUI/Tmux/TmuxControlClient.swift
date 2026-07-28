@@ -5,6 +5,12 @@
 
 import Foundation
 
+/// One session as `list-sessions` reports it, before there is a connection.
+struct TmuxSessionListing {
+    let id: String
+    let name: String
+}
+
 /// A tmux control mode client: one `tmux -C attach` child process, its output
 /// parsed into `TmuxNotification`s.
 ///
@@ -24,7 +30,15 @@ final class TmuxControlClient {
     var onExit: ((String?) -> Void)?
 
     private let tmuxPath: String
-    private let sessionName: String
+    /// What this client attaches to and what every log line names it by.
+    /// An id rather than a name because a name is not an identity: it can be
+    /// changed from any terminal at any moment, including between the
+    /// `list-sessions` that found this session and the attach below.
+    private let sessionID: String
+    /// The session's current name, for the log only. Kept up to date by
+    /// `TmuxSessionConnection` so a line written after a rename says what the
+    /// user would now call the session.
+    var sessionLabel: String
     private let callbackQueue: DispatchQueue
     private let process = Process()
     private let stdinPipe = Pipe()
@@ -57,9 +71,12 @@ final class TmuxControlClient {
     private var handshakeComplete = false
     private var queuedCommands = [(String, (([Data], Bool) -> Void)?)]()
 
-    init(tmuxPath: String, sessionName: String, callbackQueue: DispatchQueue = .main) {
+    init(tmuxPath: String, sessionID: String, sessionName: String,
+         callbackQueue: DispatchQueue = .main)
+    {
         self.tmuxPath = tmuxPath
-        self.sessionName = sessionName
+        self.sessionID = sessionID
+        sessionLabel = sessionName
         self.callbackQueue = callbackQueue
     }
 
@@ -67,9 +84,13 @@ final class TmuxControlClient {
 
     func start() throws {
         process.executableURL = URL(fileURLWithPath: tmuxPath)
-        // `=name` is tmux's exact-match target syntax. Without it a session
-        // named "7" can resolve by prefix to something else entirely.
-        process.arguments = ["-C", "attach", "-t", "=\(sessionName)"]
+        // `$3`, not `=name`. Exact-match on the name was already needed to stop
+        // a session called "7" resolving by prefix to something else; the id
+        // removes the question. It also closes the window between listing the
+        // sessions and attaching to one of them, in which any terminal on the
+        // machine is free to rename it — verified on tmux 3.6a that a session
+        // id is accepted wherever a session target is.
+        process.arguments = ["-C", "attach", "-t", sessionID]
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = FileHandle.nullDevice
@@ -85,22 +106,23 @@ final class TmuxControlClient {
             TmuxLog.lifecycle(
                 "control client exited — status \(process.terminationStatus)"
                     + " reason \(process.terminationReason.rawValue)",
-                session: self.sessionName
+                session: self.sessionLabel
             )
             self.callbackQueue.async { self.onExit?(nil) }
         }
 
         try process.run()
         TmuxLog.lifecycle(
-            "spawned \(tmuxPath) -C attach -t '=\(sessionName)' (pid \(process.processIdentifier))",
-            session: sessionName
+            "spawned \(tmuxPath) -C attach -t \(sessionID) (\(sessionLabel),"
+                + " pid \(process.processIdentifier))",
+            session: sessionLabel
         )
     }
 
     func stop() {
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         guard process.isRunning else {
-            TmuxLog.lifecycle("stop() — control client already gone", session: sessionName)
+            TmuxLog.lifecycle("stop() — control client already gone", session: sessionLabel)
             return
         }
         // `detach-client` lets tmux tear the client down cleanly; the pane
@@ -109,7 +131,7 @@ final class TmuxControlClient {
         // that ends something, and after an incident the question is always
         // whether teardown ran and in what order.
         TmuxLog.destructive("tearing down control client — sending detach-client, then SIGTERM",
-                            session: sessionName)
+                            session: sessionLabel)
         write(command: "detach-client")
         process.terminate()
     }
@@ -191,7 +213,7 @@ final class TmuxControlClient {
     /// Logged before the write, not after. If the write is the last thing this
     /// process ever does, the record still exists.
     private func enqueue(_ command: String, caller: StaticString, completion: (([Data], Bool) -> Void)?) {
-        TmuxLog.command(command, session: sessionName, caller: caller)
+        TmuxLog.command(command, session: sessionLabel, caller: caller)
 
         stateLock.lock()
         if !handshakeComplete {
@@ -319,7 +341,7 @@ final class TmuxControlClient {
             TmuxLog.lifecycle(
                 "ignoring a line inside reply block \(openBlock) that looks like its terminator"
                     + " but is numbered \(number) — treating it as content",
-                session: sessionName
+                session: sessionLabel
             )
             return false
         }
@@ -340,7 +362,7 @@ final class TmuxControlClient {
 
         TmuxLog.lifecycle(
             "attach handshake complete — releasing \(queued.count) held command(s)",
-            session: sessionName
+            session: sessionLabel
         )
         for (command, _) in queued { write(command: command) }
     }
@@ -358,7 +380,12 @@ final class TmuxControlClient {
 
     // MARK: - Discovery
 
-    /// Session names on the running server, in tmux's own order.
+    /// Every session on the running server, in tmux's own order.
+    ///
+    /// The id comes back with the name because the id is the identity: a name
+    /// is user text that any terminal can change at any moment, and keying
+    /// anything by it makes a rename indistinguishable from "that session was
+    /// destroyed and a different one appeared".
     ///
     /// A one-shot `tmux list-sessions` rather than a control mode command:
     /// picking which session to attach to has to happen before there is a
@@ -371,10 +398,10 @@ final class TmuxControlClient {
     /// reconciles its connections against this, so the two cannot share a
     /// return value: one of them must drop every connection and the other must
     /// change nothing.
-    static func listSessions(tmuxPath: String) -> [String]? {
+    static func listSessions(tmuxPath: String) -> [TmuxSessionListing]? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tmuxPath)
-        process.arguments = ["list-sessions", "-F", "#{session_name}"]
+        process.arguments = ["list-sessions", "-F", "#{session_id} #{session_name}"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -383,7 +410,16 @@ final class TmuxControlClient {
         process.waitUntilExit()
         return String(decoding: data, as: UTF8.self)
             .split(separator: "\n")
-            .map(String.init)
+            .compactMap { line in
+                // One split, so a name containing spaces arrives whole. A row
+                // with no id is not a session this app can address and is
+                // dropped rather than guessed at.
+                let parts = line.split(separator: " ", maxSplits: 1)
+                guard let id = parts.first, id.hasPrefix("$") else { return nil }
+                return TmuxSessionListing(
+                    id: String(id), name: parts.count > 1 ? String(parts[1]) : ""
+                )
+            }
     }
 
     /// Locate tmux. `Process` does not consult PATH, and a GUI app launched

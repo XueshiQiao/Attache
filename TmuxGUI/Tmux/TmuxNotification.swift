@@ -18,6 +18,13 @@ enum TmuxNotification {
     case output(pane: String, data: Data)
     /// Sent once the attach handshake finishes — see `TmuxControlClient`.
     case sessionChanged(id: String, name: String)
+    /// A session was given a new name. The id is not decoration: measured on
+    /// tmux 3.6a, this is broadcast to **every** control client on the server,
+    /// so a client attached to `$0` is told about `$1` being renamed. A
+    /// connection that applied it without checking would take the name of
+    /// whichever session was renamed most recently — the same shape of mistake
+    /// as reading `%client-session-changed` as an identity.
+    case sessionRenamed(session: String, name: String)
     case windowAdd(window: String)
     case windowClose(window: String)
     case windowRenamed(window: String, name: String)
@@ -76,6 +83,18 @@ enum TmuxNotification {
             guard let id = parts.first else { return nil }
             let name = parts.count > 1 ? String(parts[1]) : ""
             return .sessionChanged(id: String(id), name: name)
+
+        case "%session-renamed":
+            // `%session-renamed <session-id> <name>`, same shape as
+            // `%session-changed` and a single split so a name with spaces
+            // survives — `rename-session 'renamed with spaces'` arrives as one
+            // trailing field, verified on 3.6a.
+            let text = String(decoding: rest, as: UTF8.self)
+            let parts = text.split(separator: " ", maxSplits: 1)
+            guard let id = parts.first else { return nil }
+            return .sessionRenamed(
+                session: String(id), name: parts.count > 1 ? String(parts[1]) : ""
+            )
 
         case "%window-add":
             return .windowAdd(window: String(decoding: rest, as: UTF8.self))

@@ -36,8 +36,11 @@ final class MainViewController: NSSplitViewController {
 
     private let sidebar = SessionSidebarView(frame: .zero)
     private let content = Content()
+    /// Keyed by tmux's `$N`, like `TmuxServer.connections`. Keyed by name, a
+    /// rename read as "that session is gone" and threw the controller away —
+    /// GPU surfaces, primed scrollback and the hidden-window set with it.
     private var controllers = [String: SessionViewController]()
-    private var currentName: String?
+    private var currentSessionID: String?
     private var sidebarItem: NSSplitViewItem?
     /// The rail width this controller last placed the divider at. Not the
     /// rail's current width, which the user is free to drag.
@@ -56,8 +59,8 @@ final class MainViewController: NSSplitViewController {
     required init?(coder _: NSCoder) { fatalError("not supported") }
 
     var currentSession: SessionViewController? {
-        guard let currentName else { return nil }
-        return controllers[currentName]
+        guard let currentSessionID else { return nil }
+        return controllers[currentSessionID]
     }
 
     override func viewDidLoad() {
@@ -195,16 +198,16 @@ final class MainViewController: NSSplitViewController {
     /// session: making a window somewhere you are not looking and then not
     /// going there would leave no sign it happened, so it switches too.
     private func wireSidebar() {
-        sidebar.onSelect = { [weak self] name in self?.show(sessionNamed: name) }
+        sidebar.onSelect = { [weak self] id in self?.show(sessionID: id) }
         sidebar.onNew = { [weak self] in self?.server.newSession() }
-        sidebar.onRename = { [weak self] old, new in
-            self?.server.connection(for: old)?.renameSession(to: new)
+        sidebar.onRename = { [weak self] id, new in
+            self?.server.connection(id: id)?.renameSession(to: new)
         }
 
-        sidebar.onNewWindow = { [weak self] name in
-            guard let self, let connection = server.connection(for: name) else { return }
+        sidebar.onNewWindow = { [weak self] id in
+            guard let self, let connection = server.connection(id: id) else { return }
             connection.newWindow()
-            if currentName != name { show(sessionNamed: name) }
+            if currentSessionID != id { show(sessionID: id) }
         }
         // Clicking a window in a session that is not the one on screen means
         // "show me that window", so it switches first. The rail can list any
@@ -212,7 +215,7 @@ final class MainViewController: NSSplitViewController {
         // when only the current session had rows.
         sidebar.onSelectWindow = { [weak self] session, id in
             guard let self else { return }
-            show(sessionNamed: session)
+            show(sessionID: session)
             inSession(session) { $0.selectWindow(id: id) }
         }
         sidebar.onRenameWindow = { [weak self] session, id, name in
@@ -255,8 +258,8 @@ final class MainViewController: NSSplitViewController {
     /// client attached to it is detached. That is not something to do silently
     /// on a drag that could have been a slip, so it asks first.
     private func moveWindow(id: String, from: String, to: String, before anchor: String?) {
-        guard let source = server.connection(for: from),
-              server.connection(for: to) != nil else { return }
+        guard let source = server.connection(id: from),
+              server.connection(id: to) != nil else { return }
 
         // tmux's window list, not the rail's rows: a session with one visible
         // window and two hidden ones survives the move, and counting rows would
@@ -265,7 +268,7 @@ final class MainViewController: NSSplitViewController {
 
         // Whether this is the window on screen, decided before anything is
         // sent. If it is, the app goes with it — see `send`.
-        let following = from == currentName && id == source.activeWindowID
+        let following = from == currentSessionID && id == source.activeWindowID
 
         // On the next turn, so the drag has finished unwinding before a modal
         // spins its own event loop inside it. The command is built from ids and
@@ -280,10 +283,11 @@ final class MainViewController: NSSplitViewController {
                 // client moving it away while the alert was open would turn a
                 // confirmed "empty this session" into a move out of a session
                 // nobody was asked about.
-                guard let source = server.connection(for: from), source.holds(windowID: id) else {
+                guard let source = server.connection(id: from), source.holds(windowID: id) else {
                     TmuxLog.lifecycle(
-                        "not moving \(id) — it left \(from) while the confirmation was open",
-                        session: from
+                        "not moving \(id) — it left \(describe(from)) while the confirmation"
+                            + " was open",
+                        session: describe(from)
                     )
                     return
                 }
@@ -314,12 +318,12 @@ final class MainViewController: NSSplitViewController {
         id: String, from: String, to: String,
         before anchor: String?, emptying: Bool, following: Bool
     ) {
-        guard let destination = server.connection(for: to) else { return }
+        guard let destination = server.connection(id: to) else { return }
         TmuxLog.lifecycle(
-            "moving window \(id) from \(from) into \(to)"
-                + (emptying ? " — \(from) has no other window and tmux will destroy it" : "")
+            "moving window \(id) from \(describe(from)) into \(describe(to))"
+                + (emptying ? " — \(describe(from)) has no other window and tmux will destroy it" : "")
                 + (following ? " — it is the window on screen, so the app follows it" : ""),
-            session: from
+            session: describe(from)
         )
 
         // Nothing follows a move that was never issued. A destination whose
@@ -329,9 +333,9 @@ final class MainViewController: NSSplitViewController {
         // showing something tmux was never told to do.
         guard destination.moveWindow(id: id, before: anchor) else {
             TmuxLog.lifecycle(
-                "the move was not sent — \(to) has no session id yet, or no free index"
-                    + " above its windows; staying put",
-                session: to
+                "the move was not sent — \(describe(to)) has no free index above its"
+                    + " windows; staying put",
+                session: describe(to)
             )
             return
         }
@@ -341,12 +345,16 @@ final class MainViewController: NSSplitViewController {
         // that order. Selecting before the window has arrived would name a
         // window that is not in this session yet.
         destination.selectWindow(id: id)
-        show(sessionNamed: to)
+        show(sessionID: to)
     }
 
     /// Asked before a move that will take a session with it. Same shape as the
     /// kill confirmation, deliberately: both are "there is no undo for this".
     private func confirmMoveEmptying(session: String, into destination: String) -> Bool {
+        // Names, because this is the one place a session is described to a
+        // human. Everything around it is ids.
+        let session = describe(session)
+        let destination = describe(destination)
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Move the last window out of \(session)?"
@@ -379,18 +387,16 @@ final class MainViewController: NSSplitViewController {
     /// and the kill confirmation. Before this, those clicks reached a nil
     /// lookup and vanished, leaving nothing but a log line.
     ///
-    /// The lookup can still miss, and that is what the log line is for now.
-    /// Sessions are keyed by *name* throughout this app — `controllers`,
-    /// `TmuxServer.connection(for:)` — so a session renamed by another client
-    /// becomes, as far as this app is concerned, a different session, and an
-    /// action aimed at the old name has nowhere to go. Keying by tmux's `$17`
-    /// is the real fix and is bigger than this file.
-    private func inSession(_ name: String, _ action: (SessionViewController) -> Void) {
-        guard let controller = controller(forSessionNamed: name) else {
+    /// The lookup can still miss, and that is what the log line is for: a
+    /// session killed from another terminal between the rail drawing its rows
+    /// and the user clicking one. It can no longer miss because of a *rename* —
+    /// `$17` is what everything here is keyed by, and tmux never reuses one.
+    private func inSession(_ id: String, _ action: (SessionViewController) -> Void) {
+        guard let controller = controller(forSessionID: id) else {
             TmuxLog.lifecycle(
-                "dropping a window action aimed at \(name) — the server has no"
-                    + " connection under that name, most likely renamed elsewhere",
-                session: name
+                "dropping a window action aimed at \(id) — the server has no connection"
+                    + " for it, so the session is gone",
+                session: id
             )
             return
         }
@@ -399,9 +405,9 @@ final class MainViewController: NSSplitViewController {
 
     /// This session's controller, made on demand. One per session for the life
     /// of the session, because it holds the pane surfaces and the hidden set.
-    private func controller(forSessionNamed name: String) -> SessionViewController? {
-        if let existing = controllers[name] { return existing }
-        guard let connection = server.connection(for: name) else { return nil }
+    private func controller(forSessionID id: String) -> SessionViewController? {
+        if let existing = controllers[id] { return existing }
+        guard let connection = server.connection(id: id) else { return nil }
 
         let controller = SessionViewController(connection: connection)
         controller.onStatusChange = { [weak self] status in self?.onStatusChange?(status) }
@@ -410,8 +416,15 @@ final class MainViewController: NSSplitViewController {
         // row a user just hid would stay in the rail until tmux happened to say
         // something else.
         controller.onWindowsChanged = { [weak self] in self?.refreshSidebar() }
-        controllers[name] = controller
+        controllers[id] = controller
         return controller
+    }
+
+    /// A session id rendered for a human — `$3 (agents)`. Used in log lines and
+    /// confirmation text, and nowhere that decides anything.
+    private func describe(_ id: String) -> String {
+        guard let name = server.name(ofSession: id) else { return id }
+        return "\(id) (\(name))"
     }
 
     // MARK: - Chrome
@@ -538,27 +551,33 @@ final class MainViewController: NSSplitViewController {
         // be opened in the rail now. The lists are already in hand — each
         // connection stays attached whether or not its session is displayed —
         // so this costs a walk, not a round trip.
-        let entries = server.sessionNames.map { name -> SessionSidebarView.Entry in
-            let connection = server.connection(for: name)
+        let entries = server.sessionIDs.compactMap { id -> SessionSidebarView.Entry? in
+            guard let connection = server.connection(id: id) else { return nil }
             return SessionSidebarView.Entry(
-                name: name,
-                hasActivity: connection?.hasActivity ?? false,
-                windows: connection?.windows ?? [],
-                activeWindowID: connection?.activeWindowID,
+                id: id,
+                // Read from the connection, which is the only thing that holds
+                // a session's current name: `%session-renamed` reaches it
+                // directly, so the rail follows a rename without a relist.
+                name: connection.sessionName,
+                hasActivity: connection.hasActivity,
+                windows: connection.windows,
+                activeWindowID: connection.activeWindowID,
                 // Only a session that has been shown has a controller, and
                 // therefore a hidden set. One that has not cannot have hidden
                 // anything, which is what the empty default says.
-                hiddenIDs: controllers[name]?.hiddenWindowIDs ?? []
+                hiddenIDs: controllers[id]?.hiddenWindowIDs ?? []
             )
         }
 
-        // Whatever the app was showing may have been renamed or killed
-        // elsewhere; fall back to the first session rather than a blank pane.
-        if currentName == nil || !server.sessionNames.contains(currentName!) {
-            if let first = server.sessionNames.first { show(sessionNamed: first) }
+        // Whatever the app was showing may have been killed elsewhere; fall
+        // back to the first session rather than a blank pane. A rename no
+        // longer reaches here at all — the id is unchanged, so nothing about
+        // the session the app is showing has moved.
+        if currentSessionID == nil || !server.sessionIDs.contains(currentSessionID!) {
+            if let first = server.sessionIDs.first { show(sessionID: first) }
         }
 
-        sidebar.update(entries: entries, selected: currentName)
+        sidebar.update(entries: entries, selected: currentSessionID)
     }
 
     /// Give up the controller of a session the server no longer has.
@@ -576,27 +595,32 @@ final class MainViewController: NSSplitViewController {
     /// A session can vanish without this app doing anything — killed from any
     /// terminal — so this runs from `refreshSidebar`, on the same reconcile the
     /// connection set is dropped by, rather than from anything the UI does.
+    ///
+    /// Keyed by id, this now fires only when a session is genuinely gone. Keyed
+    /// by name it also fired on every rename, which is what turned renaming a
+    /// session into a teardown of a session that was working perfectly.
     private func discardControllersForVanishedSessions() {
-        let live = Set(server.sessionNames)
-        for (name, controller) in controllers where !live.contains(name) {
+        let live = Set(server.sessionIDs)
+        for (id, controller) in controllers where !live.contains(id) {
             TmuxLog.lifecycle(
-                "dropping the view controller for \(name) — the session is gone from the server",
-                session: name
+                "dropping the view controller for \(describe(id)) — the session is gone"
+                    + " from the server",
+                session: id
             )
             controller.releaseSurfaces()
             controller.view.removeFromSuperview()
             if controller.parent != nil { controller.removeFromParent() }
-            controllers.removeValue(forKey: name)
+            controllers.removeValue(forKey: id)
             // Leaves the fallback below to pick a session that still exists.
-            if currentName == name { currentName = nil }
+            if currentSessionID == id { currentSessionID = nil }
         }
     }
 
-    func show(sessionNamed name: String) {
-        guard currentName != name, let connection = server.connection(for: name),
-              let controller = controller(forSessionNamed: name) else { return }
+    func show(sessionID id: String) {
+        guard currentSessionID != id, let connection = server.connection(id: id),
+              let controller = controller(forSessionID: id) else { return }
 
-        currentName = name
+        currentSessionID = id
         content.show(controller)
 
         // Draw what tmux has already said, rather than waiting to be told
@@ -629,15 +653,16 @@ final class MainViewController: NSSplitViewController {
 
     /// ⌃⌘1-9 — the session-level counterpart of ⌘1-9 for windows.
     func selectSession(atSlot slot: Int) {
-        guard slot >= 0, slot < server.sessionNames.count else { return }
-        show(sessionNamed: server.sessionNames[slot])
+        let ids = server.sessionIDs
+        guard slot >= 0, slot < ids.count else { return }
+        show(sessionID: ids[slot])
     }
 
     func selectAdjacentSession(offset: Int) {
-        let names = server.sessionNames
-        guard !names.isEmpty, let current = currentName,
-              let index = names.firstIndex(of: current) else { return }
-        show(sessionNamed: names[(index + offset + names.count) % names.count])
+        let ids = server.sessionIDs
+        guard !ids.isEmpty, let current = currentSessionID,
+              let index = ids.firstIndex(of: current) else { return }
+        show(sessionID: ids[(index + offset + ids.count) % ids.count])
     }
 
     /// Shut the app's tmux side down, once.
@@ -660,30 +685,46 @@ final class MainViewController: NSSplitViewController {
 #if DEBUG
 
     extension MainViewController {
-        var debugShownSessionName: String? { currentName }
+        var debugShownSessionName: String? {
+            currentSessionID.flatMap { server.name(ofSession: $0) }
+        }
 
-        /// Names this controller is holding a `SessionViewController` for.
+        /// The sessions this controller is holding a `SessionViewController`
+        /// for, as `$3 (agents)`.
         ///
         /// The one thing `debugSessionReports()` cannot show: it walks tmux's
         /// current session list, so a controller whose session is gone is
-        /// absent from that report rather than flagged in it.
-        var debugSessionControllerNames: [String] { controllers.keys.sorted() }
+        /// absent from that report rather than flagged in it. Printed with the
+        /// id because that is the leak's identity — a controller left behind
+        /// has no name to look up any more.
+        var debugSessionControllerNames: [String] {
+            controllers.keys.sorted().map { describe($0) }
+        }
 
         /// A session's controller by name, on screen or not. The off-screen
         /// ones are the interesting half: a font change reaches every one of
         /// them, and their views have no window.
+        ///
+        /// By name because the inspector's routes are typed by a person; the
+        /// name is resolved to an id here and nowhere else.
         func debugSessionController(named name: String) -> SessionViewController? {
-            controllers[name]
+            server.sessionID(named: name).flatMap { controllers[$0] }
+        }
+
+        /// Show a session the inspector named. Same reasoning as above.
+        func debugShow(sessionNamed name: String) {
+            guard let id = server.sessionID(named: name) else { return }
+            show(sessionID: id)
         }
 
         /// Every session on the server, whether or not it has ever been shown.
         /// A session with no controller still has a live connection, and its
         /// window list is exactly the thing worth diffing against tmux.
         func debugSessionReports() -> [DebugInspector.SessionReport] {
-            server.sessionNames.compactMap { name in
-                guard let connection = server.connection(for: name) else { return nil }
-                if let controller = controllers[name] {
-                    return controller.debugReport(isShown: name == currentName)
+            server.sessionIDs.compactMap { id in
+                guard let connection = server.connection(id: id) else { return nil }
+                if let controller = controllers[id] {
+                    return controller.debugReport(isShown: id == currentSessionID)
                 }
                 return DebugInspector.SessionReport(connection: connection)
             }

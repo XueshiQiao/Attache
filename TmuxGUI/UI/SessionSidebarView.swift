@@ -27,8 +27,12 @@ import Cocoa
 /// `SessionViewController`, and `expandedSessions` below.
 @MainActor
 final class SessionSidebarView: NSView {
-    // Session level.
+    // Session level. Every one of these leads with a tmux **session id**, not
+    // a name: a name is user text that any terminal can change between the rail
+    // drawing a row and the user clicking it, and an action that misses is
+    // silent. Names appear here only as something to draw.
     var onSelect: ((String) -> Void)?
+    /// The session to rename, and what to call it.
     var onRename: ((String, String) -> Void)?
     var onNew: (() -> Void)?
 
@@ -78,6 +82,8 @@ final class SessionSidebarView: NSView {
     /// that is what keeps the activity dots honest — so their window lists are
     /// already there to hand over.
     struct Entry {
+        /// tmux's `$N`. What this session *is*; `name` is what it is called.
+        let id: String
         let name: String
         let hasActivity: Bool
         /// In tmux's order. Empty only for a session with no live connection.
@@ -117,16 +123,17 @@ final class SessionSidebarView: NSView {
     }
 
     private var entries = [Entry]()
-    private var selectedName: String?
+    private var selectedID: String?
 
     /// Sessions whose windows are listed. The app's one other piece of purely
     /// local state, alongside the hidden-window set — tmux has no notion of a
     /// list being open, so there is nothing to ask it.
     ///
-    /// Keyed by name, like everything else that identifies a session here, and
-    /// pruned against the entries on every rebuild so a session that goes away
-    /// does not leave its name behind to be re-opened by a new session that
-    /// happens to reuse it.
+    /// Keyed by session id, like everything else that identifies a session
+    /// here, and pruned against the entries on every rebuild so a session that
+    /// goes away does not leave an entry behind. Renaming a session used to
+    /// close its list, because the old name was pruned and the new one had
+    /// never been added.
     private var expandedSessions = Set<String>()
 
     private var rows = [Row]()
@@ -169,13 +176,16 @@ final class SessionSidebarView: NSView {
     }
 
     private enum EditTarget {
-        case session(String)
+        /// The session's id, and the name the field was seeded with — needed
+        /// only to tell an edit that changed nothing from one that did.
+        case session(id: String, was: String)
         case window(session: String, id: String)
     }
 
     /// What a window-level menu item acts on. A window id alone is not enough:
     /// see the callback declarations for why the session has to travel with it.
     private struct WindowTarget {
+        /// The session's id.
         let session: String
         let id: String
     }
@@ -188,7 +198,7 @@ final class SessionSidebarView: NSView {
     /// the selected session, the session the drag started in — is wrong the
     /// moment the pointer crosses into another session's block.
     private enum Row {
-        case session(SidebarSessionRow, name: String)
+        case session(SidebarSessionRow, id: String)
         case window(SidebarWindowRow, session: String)
         case hidden(SidebarHiddenRow, session: String)
 
@@ -202,7 +212,7 @@ final class SessionSidebarView: NSView {
 
         var session: String {
             switch self {
-            case .session(_, let name): name
+            case .session(_, let id): id
             case .window(_, let session): session
             case .hidden(_, let session): session
             }
@@ -305,7 +315,7 @@ final class SessionSidebarView: NSView {
         // A session that disappeared and came back under the same name while
         // the rail was busy would otherwise have both facts collapse into "it
         // is here", and an unrelated new session would open already expanded.
-        expandedSessions.formIntersection(Set(entries.map(\.name)))
+        expandedSessions.formIntersection(Set(entries.map(\.id)))
 
         let update = Update(entries: entries, selected: selected)
         guard editor == nil, draggingWindowID == nil else {
@@ -321,19 +331,19 @@ final class SessionSidebarView: NSView {
         // switching is to work in it. Closing it again afterwards is allowed —
         // the disclosure triangle does not refuse — and then the pane grid and
         // ⌘1-9 are still the way to move around.
-        if let selected = update.selected, selected != selectedName {
+        if let selected = update.selected, selected != selectedID {
             expandedSessions.insert(selected)
         }
-        selectedName = update.selected
+        selectedID = update.selected
         rebuild()
     }
 
-    private func entry(named name: String) -> Entry? {
-        entries.first { $0.name == name }
+    private func entry(_ id: String) -> Entry? {
+        entries.first { $0.id == id }
     }
 
-    private func isExpanded(_ name: String) -> Bool {
-        expandedSessions.contains(name)
+    private func isExpanded(_ id: String) -> Bool {
+        expandedSessions.contains(id)
     }
 
     /// Whatever tmux said while the rail was busy. Only the last one is kept:
@@ -352,7 +362,7 @@ final class SessionSidebarView: NSView {
     /// The rows a session currently shows, in order. The unit every drag and
     /// every reorder index is computed against, so it is read from one place.
     private func visibleWindows(in session: String) -> [TmuxWindow] {
-        entry(named: session)?.visibleWindows ?? []
+        entry(session)?.visibleWindows ?? []
     }
 
     // MARK: - Building
@@ -373,12 +383,13 @@ final class SessionSidebarView: NSView {
             // Captured, not read back later: from here on these rows belong to
             // this session no matter what the app switches to before the user
             // finishes what they started. See the callback declarations.
-            let session = entry.name
-            let isCurrent = session == selectedName
+            let session = entry.id
+            let isCurrent = session == selectedID
             let expanded = isExpanded(session)
 
             let header = SidebarSessionRow(
-                name: session,
+                id: session,
+                name: entry.name,
                 windowCount: entry.windowCount,
                 hasActivity: entry.hasActivity,
                 isCurrent: isCurrent,
@@ -395,7 +406,7 @@ final class SessionSidebarView: NSView {
                 self?.isDoubleClick(on: row, clickCount: count) ?? false
             }
             rowsView.addSubview(header)
-            rows.append(.session(header, name: session))
+            rows.append(.session(header, id: session))
 
             guard expanded else { continue }
 
@@ -496,7 +507,7 @@ final class SessionSidebarView: NSView {
         // The session being shown, not any expanded one: opening another
         // session's list is a look, not a move, and it must not yank the rail
         // to a row in it.
-        guard let selectedName, let active = entry(named: selectedName)?.activeWindowID,
+        guard let selectedID, let active = entry(selectedID)?.activeWindowID,
               active != revealedWindowID else { return }
         revealedWindowID = active
         guard let row = rows.compactMap({ row -> SidebarWindowRow? in
@@ -640,7 +651,7 @@ final class SessionSidebarView: NSView {
 
     @objc private func renameFromMenu(_ sender: NSMenuItem) {
         guard let target = sender.representedObject as? WindowTarget,
-              let window = entry(named: target.session)?
+              let window = entry(target.session)?
                   .windows.first(where: { $0.id == target.id }) else { return }
         beginRenameWindow(window, in: target.session)
     }
@@ -779,12 +790,12 @@ final class SessionSidebarView: NSView {
 
     // MARK: - Rename
 
-    private func beginRenameSession(_ name: String) {
+    private func beginRenameSession(_ id: String) {
         guard let row = rows.compactMap({ row -> SidebarSessionRow? in
-            guard case .session(let view, _) = row, view.sessionName == name else { return nil }
+            guard case .session(let view, _) = row, view.sessionID == id else { return nil }
             return view
         }).first else { return }
-        beginEditing(over: row, text: name, target: .session(name))
+        beginEditing(over: row, text: row.sessionName, target: .session(id: id, was: row.sessionName))
     }
 
     private func beginRenameWindow(_ window: TmuxWindow, in session: String) {
@@ -852,7 +863,7 @@ final class SessionSidebarView: NSView {
 
         if commit, !new.isEmpty {
             switch target {
-            case .session(let old) where new != old: onRename?(old, new)
+            case .session(let id, let was) where new != was: onRename?(id, new)
             case .window(let session, let id): onRenameWindow?(session, id, new)
             default: break
             }

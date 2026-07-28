@@ -21,13 +21,20 @@ import Foundation
 /// rather than trying to escape around it. `TmuxCommand.quote` exists for the
 /// one place real text has to be sent — renaming.
 final class TmuxSessionConnection {
-    let sessionName: String
+    /// This connection's identity, for its whole life. Known before the attach
+    /// because `list-sessions` reports it, so there is no window in which a
+    /// command has to be held back for want of a target — and, more to the
+    /// point, no way for a rename to turn this object into a stranger.
+    let sessionID: String
+
+    /// What the user currently calls this session. Display and logging only;
+    /// nothing is keyed by it. Changes whenever tmux says it did, which is why
+    /// it is a `var` — the old `let` is what made a rename look to the rest of
+    /// the app like one session vanishing and another appearing.
+    private(set) var sessionName: String
+
     let router = TmuxOutputRouter()
     let metrics = TmuxMetrics()
-
-    /// tmux's session id, learned from `%session-changed`. All later commands
-    /// target this instead of the name.
-    private(set) var sessionID: String?
 
     private(set) var windows = [TmuxWindow]()
     private(set) var activeWindowID: String?
@@ -70,9 +77,12 @@ final class TmuxSessionConnection {
     private let measuredPaneLock = NSLock()
     private var probeInFlight = false
 
-    init(tmuxPath: String, sessionName: String) {
+    init(tmuxPath: String, sessionID: String, sessionName: String) {
+        self.sessionID = sessionID
         self.sessionName = sessionName
-        client = TmuxControlClient(tmuxPath: tmuxPath, sessionName: sessionName)
+        client = TmuxControlClient(
+            tmuxPath: tmuxPath, sessionID: sessionID, sessionName: sessionName
+        )
 
         client.onPaneOutput = { [weak self] pane, data in
             guard let self else { return }
@@ -183,7 +193,7 @@ final class TmuxSessionConnection {
             reclaimedAt = nil
             reclaimAttempts = 0
         }
-        guard let want = lastReportedGrid, let target = sessionTarget,
+        guard let want = lastReportedGrid,
               let size = activeWindow?.visibleLayout?.frame,
               size.columns != want.columns || size.rows != want.rows
         else {
@@ -211,7 +221,7 @@ final class TmuxSessionConnection {
                 + " \(isUserReturning ? "user returned to the app" : "tmux notification"))",
             session: sessionName
         )
-        client.send("switch-client -t \(target)")
+        client.send("switch-client -t \(sessionTarget)")
         client.send("refresh-client -C \(want.columns)x\(want.rows)")
     }
 
@@ -231,8 +241,7 @@ final class TmuxSessionConnection {
     }
 
     func newWindow() {
-        guard let target = sessionTarget else { return }
-        client.send("new-window -t \(target)")
+        client.send("new-window -t \(sessionTarget)")
     }
 
     func killWindow(id: String) {
@@ -240,8 +249,7 @@ final class TmuxSessionConnection {
     }
 
     func renameSession(to name: String) {
-        guard let target = sessionTarget else { return }
-        client.send("rename-session -t \(target) \(TmuxCommand.quote(name))")
+        client.send("rename-session -t \(sessionTarget) \(TmuxCommand.quote(name))")
     }
 
     func renameWindow(id: String, to name: String) {
@@ -267,9 +275,8 @@ final class TmuxSessionConnection {
     /// `$10` plus `4` as the single token `$104` and silently does nothing.
     @discardableResult
     func moveWindow(id: String, beforeIndex index: Int) -> Bool {
-        guard let target = sessionTarget else { return false }
-        client.send("move-window -b -d -s \(id) -t \(target):\(index)")
-        client.send("move-window -r -t \(target)")
+        client.send("move-window -b -d -s \(id) -t \(sessionTarget):\(index)")
+        client.send("move-window -r -t \(sessionTarget)")
         reselectIfItWasActive(id)
         return true
     }
@@ -324,9 +331,8 @@ final class TmuxSessionConnection {
     /// getting this wrong is a move that silently does not happen.
     @discardableResult
     func moveWindow(id: String, toFreeIndex index: Int) -> Bool {
-        guard let target = sessionTarget else { return false }
-        client.send("move-window -d -s \(id) -t \(target):\(index)")
-        client.send("move-window -r -t \(target)")
+        client.send("move-window -d -s \(id) -t \(sessionTarget):\(index)")
+        client.send("move-window -r -t \(sessionTarget)")
         reselectIfItWasActive(id)
         return true
     }
@@ -472,15 +478,54 @@ final class TmuxSessionConnection {
         return text.trimmingCharacters(in: .whitespaces).isEmpty || TmuxText.plain(text).isEmpty
     }
 
-    private var sessionTarget: String? { sessionID }
+    private var sessionTarget: String { sessionID }
+
+    /// Adopt a name tmux reports outside a `%session-renamed` — the one that
+    /// arrives with `list-sessions`. Covers the rename this app was not
+    /// listening for: one that happened before it launched, or between a
+    /// session being listed and its client finishing the attach.
+    func noteName(_ name: String) {
+        guard name != sessionName, !name.isEmpty else { return }
+        adoptName(name)
+    }
+
+    private func adoptName(_ name: String) {
+        TmuxLog.lifecycle(
+            "\(sessionID) is now called \(name) (was \(sessionName))", session: sessionName
+        )
+        sessionName = name
+        client.sessionLabel = name
+        onStatusChange?(describeActive())
+        notifyModelChanged()
+    }
 
     // MARK: - Notifications
 
     private func handle(_ notification: TmuxNotification) {
         switch notification {
-        case .sessionChanged(let id, _):
-            sessionID = id
+        case .sessionChanged(let id, let name):
+            // A check now, not a source: the id came from `list-sessions`
+            // before this client existed. A client that finds itself in some
+            // other session is a state this app never asks for and cannot
+            // represent — every command it sends targets the session it was
+            // made for — so it is logged rather than followed.
+            if id != sessionID {
+                TmuxLog.lifecycle(
+                    "control client for \(sessionID) reports it is attached to \(id) (\(name));"
+                        + " commands still target \(sessionID)",
+                    session: sessionName
+                )
+            }
             refreshWindows()
+
+        case .sessionRenamed(let id, let name):
+            // The id test is the whole point. This notification is broadcast to
+            // every control client on the server — measured on tmux 3.6a, a
+            // client attached to `$0` is told about `$1` — so a connection that
+            // took the name unconditionally would end up named after whichever
+            // session was renamed most recently.
+            guard id == sessionID else { return }
+            noteName(name)
 
         case .layoutChange(let windowID, let saved, let visible):
             guard let index = windows.firstIndex(where: { $0.id == windowID }) else {
@@ -526,8 +571,7 @@ final class TmuxSessionConnection {
     /// A `list-windows` round trip is cheap and it cannot drift; incremental
     /// updates from six notification types eventually can.
     private func refreshWindows() {
-        guard let target = sessionTarget else { return }
-        client.run("list-windows -t \(target) -F '\(TmuxWindow.listFormat)'") { [weak self] lines, failed in
+        client.run("list-windows -t \(sessionTarget) -F '\(TmuxWindow.listFormat)'") { [weak self] lines, failed in
             guard let self, !failed else { return }
             let parsed = lines.compactMap(TmuxWindow.parse(listLine:)).map { window -> TmuxWindow in
                 var window = window
@@ -572,10 +616,7 @@ extension TmuxSessionConnection {
     /// Both helper windows are created detached and killed afterwards, so
     /// nothing the user is looking at is disturbed.
     func runThroughputProbe(phaseSeconds: TimeInterval = 8, completion: @escaping (String) -> Void) {
-        guard let target = sessionTarget else {
-            completion("Not connected to tmux yet.")
-            return
-        }
+        let target = sessionTarget
         guard !probeInFlight else {
             completion("A probe is already running.")
             return
@@ -688,7 +729,7 @@ extension TmuxSessionConnection {
     // has any business seeing. Same file, so `private` still means private
     // everywhere that matters.
     extension TmuxSessionConnection {
-        var debugSessionID: String? { sessionID }
+        var debugSessionID: String { sessionID }
         /// The last size this app sent with `refresh-client -C`, which is what
         /// tmux should be sizing the session's windows to.
         var debugLastReportedGrid: (columns: Int, rows: Int)? { lastReportedGrid }

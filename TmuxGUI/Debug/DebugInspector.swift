@@ -312,7 +312,7 @@
         /// one with the interesting layout in it. Non-destructive: it selects,
         /// exactly like the rail does.
         static func selectBody(query: String) -> Data {
-            if let name = parseQuery(query)["session"] { main?.show(sessionNamed: name) }
+            if let name = parseQuery(query)["session"] { main?.debugShow(sessionNamed: name) }
             return encode(tmuxOnly())
         }
 
@@ -704,8 +704,10 @@
 
         struct SessionReport: Encodable {
             let name: String
-            /// tmux's own `$n`. Nil until `%session-changed` has arrived.
-            let sessionID: String?
+            /// tmux's own `$n`. Known from `list-sessions` before the connection
+            /// attaches, and what the whole app keys this session by — `name` is
+            /// only what it is currently called.
+            let sessionID: String
             let isShown: Bool
             let hasSurfaces: Bool
             let activeWindowID: String?

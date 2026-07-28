@@ -20,7 +20,11 @@ import Foundation
 final class TmuxServer {
     let tmuxPath: String
 
-    private(set) var sessionNames = [String]()
+    /// tmux's session ids, in tmux's own order. The identity of a session
+    /// everywhere in this app: a name is user text and any terminal can change
+    /// it at any moment, which used to read here as the session disappearing.
+    private(set) var sessionIDs = [String]()
+    /// Keyed by `$N`, for the same reason.
     private(set) var connections = [String: TmuxSessionConnection]()
 
     /// Fires when the set of sessions changes, or when any session's window
@@ -38,14 +42,38 @@ final class TmuxServer {
     func stop() {
         stopped = true
         TmuxLog.destructive(
-            "stopping every connection: \(connections.keys.sorted().joined(separator: ", "))"
+            "stopping every connection: \(describeConnections())"
         )
         for connection in connections.values { connection.stop() }
         connections.removeAll()
     }
 
-    func connection(for sessionName: String) -> TmuxSessionConnection? {
-        connections[sessionName]
+    func connection(id: String) -> TmuxSessionConnection? {
+        connections[id]
+    }
+
+    /// What tmux currently calls a session. Read from the connection rather
+    /// than stored here, so there is one place a name lives and no second copy
+    /// to go stale between a `%session-renamed` and the next `list-sessions`.
+    func name(ofSession id: String) -> String? {
+        connections[id]?.sessionName
+    }
+
+    /// The session a *name* refers to right now.
+    ///
+    /// For the debug inspector, whose routes a human types, and for nothing
+    /// else. Anything inside the app that already has a session in hand has its
+    /// id and should keep using it: two sessions cannot share a name at any one
+    /// instant, but the name a user typed a moment ago can belong to a
+    /// different session by the time it is looked up.
+    func sessionID(named name: String) -> String? {
+        connections.first { $0.value.sessionName == name }?.key
+    }
+
+    private func describeConnections() -> String {
+        sessionIDs.compactMap { id in
+            connections[id].map { "\(id) (\($0.sessionName))" }
+        }.joined(separator: ", ")
     }
 
     /// Reconcile the connection set with what tmux currently has.
@@ -62,11 +90,13 @@ final class TmuxServer {
         // the server had lost — with no route out of it, because every trigger
         // that would re-ask is carried by a connection. Now only "could not ask
         // tmux at all" returns early; an empty list reconciles like any other.
-        guard let names = TmuxControlClient.listSessions(tmuxPath: tmuxPath) else { return }
-        sessionNames = names
+        guard let listed = TmuxControlClient.listSessions(tmuxPath: tmuxPath) else { return }
+        sessionIDs = listed.map(\.id)
 
-        for name in names where connections[name] == nil {
-            let connection = TmuxSessionConnection(tmuxPath: tmuxPath, sessionName: name)
+        for session in listed where connections[session.id] == nil {
+            let connection = TmuxSessionConnection(
+                tmuxPath: tmuxPath, sessionID: session.id, sessionName: session.name
+            )
             connection.addModelObserver { [weak self] in self?.onChange?() }
             connection.onServerSessionsChanged = { [weak self] in
                 // Coalesced onto the next runloop turn: every connection sees
@@ -75,23 +105,32 @@ final class TmuxServer {
                 self?.scheduleSessionRefresh()
             }
             connection.onExit = { [weak self] _ in self?.scheduleSessionRefresh() }
-            connections[name] = connection
+            connections[session.id] = connection
             connection.start()
         }
 
-        let gone = Set(connections.keys).subtracting(names)
+        // A rename this app was not listening for: one that happened before it
+        // launched, or while a connection was still finishing its attach.
+        // `%session-renamed` covers every rename after that and this covers the
+        // rest, for the price of a string comparison per session.
+        for session in listed { connections[session.id]?.noteName(session.name) }
+
+        let gone = Set(connections.keys).subtracting(sessionIDs)
         if !gone.isEmpty {
             // The app did not necessarily do this — a session can be destroyed
             // from any terminal. Logged so that "the session vanished" can be
-            // told apart from "this app dropped it".
+            // told apart from "this app dropped it". By id and name both: the
+            // id is what was dropped, the name is what the user would recognise.
             TmuxLog.destructive(
                 "sessions no longer on the server, dropping connections: "
-                    + gone.sorted().joined(separator: ", ")
+                    + gone.sorted().map { id in
+                        connections[id].map { "\(id) (\($0.sessionName))" } ?? id
+                    }.joined(separator: ", ")
             )
         }
-        for name in gone {
-            connections[name]?.stop()
-            connections.removeValue(forKey: name)
+        for id in gone {
+            connections[id]?.stop()
+            connections.removeValue(forKey: id)
         }
 
         // Everything else here is notification-driven, and a notification needs

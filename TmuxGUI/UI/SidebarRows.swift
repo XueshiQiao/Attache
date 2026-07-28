@@ -27,10 +27,13 @@ import Cocoa
 /// time the pointer is anywhere near it, it reads as a row.
 @MainActor
 final class SidebarSessionRow: NSView {
+    let sessionID: String
     let sessionName: String
     /// Survives a rebuild, unlike the view itself. See
-    /// `SessionSidebarView.isDoubleClick(on:clickCount:)`.
-    var rowIdentity: String { "session:\(sessionName)" }
+    /// `SessionSidebarView.isDoubleClick(on:clickCount:)`. Built from the id
+    /// rather than the name so that renaming a session mid-double-click cannot
+    /// make the second half land on what looks like a different row.
+    var rowIdentity: String { "session:\(sessionID)" }
 
     var onClick: (() -> Void)?
     var onDoubleClick: (() -> Void)?
@@ -59,7 +62,10 @@ final class SidebarSessionRow: NSView {
     private var trackingArea: NSTrackingArea?
     private var pressed = false
 
-    init(name: String, windowCount: Int, hasActivity: Bool, isCurrent: Bool, isExpanded: Bool) {
+    init(id: String, name: String, windowCount: Int, hasActivity: Bool,
+         isCurrent: Bool, isExpanded: Bool)
+    {
+        sessionID = id
         sessionName = name
         self.isCurrent = isCurrent
         super.init(frame: .zero)
