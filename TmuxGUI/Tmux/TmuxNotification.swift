@@ -37,7 +37,10 @@ enum TmuxNotification {
     /// <pane-id> : <value>` — verified on tmux 3.6a. The `:` is a field of its
     /// own, which is what makes the value safe to take as "everything after
     /// it" however many spaces it contains.
-    case subscriptionChanged(name: String, window: String?, value: String)
+    ///
+    /// The pane is `nil` for a window-scoped subscription, where tmux writes a
+    /// literal `-` in that column rather than omitting it.
+    case subscriptionChanged(name: String, window: String?, pane: String?, value: String)
     case paused(pane: String)
     case resumed(pane: String)
     case exited(reason: String?)
@@ -110,9 +113,11 @@ enum TmuxNotification {
             // value, taken as the rest of the line rather than as tokens
             // rejoined — a value's own spacing is the value's business.
             //
-            // The window is looked for in the header alone. A value that
-            // happens to begin with `@` is ordinary text, and a search over the
-            // whole line would read it as the window this notification is about.
+            // The window and pane are looked for in the header alone. A value
+            // that happens to begin with `@` or `%` is ordinary text — a pane's
+            // current path or a shell prompt easily could — and a search over
+            // the whole line would read it as the window or pane this
+            // notification is about.
             let text = String(decoding: rest, as: UTF8.self)
             let header: Substring
             let value: String
@@ -130,6 +135,10 @@ enum TmuxNotification {
             return .subscriptionChanged(
                 name: String(name),
                 window: fields.first { $0.hasPrefix("@") }.map(String.init),
+                // `-` is what tmux puts here for a window-scoped subscription,
+                // so "there is a column" and "there is a pane" are different
+                // questions and only the second one is being asked.
+                pane: fields.first { $0.hasPrefix("%") }.map(String.init),
                 value: value
             )
 

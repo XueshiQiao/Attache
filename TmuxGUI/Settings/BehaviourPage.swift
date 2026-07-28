@@ -64,6 +64,81 @@ struct BehaviourPage: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
+
+            Section {
+                Toggle(isOn: Binding(
+                    get: { store.sidebarShowsGit },
+                    set: { store.setSidebarShowsGit($0) }
+                )) {
+                    iconLabel(
+                        "arrow.triangle.branch",
+                        store.sidebarShowsGit ? .orange : .gray,
+                        "Second line on each window row"
+                    )
+                }
+
+                Toggle(isOn: Binding(
+                    get: { store.sidebarShowsAgent },
+                    set: { store.setSidebarShowsAgent($0) }
+                )) {
+                    iconLabel(
+                        "circle.fill",
+                        store.sidebarShowsAgent ? .blue : .gray,
+                        "Mark windows running a coding agent"
+                    )
+                }
+
+                Toggle(isOn: Binding(
+                    get: { store.gitAutoFetch },
+                    set: { store.setGitAutoFetch($0) }
+                )) {
+                    iconLabel(
+                        "arrow.down.circle",
+                        store.gitAutoFetch ? .blue : .gray,
+                        "Fetch in the background so ↓ is real"
+                    )
+                }
+
+                if store.gitAutoFetch {
+                    Stepper(
+                        value: Binding(
+                            get: { store.gitAutoFetchMinutes },
+                            set: { store.setGitAutoFetchMinutes($0) }
+                        ),
+                        in: AppSettings.gitAutoFetchMinutesRange
+                    ) {
+                        Text("Every \(store.gitAutoFetchMinutes) minute\(store.gitAutoFetchMinutes == 1 ? "" : "s")")
+                    }
+
+                    Label(
+                        "This opens a network connection to every remote of every repository the "
+                            + "sidebar is showing. It never prompts for credentials — a repository "
+                            + "that needs them is skipped instead.",
+                        systemImage: "network"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text("Sidebar status")
+            } footer: {
+                // The honest version of the `↓` column, written down where the
+                // decision is made rather than only in a tooltip.
+                Text(
+                    "The second line shows the branch and what has changed in it. Turning it off "
+                        + "puts the rows back to a single line, which fits about half again as "
+                        + "many windows on screen.\n\n"
+                        + "Git can only compare against the last `git fetch`, so without "
+                        + "background fetching a repository can be behind its remote and the "
+                        + "sidebar has no way to know. With it off, the row's tooltip says how "
+                        + "long ago the last fetch was rather than showing a ↓0 that would read "
+                        + "as \"nothing to pull\"."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
             Section {
                 Toggle(isOn: Binding(
                     get: { store.copyOnSelect },

@@ -42,10 +42,20 @@ final class MainViewController: NSSplitViewController {
     private var controllers = [String: SessionViewController]()
     private var currentSessionID: String?
     private var sidebarItem: NSSplitViewItem?
+
+    /// The repositories behind the rail's rows.
+    ///
+    /// Owned here rather than by a session controller because it is keyed by
+    /// repository, not by session: four windows across three sessions in one
+    /// checkout are one repository and must be one `git status`. Its work list
+    /// is set from `refreshSidebar`, which is the only place that knows what is
+    /// actually on screen.
+    private let gitStatus = GitStatusService()
     /// The rail width this controller last placed the divider at. Not the
     /// rail's current width, which the user is free to drag.
     private var appliedSidebarWidth: CGFloat?
     private var settingsObserver: NSObjectProtocol?
+    private var occlusionObserver: NSObjectProtocol?
     private var appearanceObservation: NSKeyValueObservation?
 
     var onStatusChange: ((String) -> Void)?
@@ -93,6 +103,29 @@ final class MainViewController: NSSplitViewController {
         }
 
         observeReturningToTheApp()
+        observeWindowVisibility()
+        gitStatus.applySettings()
+    }
+
+    /// Stop reading repositories while nobody can see the answer.
+    ///
+    /// A `git status` is 82ms of process spawn and the rail refreshes on a
+    /// timer; behind another window, or on another Space, that is a laptop
+    /// running `git` all day to draw something nobody is looking at. Occlusion
+    /// rather than key window: the app losing focus while its window is still
+    /// visible beside a browser is exactly when a row's Git state is worth
+    /// keeping current.
+    private func observeWindowVisibility() {
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification,
+            object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let window = notification.object as? NSWindow else { return }
+            Task { @MainActor in
+                guard let self, window === self.view.window else { return }
+                self.gitStatus.setPaused(!window.occlusionState.contains(.visible))
+            }
+        }
     }
 
     /// The window's blur has to wait for the window.
@@ -214,6 +247,14 @@ final class MainViewController: NSSplitViewController {
     /// session: making a window somewhere you are not looking and then not
     /// going there would leave no sign it happened, so it switches too.
     private func wireSidebar() {
+        // A repository changed under a row. Goes through the same rebuild every
+        // tmux notification uses rather than reaching into a row, so the rail
+        // has exactly one way to be redrawn — and so the rebuild's own guards
+        // still hold: it refuses while a rename field is open or a drag is in
+        // flight, and a `git status` finishing must not be the one thing that
+        // pulls a row out from under the pointer.
+        gitStatus.onChange = { [weak self] in self?.refreshSidebar() }
+
         sidebar.onSelect = { [weak self] id in self?.show(sessionID: id) }
         sidebar.onNew = { [weak self] in self?.server.newSession() }
         sidebar.onRename = { [weak self] id, new in
@@ -734,8 +775,14 @@ final class MainViewController: NSSplitViewController {
         }
         view.window?.backgroundColor = WindowGlass.resolved().paneFill
         applyBackdropSettings()
+        // Before the rail is rebuilt, so a fetch that was just switched off
+        // does not get one more turn on the way past.
+        gitStatus.applySettings()
         sidebar.applyChromeTheme()
         for controller in controllers.values { controller.applySettings() }
+        // The row height itself is a setting now, so a change to it is a
+        // relayout and not only a repaint.
+        refreshSidebar()
     }
 
     // MARK: - Sessions
@@ -747,8 +794,32 @@ final class MainViewController: NSSplitViewController {
         // be opened in the rail now. The lists are already in hand — each
         // connection stays attached whether or not its session is displayed —
         // so this costs a walk, not a round trip.
+        // Collected while the entries are built and handed over in one call, so
+        // the service's work list is exactly what the rail is drawing — a
+        // session whose list is collapsed costs nothing, and a `git status` is
+        // 82ms of process spawn that nobody would see the result of.
+        var visiblePaths = Set<String>()
+
         let entries = server.sessionIDs.compactMap { id -> SessionSidebarView.Entry? in
             guard let connection = server.connection(id: id) else { return nil }
+            let hidden = controllers[id]?.hiddenWindowIDs ?? []
+            var decorations = [String: WindowDecoration]()
+            for window in connection.windows where !hidden.contains(window.id) {
+                var decoration = WindowDecoration()
+                decoration.path = connection.pathByWindow[window.id]
+                if AppSettings.sidebarShowsAgent {
+                    decoration.agent = connection.agentBadge(forWindow: window.id)
+                }
+                if AppSettings.sidebarShowsGit, let path = decoration.path {
+                    visiblePaths.insert(path)
+                    decoration.git = gitStatus.summary(forPath: path)
+                    decoration.isNotARepository = gitStatus.isKnownNotARepository(path: path)
+                    decoration.fetchIsLive = gitStatus.fetchIsLive(forPath: path)
+                }
+                if !decoration.isEmpty || decoration.path != nil {
+                    decorations[window.id] = decoration
+                }
+            }
             return SessionSidebarView.Entry(
                 id: id,
                 // Read from the connection, which is the only thing that holds
@@ -761,9 +832,11 @@ final class MainViewController: NSSplitViewController {
                 // Only a session that has been shown has a controller, and
                 // therefore a hidden set. One that has not cannot have hidden
                 // anything, which is what the empty default says.
-                hiddenIDs: controllers[id]?.hiddenWindowIDs ?? []
+                hiddenIDs: hidden,
+                decorations: decorations
             )
         }
+        gitStatus.setVisiblePaths(visiblePaths)
 
         // Whatever the app was showing may have been killed elsewhere; fall
         // back to the first session rather than a blank pane. A rename no

@@ -1103,7 +1103,9 @@ private final class ContentHalfView: NSView {
                 windows: connection.windows.map {
                     DebugInspector.WindowReport(
                         window: $0,
-                        isHiddenFromSidebar: hiddenWindowIDs.contains($0.id)
+                        isHiddenFromSidebar: hiddenWindowIDs.contains($0.id),
+                        currentPath: connection.pathByWindow[$0.id],
+                        agent: connection.agentBadge(forWindow: $0.id)
                     )
                 },
                 surfaces: surfaces.sorted { $0.key < $1.key }.map { paneID, surface in

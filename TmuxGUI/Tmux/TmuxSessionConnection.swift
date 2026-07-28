@@ -234,7 +234,35 @@ final class TmuxSessionConnection {
     /// ever compared against what comes back, so any string would do; this one
     /// says where it came from if it shows up in someone else's `tmux` output.
     private static let activitySubscription = "tmuxgui-activity"
+    /// The active pane's working directory, per window. Window scope on
+    /// purpose: a pane-scoped variable asked at window scope resolves against
+    /// that window's *active* pane and re-fires on `select-pane` — verified on
+    /// tmux 3.6a — which is exactly the question the row is asking and removes
+    /// a pane→window mapping layer here.
+    private static let pathSubscription = "tmuxgui-path"
+    /// Agent state, per pane. Pane scope, because a window with four panes can
+    /// have an agent in any of them and the row has to speak for all of them.
+    private static let agentSubscription = "tmuxgui-agent"
     private var subscribedToActivity = false
+
+    /// The active pane's path for each window, keyed by window id. Not on
+    /// `TmuxWindow`: that struct is a mirror of a `list-windows` reply and this
+    /// arrives on a different channel, so keeping it separate stops the two
+    /// from having to be refreshed together.
+    private(set) var pathByWindow = [String: String]()
+    /// The agent badge for each pane that has one, keyed by pane id.
+    private(set) var agentByPane = [String: AgentBadge]()
+
+    /// The most urgent agent badge among a window's panes, or nil.
+    ///
+    /// Reads the pane set from the *saved* layout, not the visible one: while a
+    /// pane is zoomed the visible layout is a single-pane tree, and a window
+    /// whose badge came from the visible one would drop the other panes' agents
+    /// on every `prefix z`.
+    func agentBadge(forWindow windowID: String) -> AgentBadge? {
+        guard let window = windows.first(where: { $0.id == windowID }) else { return nil }
+        return window.paneIDs.reduce(nil) { AgentBadge.moreUrgent($0, agentByPane[$1]) }
+    }
 
     /// Ask tmux to tell us when a window gains or loses activity, instead of
     /// finding out by accident.
@@ -262,6 +290,21 @@ final class TmuxSessionConnection {
         subscribedToActivity = true
         client.send(
             "refresh-client -B '\(Self.activitySubscription):@*:#{window_activity_flag}'"
+        )
+        // Both are registered here rather than lazily when the rail first wants
+        // them, for the reason the activity one is: subscribing emits the
+        // current value for every matching item immediately, so the rail is
+        // right from the attach instead of only after the first change.
+        //
+        // Single-quoted as one shell word. The formats contain `#{...}` and
+        // U+0001 separators, and `TmuxCommand.quote` is reserved for real user
+        // text — these are constants written here, so there is nothing to
+        // escape and nothing a name could smuggle in.
+        client.send(
+            "refresh-client -B '\(Self.pathSubscription):@*:#{pane_current_path}'"
+        )
+        client.send(
+            "refresh-client -B '\(Self.agentSubscription):%*:\(AgentDetector.paneFormat)'"
         )
     }
 
@@ -751,13 +794,41 @@ final class TmuxSessionConnection {
             subscribeToActivity()
             refreshWindows()
 
-        case .subscriptionChanged(let name, let window, let value):
-            guard name == Self.activitySubscription, let window,
-                  let index = windows.firstIndex(where: { $0.id == window }) else { return }
-            let active = value == "1"
-            guard windows[index].hasActivity != active else { return }
-            windows[index].hasActivity = active
-            notifyModelChanged()
+        case .subscriptionChanged(let name, let window, let pane, let value):
+            switch name {
+            case Self.activitySubscription:
+                guard let window,
+                      let index = windows.firstIndex(where: { $0.id == window }) else { return }
+                let active = value == "1"
+                guard windows[index].hasActivity != active else { return }
+                windows[index].hasActivity = active
+                notifyModelChanged()
+
+            case Self.pathSubscription:
+                guard let window else { return }
+                // An empty path is what a window whose pane has already died
+                // reports. Dropping the entry rather than storing "" keeps
+                // "we have never been told" and "it is nothing" the same
+                // answer for the row, which is to draw no second line.
+                let changed = value.isEmpty
+                    ? pathByWindow.removeValue(forKey: window) != nil
+                    : pathByWindow.updateValue(value, forKey: window) != value
+                if changed { notifyModelChanged() }
+
+            case Self.agentSubscription:
+                guard let pane else { return }
+                let badge = AgentDetector.badge(fromSubscriptionValue: value)
+                guard agentByPane[pane] != badge else { return }
+                if let badge {
+                    agentByPane[pane] = badge
+                } else {
+                    agentByPane.removeValue(forKey: pane)
+                }
+                notifyModelChanged()
+
+            default:
+                return
+            }
 
         case .sessionRenamed(let id, let name):
             // The id test is the whole point. This notification is broadcast to

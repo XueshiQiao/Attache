@@ -879,7 +879,26 @@
             let panes: [PaneReport]
             let layoutError: String?
 
-            init(window: TmuxWindow, isHiddenFromSidebar: Bool) {
+            /// The active pane's working directory, as the path subscription
+            /// last reported it. Here because a subscription is the one input
+            /// to this app with no other way to observe it: it arrives on the
+            /// control stream, is never asked for, and a row drawing nothing
+            /// looks identical whether the subscription failed to register or
+            /// the pane really is in a home directory.
+            let currentPath: String?
+            /// The window's agent badge, flattened to `kind/state`, or nil.
+            let agent: String?
+
+            init(
+                window: TmuxWindow,
+                isHiddenFromSidebar: Bool,
+                currentPath: String? = nil,
+                agent: AgentBadge? = nil
+            ) {
+                self.currentPath = currentPath
+                self.agent = agent.map {
+                    "\($0.kind ?? "?")/\($0.state?.rawValue ?? "no-state")"
+                }
                 id = window.id
                 index = window.index
                 name = window.name
@@ -950,7 +969,12 @@
                 },
                 grid: nil,
                 windows: connection.windows.map {
-                    DebugInspector.WindowReport(window: $0, isHiddenFromSidebar: false)
+                    DebugInspector.WindowReport(
+                        window: $0,
+                        isHiddenFromSidebar: false,
+                        currentPath: connection.pathByWindow[$0.id],
+                        agent: connection.agentBadge(forWindow: $0.id)
+                    )
                 },
                 surfaces: []
             )

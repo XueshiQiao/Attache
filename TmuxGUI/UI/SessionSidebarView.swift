@@ -93,6 +93,10 @@ final class SessionSidebarView: NSView {
         /// that has never been shown, because hiding lives in the session's
         /// view controller and one is only made when a session is displayed.
         let hiddenIDs: Set<String>
+        /// What each window's row draws that tmux is not the source of, keyed
+        /// by window id. Assembled by `MainViewController`, which is the one
+        /// place that can see both the connection and the Git service.
+        var decorations = [String: WindowDecoration]()
 
         var windowCount: Int { windows.count }
         var visibleWindows: [TmuxWindow] { windows.filter { !hiddenIDs.contains($0.id) } }
@@ -221,7 +225,10 @@ final class SessionSidebarView: NSView {
         var height: CGFloat {
             switch self {
             case .session: SidebarSessionRow.height
-            case .window: SidebarWindowRow.height
+            // The instance's own, not the type's: see `SidebarWindowRow
+            // .rowHeight`. The type's answer follows the setting live and the
+            // row on screen was built under whatever it said at the time.
+            case .window(let view, _): view.rowHeight
             case .hidden: SidebarHiddenRow.height
             }
         }
@@ -367,6 +374,38 @@ final class SessionSidebarView: NSView {
 
     // MARK: - Building
 
+    /// What the rail would draw, as one comparable value.
+    ///
+    /// Cheap insurance against a rebuild that changes nothing. Every rebuild
+    /// destroys and recreates every row, which loses the hover on the row under
+    /// the pointer and orphans any press in progress on it — so a rebuild that
+    /// draws the identical thing is not free, it is a flicker and a dropped
+    /// click. tmux chatters, and the Git service has its own reasons to speak.
+    private var drawnSignature: String {
+        var parts = [selectedID ?? "-"]
+        for entry in entries {
+            parts.append("\(entry.id)|\(entry.name)|\(entry.hasActivity ? 1 : 0)")
+            parts.append(isExpanded(entry.id) ? "+" : "-")
+            guard isExpanded(entry.id) else { continue }
+            for window in entry.visibleWindows {
+                let decoration = entry.decorations[window.id]
+                parts.append(
+                    "\(window.id)|\(window.index)|\(window.name)"
+                        + "|\(window.id == entry.activeWindowID ? 1 : 0)"
+                        + "|\(window.hasActivity ? 1 : 0)"
+                        + "|\(decoration?.git.map { "\($0.displayRef)/\($0.staged)/\($0.modified)/\($0.untracked)/\($0.conflicted)/\($0.ahead)/\($0.behind)/\($0.hasUpstream)" } ?? "-")"
+                        + "|\(decoration?.agent.map { "\($0.kind ?? "?")/\($0.state?.rawValue ?? "-")" } ?? "-")"
+                        + "|\(decoration?.isNotARepository == true ? "!" : "")"
+                        + "|\(decoration?.path ?? "")"
+                )
+            }
+            parts.append("hidden:\(entry.hiddenIDs.count)")
+        }
+        return parts.joined(separator: "\u{01}")
+    }
+
+    private var lastDrawnSignature: String?
+
     private func rebuild() {
         // Never tear down a field the user is typing in, and never pull a row
         // out from under a drag, just because tmux said something. tmux
@@ -376,6 +415,23 @@ final class SessionSidebarView: NSView {
             pendingRebuild = true
             return
         }
+
+        // Nor while a mouse button is down anywhere. A plain click is not a
+        // drag, so the guard above does not cover it: the press lands on a row,
+        // a notification arrives, the row is replaced, and the release goes to
+        // a view that no longer exists — the click simply does nothing, which
+        // is what "it is hard to click" turned out to be. Asked of `NSEvent`
+        // rather than tracked as state, because a row destroyed mid-press never
+        // delivers its mouse-up and any flag we kept would latch on forever.
+        guard NSEvent.pressedMouseButtons == 0 else {
+            pendingRebuild = true
+            return
+        }
+
+        // Identical to what is already on screen. See `drawnSignature`.
+        let signature = drawnSignature
+        if signature == lastDrawnSignature, !rows.isEmpty { return }
+        lastDrawnSignature = signature
         for row in rows { row.view.removeFromSuperview() }
         rows.removeAll()
 
@@ -395,7 +451,10 @@ final class SessionSidebarView: NSView {
                 isCurrent: isCurrent,
                 isExpanded: expanded
             )
-            header.onClick = { [weak self] in self?.onSelect?(session) }
+            header.onClick = { [weak self] in
+                self?.onSelect?(session)
+                self?.resumeUpdates()
+            }
             header.onDoubleClick = { [weak self] in self?.beginRenameSession(session) }
             header.onToggle = { [weak self] in self?.toggleExpanded(session) }
             header.onNewWindow = { [weak self] in
@@ -419,9 +478,17 @@ final class SessionSidebarView: NSView {
                 // and there is only ever one answer.
                 let row = SidebarWindowRow(
                     window: window,
-                    isActive: isCurrent && window.id == entry.activeWindowID
+                    isActive: isCurrent && window.id == entry.activeWindowID,
+                    decoration: entry.decorations[window.id] ?? WindowDecoration()
                 )
-                row.onClick = { [weak self] in self?.onSelectWindow?(session, window.id) }
+                row.onClick = { [weak self] in
+                    self?.onSelectWindow?(session, window.id)
+                    // The press held a rebuild back; the release is what lets
+                    // it through. Without this a rail that nothing else
+                    // disturbs keeps drawing whatever it had when the button
+                    // went down.
+                    self?.resumeUpdates()
+                }
                 row.onDoubleClick = { [weak self] in self?.beginRenameWindow(window, in: session) }
                 row.isDoubleClick = { [weak self] identity, count in
                     self?.isDoubleClick(on: identity, clickCount: count) ?? false
@@ -441,7 +508,10 @@ final class SessionSidebarView: NSView {
             if !entry.hiddenIDs.isEmpty {
                 let row = SidebarHiddenRow(count: entry.hiddenIDs.count)
                 row.onPress = { [weak self] in self?.notePressElsewhere() }
-                row.onClick = { [weak self] in self?.onRestoreHidden?(session) }
+                row.onClick = { [weak self] in
+                    self?.onRestoreHidden?(session)
+                    self?.resumeUpdates()
+                }
                 rowsView.addSubview(row)
                 rows.append(.hidden(row, session: session))
             }

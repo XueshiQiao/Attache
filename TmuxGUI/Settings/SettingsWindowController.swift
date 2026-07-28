@@ -40,6 +40,10 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var closingTabKillsWindow: Bool
     @Published private(set) var showsPaneFocusRing: Bool
     @Published private(set) var copyOnSelect: Bool
+    @Published private(set) var sidebarShowsGit: Bool
+    @Published private(set) var sidebarShowsAgent: Bool
+    @Published private(set) var gitAutoFetch: Bool
+    @Published private(set) var gitAutoFetchMinutes: Int
     @Published private(set) var windowOpacity: CGFloat
     @Published private(set) var backgroundBlur: Bool
     @Published private(set) var blurRadius: CGFloat
@@ -69,6 +73,10 @@ final class SettingsStore: ObservableObject {
         closingTabKillsWindow = AppSettings.closingTabKillsWindow
         showsPaneFocusRing = AppSettings.showsPaneFocusRing
         copyOnSelect = AppSettings.copyOnSelect
+        sidebarShowsGit = AppSettings.sidebarShowsGit
+        sidebarShowsAgent = AppSettings.sidebarShowsAgent
+        gitAutoFetch = AppSettings.gitAutoFetch
+        gitAutoFetchMinutes = AppSettings.gitAutoFetchMinutes
         windowOpacity = AppSettings.windowOpacity
         backgroundBlur = AppSettings.backgroundBlur
         blurRadius = AppSettings.blurRadius
@@ -177,6 +185,30 @@ final class SettingsStore: ObservableObject {
     func setCopyOnSelect(_ copies: Bool) {
         AppSettings.copyOnSelect = copies
         copyOnSelect = copies
+        AppSettings.notifyChanged()
+    }
+
+    func setSidebarShowsGit(_ shows: Bool) {
+        AppSettings.sidebarShowsGit = shows
+        sidebarShowsGit = shows
+        AppSettings.notifyChanged()
+    }
+
+    func setSidebarShowsAgent(_ shows: Bool) {
+        AppSettings.sidebarShowsAgent = shows
+        sidebarShowsAgent = shows
+        AppSettings.notifyChanged()
+    }
+
+    func setGitAutoFetch(_ fetches: Bool) {
+        AppSettings.gitAutoFetch = fetches
+        gitAutoFetch = fetches
+        AppSettings.notifyChanged()
+    }
+
+    func setGitAutoFetchMinutes(_ minutes: Int) {
+        AppSettings.gitAutoFetchMinutes = minutes
+        gitAutoFetchMinutes = AppSettings.gitAutoFetchMinutes
         AppSettings.notifyChanged()
     }
 

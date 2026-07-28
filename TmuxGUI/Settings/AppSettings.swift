@@ -43,6 +43,10 @@ enum AppSettings {
         static let blurRadius           = "TmuxGUIBlurRadius"
         static let railExtraTint        = "TmuxGUIRailExtraTint"
         static let glassStyle           = "TmuxGUIGlassStyle"
+        static let sidebarShowsGit      = "TmuxGUISidebarShowsGit"
+        static let sidebarShowsAgent    = "TmuxGUISidebarShowsAgent"
+        static let gitAutoFetch         = "TmuxGUIGitAutoFetch"
+        static let gitAutoFetchMinutes  = "TmuxGUIGitAutoFetchMinutes"
         static let liquidGlassClear     = "TmuxGUILiquidGlassClear"
     }
 
@@ -445,6 +449,52 @@ enum AppSettings {
     static var closingTabKillsWindow: Bool {
         get { store.object(forKey: Key.closingTabKills) as? Bool ?? false }
         set { store.set(newValue, forKey: Key.closingTabKills) }
+    }
+
+    /// Whether a window row carries a second line with its repository's state.
+    ///
+    /// On by default, and the one setting here that changes the *shape* of the
+    /// rail: the row goes from 27pt to 40pt, so a list of twenty windows needs
+    /// half again the height. That is a trade only the person looking at their
+    /// own twenty windows can make, which is why it is a switch and not a
+    /// constant. Off restores the rail exactly as it was.
+    static var sidebarShowsGit: Bool {
+        get { store.object(forKey: Key.sidebarShowsGit) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.sidebarShowsGit) }
+    }
+
+    /// Whether a window running a coding agent is marked.
+    ///
+    /// Independent of the Git line, because they answer different questions and
+    /// the dot costs no height at all.
+    static var sidebarShowsAgent: Bool {
+        get { store.object(forKey: Key.sidebarShowsAgent) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.sidebarShowsAgent) }
+    }
+
+    /// Whether to run `git fetch` in the background so `↓` means something.
+    ///
+    /// **Off by default and it should stay that way.** `# branch.ab` is
+    /// measured against the last fetch, so without one the app cannot know what
+    /// the remote has — and the honest answer to that is a tooltip saying so,
+    /// not a network connection nobody asked for. Turning this on means a
+    /// sidebar that talks to every remote of every repository it is drawing:
+    /// private repositories, credentials, a laptop on a phone tether.
+    static var gitAutoFetch: Bool {
+        get { store.object(forKey: Key.gitAutoFetch) as? Bool ?? false }
+        set { store.set(newValue, forKey: Key.gitAutoFetch) }
+    }
+
+    static let gitAutoFetchMinutesRange: ClosedRange<Int> = 1 ... 240
+    static let defaultGitAutoFetchMinutes = 10
+
+    static var gitAutoFetchMinutes: Int {
+        get {
+            let stored = store.object(forKey: Key.gitAutoFetchMinutes) as? Int
+            guard let stored else { return defaultGitAutoFetchMinutes }
+            return min(max(stored, gitAutoFetchMinutesRange.lowerBound), gitAutoFetchMinutesRange.upperBound)
+        }
+        set { store.set(newValue, forKey: Key.gitAutoFetchMinutes) }
     }
 
     /// Whether the split window marks its active pane with an outline.
