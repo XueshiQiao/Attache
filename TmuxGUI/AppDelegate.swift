@@ -198,8 +198,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         entry(menu, "Next Window", "]", [.command, .shift], #selector(nextWindow))
         entry(menu, "Previous Window", "[", [.command, .shift], #selector(previousWindow))
         menu.addItem(.separator())
-        for slot in 1 ... 9 {
-            entry(menu, "Window \(slot)", "\(slot)", [.command], #selector(selectWindowSlot(_:)), tag: slot)
+        // The window tmux calls 0-9, not the first through tenth row. tmux's
+        // own `prefix 0-9` addresses windows the same way, and the rail draws
+        // that number beside every row — so ⌘4 goes to the row marked 4
+        // whatever else is in the list and whatever `base-index` is set to.
+        // 0 included, because `base-index 0` sessions have a window 0 and it
+        // would otherwise be the one row with no shortcut.
+        for index in 0 ... 9 {
+            entry(menu, "Window \(index)", "\(index)", [.command],
+                  #selector(selectWindowIndex(_:)), tag: index)
         }
         item.submenu = menu
         return item
@@ -224,8 +231,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func hideCurrentWindow() { main?.currentSession?.hideActiveWindow() }
     @objc private func nextWindow() { main?.currentSession?.selectAdjacentWindow(offset: 1) }
     @objc private func previousWindow() { main?.currentSession?.selectAdjacentWindow(offset: -1) }
-    @objc private func selectWindowSlot(_ sender: NSMenuItem) {
-        main?.currentSession?.selectWindow(atVisibleSlot: sender.tag - 1)
+    @objc private func selectWindowIndex(_ sender: NSMenuItem) {
+        main?.currentSession?.selectWindow(atIndex: sender.tag)
     }
 
     @objc private func newSession() { main?.server.newSession() }

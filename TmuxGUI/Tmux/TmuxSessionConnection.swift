@@ -297,7 +297,8 @@ final class TmuxSessionConnection {
     /// `-b` inserts *before* the target and shuffles the rest up, which is the
     /// behaviour a drag implies; a plain move to an occupied index fails with
     /// `index in use`. The follow-up `-r` closes the gaps so indexes stay
-    /// contiguous — that is what keeps ⌘1-9 matching what the rail shows.
+    /// contiguous, which is what stops a session's numbers drifting past 9 and
+    /// out of ⌘0-9's reach after enough moves.
     ///
     /// `index` must be an index a window actually has. Measured on tmux 3.6a
     /// against an isolated `-L` server: given windows at 0-3, `-b -t t:5` does

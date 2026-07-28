@@ -330,7 +330,7 @@ final class SessionSidebarView: NSView {
         // Whatever the app switched to is opened, because the point of
         // switching is to work in it. Closing it again afterwards is allowed —
         // the disclosure triangle does not refuse — and then the pane grid and
-        // ⌘1-9 are still the way to move around.
+        // ⌘0-9 are still the way to move around.
         if let selected = update.selected, selected != selectedID {
             expandedSessions.insert(selected)
         }

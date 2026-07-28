@@ -275,10 +275,31 @@ final class SessionViewController: NSViewController {
 
     // MARK: - Commands the menu and the rail drive
 
-    func selectWindow(atVisibleSlot slot: Int) {
-        let visible = connection.windows.filter { !hiddenWindowIDs.contains($0.id) }
-        guard slot >= 0, slot < visible.count else { return }
-        connection.selectWindow(id: visible[slot].id)
+    /// ⌘0-9 — the window tmux calls `index`, which is the number the rail draws
+    /// beside it.
+    ///
+    /// It used to be a *position* in the hidden-filtered list, and the two are
+    /// not the same number. With tmux's default `base-index 0` the row labelled
+    /// **0** answered to ⌘1 and the row labelled **3** to ⌘4; with
+    /// `base-index 1` they happened to line up until a window was hidden, and
+    /// then everything below the hidden row shifted by one. `TitleBandView`'s
+    /// comment about the rail being what these count against was describing the
+    /// intent rather than the code.
+    ///
+    /// ⌘0 exists for the same reason `prefix 0` does in tmux: under
+    /// `base-index 0` there is a window 0, and without it that window is the
+    /// one thing on screen with no shortcut.
+    ///
+    /// A hidden window is not selected. Its row is not in the rail, so its
+    /// number addresses nothing — and selecting it would bring it back, since
+    /// `syncWithModel` restores whatever tmux makes active. Hiding is the one
+    /// piece of state this app authors, and a shortcut should not undo it by
+    /// arithmetic.
+    func selectWindow(atIndex index: Int) {
+        guard let window = connection.windows.first(where: { $0.index == index }),
+              !hiddenWindowIDs.contains(window.id)
+        else { return }
+        connection.selectWindow(id: window.id)
     }
 
     func selectAdjacentWindow(offset: Int) {

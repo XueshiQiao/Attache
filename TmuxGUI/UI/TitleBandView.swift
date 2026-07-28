@@ -61,9 +61,9 @@ final class TitleBandView: NSView {
 
     /// The window's name, and only the name.
     ///
-    /// No index. The rail already numbers every row, and it is the rail that
-    /// ⌘1-9 counts against — repeating the number over the panes made the band
-    /// read as a second, competing index rather than as a title.
+    /// No index. The rail already numbers every row, and that number is what
+    /// ⌘0-9 addresses — repeating it over the panes made the band read as a
+    /// second, competing index rather than as a title.
     ///
     /// `nil` clears it: a session with no active window has nothing to name.
     func show(name: String?) {

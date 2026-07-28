@@ -651,7 +651,12 @@ final class MainViewController: NSSplitViewController {
         sidebar.showStatus(status, detail: detail)
     }
 
-    /// ⌃⌘1-9 — the session-level counterpart of ⌘1-9 for windows.
+    /// ⌃⌘1-9 — the session level's counterpart to ⌘0-9 for windows.
+    ///
+    /// A *position* here, unlike the window shortcuts, and deliberately: tmux
+    /// gives a session an id but no index, so there is no number of its own to
+    /// address one by, and the rail draws sessions in tmux's order without
+    /// numbering them.
     func selectSession(atSlot slot: Int) {
         let ids = server.sessionIDs
         guard slot >= 0, slot < ids.count else { return }

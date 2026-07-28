@@ -10,7 +10,7 @@ import GhosttyTerminal
 ///
 /// libghostty's view treats ⌘ keys as candidates for its own keybinds and
 /// consumes them before the main menu is consulted, which silently kills ⌘T,
-/// ⌘W and ⌘1-9. Those are the native half of the promise that a tmux `prefix`
+/// ⌘W and ⌘0-9. Those are the native half of the promise that a tmux `prefix`
 /// binding and a Mac shortcut both work, so the menu gets first refusal and
 /// the terminal only sees what the menu declines. ⌘C and ⌘V still reach the
 /// terminal because the Edit menu routes them back down the responder chain.
