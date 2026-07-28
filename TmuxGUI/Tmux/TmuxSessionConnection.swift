@@ -334,7 +334,17 @@ final class TmuxSessionConnection {
             // the user's clipboard sitting in the temporary directory.
             self?.discardPasteFile(url)
             guard let self, !failed else { return }
-            self.client.send("paste-buffer -p -d -b \(buffer) -t \(paneID)")
+            self.client.run("paste-buffer -p -d -b \(buffer) -t \(paneID)") { [weak self] _, failed in
+                guard failed else { return }
+                // `-d` deletes the buffer *as part of pasting*, so a paste that
+                // never happened is also a buffer that was never deleted — the
+                // user's clipboard left sitting in the tmux server, readable by
+                // anything that can reach it, for as long as the server lives.
+                // The pane really can be gone by now: naming it and pasting to
+                // it are a round trip apart, and a drop names a pane the
+                // pointer was over rather than one anybody is typing in.
+                self?.client.send("delete-buffer -b \(buffer)")
+            }
         }
         return true
     }

@@ -870,7 +870,13 @@ final class MainViewController: NSSplitViewController {
         /// By name because the inspector's routes are typed by a person; the
         /// name is resolved to an id here and nowhere else.
         func debugSessionController(named name: String) -> SessionViewController? {
-            server.sessionID(named: name).flatMap { controllers[$0] }
+            // Made on demand rather than looked up. A session that has never
+            // been shown is exactly what a test wants to aim at: driving one
+            // without first putting it on screen is the only way to run a
+            // check that does not take over the display of whoever is at the
+            // machine. Same reasoning as `inSession` — acting on a session is
+            // not conditional on having looked at it.
+            server.sessionID(named: name).flatMap { controller(forSessionID: $0) }
         }
 
         /// Show a session the inspector named. Same reasoning as above.

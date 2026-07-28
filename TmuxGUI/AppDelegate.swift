@@ -173,6 +173,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let editItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edit")
+        entry(editMenu, "Undo", "z", [.command], #selector(undoInPaneOrResponder))
+        editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         entry(editMenu, "Paste", "v", [.command], #selector(pasteIntoPaneOrResponder))
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
@@ -263,6 +265,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func pasteIntoPaneOrResponder(_ sender: Any?) {
         if main?.currentSession?.pasteIntoFocusedPane() == true { return }
         NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: sender)
+    }
+
+    /// ⌘Z, on the same terms as ⌘V.
+    ///
+    /// Undo in a pane belongs to the program running there — the shell's line
+    /// editor, or a TUI's input box — and the only way to ask for it is the
+    /// byte that program reads as undo. See
+    /// `SessionViewController.sendUndoToFocusedPane` for which byte and how it
+    /// was established.
+    ///
+    /// Everything that is not a pane gets the ordinary `undo:` down the
+    /// responder chain, which is what the rail's rename field and the settings
+    /// window's fields want. Before this existed ⌘Z did nothing anywhere in the
+    /// app: there was no Edit-menu item for it at all.
+    @objc private func undoInPaneOrResponder(_ sender: Any?) {
+        if main?.currentSession?.sendUndoToFocusedPane() == true { return }
+        NSApp.sendAction(Selector(("undo:")), to: nil, from: sender)
     }
 
     @objc private func newWindow() { main?.currentSession?.newWindow() }

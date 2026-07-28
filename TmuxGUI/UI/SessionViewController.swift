@@ -811,6 +811,9 @@ final class SessionViewController: NSViewController {
             self.gridView.calibrate(paneID: paneID, metrics: metrics)
         }
         surface.onFocusRequested = { [weak self] pane in self?.focusPane(pane) }
+        surface.view.onDropText = { [weak self] text in
+            self?.handleDrop(text: text, into: paneID) ?? false
+        }
         surfaces[paneID] = surface
 
         primeSurface(paneID)
@@ -858,12 +861,93 @@ final class SessionViewController: NSViewController {
     /// rather than from `focusedPaneID`, because a menu item fires against
     /// whatever really has the keyboard and the app's own idea of that is a
     /// mirror of tmux that can be a notification behind.
+    /// The pane the keyboard is in, according to AppKit.
+    ///
+    /// Deliberately not `connection.activeWindow?.activePaneID`: tmux's active
+    /// pane and the view holding first responder are the same thing almost
+    /// always and *not* during the moment after a click, which is exactly when
+    /// a menu command arrives. What the user meant is where their keystrokes
+    /// were going.
+    private var paneWithKeyboard: String? {
+        // `isKeyWindow`, because a window keeps naming a first responder while
+        // some other window has the keyboard. With the settings window in front
+        // and a text field being edited in it, ⌘V and ⌘Z would otherwise be
+        // answered by the pane the main window still remembers — the paste
+        // would go into a terminal instead of the field, and undo would send a
+        // control byte to a program the user is not looking at.
+        guard let window = view.window, window.isKeyWindow,
+              let responder = window.firstResponder as? NSView
+        else { return nil }
+        return surfaces.first(where: { $0.value.view === responder })?.key
+    }
+
     func pasteIntoFocusedPane() -> Bool {
-        guard let responder = view.window?.firstResponder as? NSView,
-              let paneID = surfaces.first(where: { $0.value.view === responder })?.key,
-              let text = NSPasteboard.general.string(forType: .string)
-        else { return false }
-        return connection.paste(text: text, into: paneID)
+        guard let paneID = paneWithKeyboard else { return false }
+        return pastePasteboard(into: paneID)
+    }
+
+    /// ⌘Z, as the byte a program in a pane understands.
+    ///
+    /// **Measured, because none of it was guessable.** Against Claude Code
+    /// 2.1.220 in a pane, three candidates were driven in with `send-keys -H`
+    /// and the input box watched:
+    ///
+    /// - `CSI 122;9u` — ⌘Z the way the kitty keyboard protocol encodes it, and
+    ///   what a terminal that had negotiated that protocol would send. Claude
+    ///   Code does not read it: the input box gained a literal **z**. Sending
+    ///   this would be worse than sending nothing.
+    /// - `ESC z` — nothing at all.
+    /// - **`0x1f`** — the undo. It took back the stray `z`, and in the test that
+    ///   matters it emptied the box after a bracketed paste of eighteen
+    ///   characters.
+    ///
+    /// `0x1f` is Ctrl+`_`, which GNU readline binds to `undo` — so this is one
+    /// byte that means undo to the shell prompt and to the TUI alike, rather
+    /// than a mapping invented for one program.
+    ///
+    /// It goes out as a keystroke and cannot be anything else: undo lives in
+    /// the program running in the pane, tmux is not holding the text, and this
+    /// app is holding even less of it.
+    func sendUndoToFocusedPane() -> Bool {
+        guard let paneID = paneWithKeyboard else { return false }
+        connection.sendKeys(paneID: paneID, data: Data([0x1f]))
+        return true
+    }
+
+    /// What ⌘V means for one pane, whichever way the pane was chosen.
+    func pastePasteboard(into paneID: String) -> Bool {
+        switch PasteContent.read(from: .general) {
+        case let .text(text):
+            return connection.paste(text: text, into: paneID)
+
+        case .imageWithoutFile:
+            // Ctrl-V, so the program in the pane reads the pasteboard itself —
+            // see `PasteContent.imageWithoutFile`. Sent as a keystroke rather
+            // than through `paste-buffer`, because it *is* a keystroke: there
+            // is no text to put in a buffer. Against a shell rather than an
+            // image-aware program this is `quoted-insert`, which waits for one
+            // more key and inserts it literally — nothing is lost and nothing
+            // runs.
+            connection.sendKeys(paneID: paneID, data: Data([0x16]))
+            TmuxLog.lifecycle(
+                "pasteboard holds an image and no file — sent Ctrl-V to \(paneID) so the "
+                    + "program can read it",
+                session: connection.sessionName
+            )
+            return true
+
+        case .nothing:
+            return false
+        }
+    }
+
+    /// A file or some text dropped onto one pane.
+    ///
+    /// Goes to the pane it was dropped on rather than to the focused one: the
+    /// pointer is the only statement of intent a drop makes, and honouring
+    /// focus instead would put a path in a pane the user is not looking at.
+    private func handleDrop(text: String, into paneID: String) -> Bool {
+        connection.paste(text: text, into: paneID)
     }
 
     /// Tell tmux which pane the keyboard is in, and stop there.
@@ -938,6 +1022,24 @@ private final class ContentHalfView: NSView {
         ///
         /// It is a simulation of one input, not of the font change. It says
         /// nothing about whether libghostty reports the size this argues about.
+        /// Paste into the pane *tmux* calls active, rather than into whichever
+        /// view holds the keyboard.
+        ///
+        /// The production path follows the keyboard, which for a session that
+        /// is not on screen is nothing at all — and off screen is exactly where
+        /// a test wants to aim, so that a paste under test cannot land in the
+        /// session the person at the machine is working in. It did once.
+        ///
+        /// Measured: aiming at an off-screen session works, and leaves what is
+        /// on screen alone. The one case that answers `false` is the *first*
+        /// call for a session that has never been shown, because the controller
+        /// is made by that same call and tmux's answer has not reached it yet.
+        /// Call it twice, or show the session once first.
+        func debugPasteIntoActivePane() -> Bool {
+            guard let paneID = connection.activeWindow?.activePaneID else { return false }
+            return pastePasteboard(into: paneID)
+        }
+
         func debugAdoptCellSize(widthPixels: UInt32, heightPixels: UInt32) {
             gridView.prepareForCellSizeChange()
             gridView.adoptCellSize(from: TerminalGridMetrics(

@@ -3,6 +3,13 @@
 Ordered roughly by what unblocks the most. Read [CLAUDE.md](CLAUDE.md) before
 starting — several of these touch code with non-obvious constraints.
 
+**[Section 0](#0--interaction-defects--highest-priority) came before everything
+else in this file, and all four of it are fixed** — reported from using the app
+on 2026-07-28 and fixed the same day. Two of the four turned out to be one
+mistake, and two of the four were fixed by finding out what was already true
+rather than by writing anything: libghostty was copying every selection, and the
+byte a TUI reads as undo is not the one a modern terminal would send.
+
 **[Section 4b](#4b--state-the-gui-reconstructs-instead-of-asking-tmux) is
 done** — every item in the 2026-07-27 audit is fixed, most recently on
 2026-07-28. **Translucency is built** and is no longer the largest thing not
@@ -16,6 +23,250 @@ Everything in 4b has been watched running as well as measured — the last of it
 on 2026-07-28, once the machine's displays were awake again. What that took,
 and the one thing still resting on inference rather than a count, is at
 [the end of 4b](#what-a-person-confirmed-and-what-is-still-on-trust).
+
+---
+
+## 0 · Interaction defects — highest priority — done
+
+Reported 2026-07-28 by the owner, from using the app rather than from an audit.
+Everything else in this file is either finished or a feature; these four were in
+the way of ordinary use. All four are fixed. Each one records what its cause
+turned out to be, because in every one of them the cause was somewhere other
+than the symptom — and in two of them the mechanism that "worked" was the same
+accident as the one that did not.
+
+### 0.1 A pane splitter cannot be dragged, and the drag moves the window — done
+
+Two panes side by side have a line between them. The pointer over that line
+turns into the left-right resize cursor — so the splitter exists, and it knows
+where it is — but pressing and dragging moves the whole window instead of
+resizing the pane.
+
+The cursor and the drag come from two different mechanisms, which is exactly why
+one works and the other does not. `PaneGridView` installs cursor rects and
+AppKit honours them without asking anybody. The drag never reaches
+`PaneGridView.mouseDown` at all: `AppDelegate` sets
+`window.isMovableByWindowBackground = true`, and AppKit asks the hit view's
+`mouseDownCanMoveWindow` **before** it delivers the event. `TitleBandView` and
+the rail answer yes on purpose; `PaneGridView` and the terminal views never
+answer at all, inherit a yes, and their mouse handling is unreachable code.
+
+So the fix is not "handle the drag better". It is to make *where this window can
+be dragged from* an explicit list of two — the title band and the rail's empty
+space — instead of everywhere that does not object.
+
+Wanted feel, chosen 2026-07-28: the pane follows the pointer while dragging
+(`resize-pane` as it moves, throttled), not a preview line that commits on
+mouse-up. That half needed no work — `PaneGridView.mouseDragged` already sent
+one command per *cell* crossed, which is both live and its own throttle. The
+code was right and unreachable.
+
+**Fixed, and measured on both sides of the fix.** `mouseDownCanMoveWindow` is
+now a field of the debug inspector's view dump — the same kind of field as
+`layer.overhang`, and for the same reason: nothing else in a view's state hints
+that its mouse handling can never run. Before: `PaneGridView` and both
+`TmuxTerminalView`s reported `true`, while AppKit's own `NSSplitDividerView` in
+the same window reported `false`. After: `false` on the panes and the grid,
+`true` on the rail and the content half. Confirmed by the owner at the machine —
+horizontal and vertical splitters both drag, and the window stays put.
+
+**The same accident was holding up a feature.** `TitleBandView` carried
+`mouseDownCanMoveWindow { true }` with a comment saying that is what drags the
+window, and it had never once been consulted: the view returns nil from
+`hitTest`, so it is never the hit view. Dragging by the band worked because the
+press fell through to `SessionViewController`'s root view, a plain `NSView`
+inheriting the same unwritten `true` that made the splitters undraggable. That
+root view is `ContentHalfView` now and says it in writing; the dead override is
+gone. Found by an independent review of the fix rather than by the fix.
+
+- [ ] **Follow-up, not done:** the opt-out list is open-ended — it depends on
+      the answer given by views this project does not own, including
+      libghostty's subtree and whatever AppKit puts inside `NSGlassEffectView`.
+      A DEBUG-time sweep of the window that flags any view answering `true` that
+      is not on a named list would close that, using the inspector field this
+      change already added.
+
+### 0.2 Text in a pane cannot be selected, for the same reason — done
+
+Press inside a pane and drag to select, and the window moves. Same cause as
+0.1 — the drag is taken by the window before the terminal view sees it — and
+the same fix should settle both. Worth listing separately because the fix has a
+second half 0.1 does not: once the drag arrives, libghostty's own selection has
+to be reachable, and there has to be a way to get the selected text out.
+
+Chosen 2026-07-28: **⌘C by default, with copy-on-select as a setting.** Both
+behaviours exist in the terminals people come from and neither is the obvious
+one, so this is a knob rather than a decision.
+
+This is not the copy-mode question in [section 5](#5--features). That one is
+about whether the app drives tmux's `copy-mode`; this one is about a mouse drag
+inside a surface libghostty already knows how to select in.
+
+**Fixed by 0.1, and the setting turned out to be the interesting half.** The
+first version of copy-on-select copied in `TmuxTerminalView.mouseUp` when the
+setting was on. Reported immediately: with the switch **off** a selection was
+copied, and with it **on** it was not. The reason the switch could not work is
+that it was the second mechanism — **libghostty's own `copy-on-select` defaults
+to `true`**, so this app has copied every selection to the clipboard for as
+long as it has had panes, with nothing anywhere saying so, and the setting's
+"off" was never off. It drives libghostty's config key now and there is one
+mechanism. Note what that means for the default: `copy-on-select = false` has to
+be *stated*, or the library's `true` is what runs.
+
+Putting a non-font key into the terminal configuration had a consequence worth
+recording: `SessionViewController.applySettings` used "the configuration
+differs" to mean "the font changed", and that stopped being the same question.
+Toggling a switch that cannot move a glyph would have reset the cell-size latch,
+suspended grid calibration and logged a font change that never happened. The
+font inputs are compared on their own now.
+
+Confirmed by the owner at the keyboard, on the finished build: both positions of
+the switch now do what they say.
+
+### 0.3 An image cannot be got into a pane — done
+
+In another terminal, dragging an image file onto the window, or pasting one,
+puts something in the prompt that Claude Code then reads as `[Image #1]`. None
+of that works here. Four separate routes, and the app has code for none of the
+first three:
+
+- **Drag a file from Finder onto a pane.** The terminal inserts the file's
+  path as text at the cursor. Nothing in this project calls
+  `registerForDraggedTypes`, so the window refuses the drop outright.
+- **⌘C a file in Finder, then ⌘V.** The pasteboard carries a file reference,
+  not text. `pasteIntoFocusedPane` reads the string type only, finds nothing,
+  and silently does nothing.
+- **Screenshot, then ⌘V.** The pasteboard carries image data and no file at
+  all. To be readable by anything running in the pane it has to be written to a
+  file first, and then the path pasted.
+- **Ctrl+V**, which is Claude Code's own key and not the terminal's — it reads
+  the macOS pasteboard itself. This one *should* already work here; if it does
+  not, it is a keystroke this app is eating, which is a different defect with a
+  different fix.
+
+The shared part is that a paste is not always text, and this app assumes it
+always is. Whatever goes in has to keep going through tmux
+(`load-buffer`/`paste-buffer`, see 4b.7) so that bracketed paste stays tmux's
+decision, and a path with a space in it has to arrive as one argument.
+
+**Fixed.** `PasteContent` is the one reading of a pasteboard, and a drag asks it
+the same question ⌘V does — which is the point of the type rather than a
+convenience, since a drag carries its own pasteboard and otherwise poses an
+identical problem. File URLs become shell-quoted paths, text stays text, and an
+image with no file behind it sends **Ctrl-V**: the image only exists on the
+system pasteboard, a terminal carries bytes, and the image-aware TUIs read that
+pasteboard themselves when they see that key. libghostty's own `paste(_:)` does
+exactly this and cannot be reused here (a pane's paste goes through tmux), so
+the same decision is made twice in two places, deliberately.
+
+Verified without a pointer, which needed a route: `/paste` reports what the
+pasteboard would be read as, and `?run=1&session=<name>` performs the paste.
+Measured — a file copied in Finder, whose path had a space in it, arrived in the
+pane as `'/…/probe image.png'`, quoted, in one argument; an image-only
+pasteboard sent Ctrl-V. Then confirmed by the owner end to end, with the proof
+being the only one that settles it: an image dragged into a pane running Claude
+Code came back out of the model as the picture itself.
+
+**`session` is required for the write, and that requirement was paid for.** The
+route first acted on whichever session was on screen, and the person at the
+machine changed it between the select and the run, so a test paste of an image
+landed in their own working session. A debug route that writes has to name what
+it writes to.
+
+### 0.4 ⌘Z does not undo a paste — done
+
+Reported against Ghostty, pasting into Claude Code's input box: ⌘Z there takes
+the paste back, and here it does nothing.
+
+What has to be established first is what Ghostty actually sends, because ⌘Z is
+bound to Ghostty's *own* `undo` action (`ghostty +list-keybinds`:
+`keybind = super+z=undo`), which restores a closed split rather than editing
+text. Either that binding is performable and falls through to the program when
+there is nothing to undo, or Claude Code is receiving ⌘Z encoded some other way.
+Measure it — `cat -v` in a pane in Ghostty and one keypress — before writing
+anything.
+
+The app-side half is already known: nothing here forwards ⌘Z. There is no Edit
+menu item for it, and `TmuxTerminalView.performKeyEquivalent` gives the menu
+first refusal precisely because libghostty claims ⌘ keys. Note that whatever
+bytes are decided on can be delivered exactly: `send-keys -H` writes them to the
+pane's pty verbatim, so tmux's own key handling and its `extended-keys` option
+are not in the path.
+
+**Done, and the answer was not the one the question assumed.** Nobody had to
+find out what Ghostty sends, because the question "what does the program read as
+undo" can be asked of the program. Claude Code 2.1.220 was run in a pane on a
+throwaway session and three candidates driven in with `send-keys -H`:
+
+| sent | what the input box did |
+| --- | --- |
+| `CSI 122;9u` — ⌘Z as the kitty keyboard protocol encodes it | gained a literal **z** |
+| `ESC z` | nothing |
+| **`0x1f`** | undid the stray `z`, and emptied the box after an 18-character bracketed paste |
+
+So the encoding a modern terminal would negotiate is the one that would have
+been wrong, and visibly so — it types a character. `0x1f` is Ctrl+`_`, which
+readline also binds to `undo`, so one byte means undo at a shell prompt and in a
+TUI alike. ⌘Z is an Edit-menu item now, on the same terms as ⌘V: a pane gets the
+byte, everything else gets `undo:` down the responder chain, so the rail's
+rename field keeps a text field's undo.
+
+Redo is not wired. Nothing was measured for it, and guessing at a second byte
+after the first one had to be measured would be exactly the wrong lesson.
+
+Confirmed by the owner at the keyboard, on the finished build. That half needed
+a person: the bytes were measured here, but whether ⌘Z *reaches* the menu item
+rather than being taken by libghostty cannot be answered without pressing the
+key, and synthesising a keypress needs an Accessibility grant an agent's shell
+does not have.
+
+### What an independent review of these four found
+
+Codex, on the diff, 2026-07-28. One high, two medium, one low; all four checked
+against the code and all four fixed. Worth keeping because three of them are
+about a *marker* or a *return value* being right for one path and wrong for
+another, which is not what the four defects above were about.
+
+- **The font marker could skip a real font change.** `applySettings` compares
+  the font inputs on their own now (0.2), and it recorded them inside the branch
+  that pushes a configuration. But `controller` is **lazy**: a session whose
+  controller is created during `applySettings` is created *with the current
+  configuration*, so the comparison finds nothing to push, the marker keeps the
+  font the session controller was constructed at, and a later change back to
+  that font reads as no change — latch closed, surfaces left on the other font's
+  cell size, and the grid this app reports to tmux wrong for the rest of the
+  run. The marker is recorded on that path too now, and only when
+  `setTerminalConfiguration` reports the push was taken.
+- **⌘V and ⌘Z answered the main window while another window had the keyboard.**
+  A window keeps naming a first responder when it is not key, so editing a text
+  field in the settings window and pressing ⌘V put the clipboard into a terminal
+  pane. `paneWithKeyboard` requires `isKeyWindow`. Pre-existing for ⌘V; the new
+  ⌘Z would have sent a control byte the same way.
+- **A failed paste left the user's clipboard in the tmux server.**
+  `paste-buffer -d` deletes the buffer *as part of pasting*, so a paste to a pane
+  that has gone away deletes nothing and the text sits in tmux indefinitely. The
+  command's failure is now followed by `delete-buffer`. More likely with a drop
+  than with ⌘V, since a drop names the pane the pointer was over.
+- **A drop reported success it did not have.** `performDragOperation` returned
+  `true` regardless, so a drop whose callback was gone still got the accepting
+  animation. It answers with what happened.
+
+### What a person confirmed, and the one thing left on trust
+
+Splitter drags, text selection, the image routes, ⌘Z and copy-on-select were all
+watched working by the owner. ⌘Z and copy-on-select were confirmed on the build
+that includes the review fixes above; the rest were confirmed before it.
+
+The gap that leaves is small and worth naming rather than rounding off:
+**dragging a file onto a pane has not been done again since
+`performDragOperation` started reporting the real outcome.** The successful path
+is unchanged — a drop that works returned `true` before and returns `true` now —
+so only the failure report differs. It is still a change made after the last
+time anyone dragged anything.
+
+Nothing here was verified by an agent driving the pointer, and could not have
+been: `cliclick` needs an Accessibility grant this shell does not have, and its
+own warning is the only thing it produces without one.
 
 ---
 

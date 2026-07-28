@@ -175,7 +175,7 @@
         /// window's frame, which session is shown, the grid's cell size. With
         /// an empty query each one only reports, so each one is still a read.
         private static let writeRoutes: Set<String> = [
-            "/settings", "/window", "/select", "/grid",
+            "/settings", "/window", "/select", "/grid", "/paste",
         ]
 
         /// `/shot` is the exception: it writes a PNG whether or not it was told
@@ -267,6 +267,11 @@
             }
             if path == "/select" {
                 send(status: "200 OK", body: DebugInspector.selectBody(query: query),
+                     contentType: "application/json", on: connection)
+                return
+            }
+            if path == "/paste" {
+                send(status: "200 OK", body: DebugInspector.pasteBody(query: query),
                      contentType: "application/json", on: connection)
                 return
             }

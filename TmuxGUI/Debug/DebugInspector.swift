@@ -356,6 +356,60 @@
             return encode(tmuxOnly())
         }
 
+        /// `/paste` reports what the pasteboard would be read as;
+        /// `?run=1&session=name` performs the paste ⌘V performs, into the named
+        /// session's focused pane.
+        ///
+        /// The paste path starts at a menu item and cannot otherwise be reached
+        /// from here: synthesising ⌘V needs an Accessibility grant that an
+        /// agent's shell does not have, and without this route the only account
+        /// of a paste that did nothing is a person saying so.
+        ///
+        /// **`session` is required for `run`, and that is not tidiness.** It
+        /// used to act on whichever session was on screen, which is a value the
+        /// person at the machine changes by clicking — measured on 2026-07-28,
+        /// when a test paste of an image landed in the user's own working
+        /// session because they had switched to it between the select and the
+        /// run. A debug route that writes has to name what it writes to.
+        ///
+        /// What it reports is the classification rather than the content: the
+        /// pasteboard is the user's, and it stays out of the log.
+        static func pasteBody(query: String) -> Data {
+            struct Report: Encodable {
+                let pasteboard: String
+                let pasted: Bool
+                let refusal: String?
+            }
+
+            let description = switch PasteContent.read(from: .general) {
+            case let .text(text): "text, \(text.utf8.count) bytes"
+            case .imageWithoutFile: "an image, with no file behind it"
+            case .nothing: "nothing a pane could be given"
+            }
+
+            let parameters = parseQuery(query)
+            guard parameters["run"] == "1" else {
+                return encode(Report(pasteboard: description, pasted: false, refusal: nil))
+            }
+            guard let name = parameters["session"] else {
+                return encode(Report(
+                    pasteboard: description, pasted: false,
+                    refusal: "name the session: /paste?run=1&session=<name>"
+                ))
+            }
+            guard let controller = main?.debugSessionController(named: name) else {
+                return encode(Report(
+                    pasteboard: description, pasted: false,
+                    refusal: "no session called \(name)"
+                ))
+            }
+            return encode(Report(
+                pasteboard: description,
+                pasted: controller.debugPasteIntoActivePane(),
+                refusal: nil
+            ))
+        }
+
         /// `?cellPixels=24x50` — hand a grid a cell size, the way a surface
         /// would after a font change. See
         /// `SessionViewController.debugAdoptCellSize`.

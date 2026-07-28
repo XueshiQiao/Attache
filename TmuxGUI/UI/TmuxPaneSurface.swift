@@ -26,10 +26,56 @@ final class TmuxTerminalView: TerminalView {
     /// guessed while the typing went somewhere else.
     var onBecameFirstResponder: (() -> Void)?
 
+    /// Text a drop wants put into this pane, answering whether the pane took
+    /// it. Set by whoever knows the pane id; the view deliberately does not.
+    var onDropText: ((String) -> Bool)?
+
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted { onBecameFirstResponder?() }
         return accepted
+    }
+
+    // MARK: - Dropping a file onto a pane
+
+    /// Accept files and text, which is what a terminal can do something with.
+    ///
+    /// Nothing in this project registered for any dragged type before
+    /// 2026-07-28, so dragging an image out of Finder was refused by the window
+    /// outright — the cursor showed the no-drop sign and there was nothing to
+    /// debug, because no code ran. Registered on the pane rather than on the
+    /// grid so the drop knows which pane it landed in.
+    ///
+    /// `viewDidMoveToWindow` rather than an initialiser: `TerminalView`'s own
+    /// init chain is the library's, and registering is idempotent.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        registerForDraggedTypes([.fileURL, .string])
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedText(from: sender) == nil ? [] : .copy
+    }
+
+    /// Answers with what actually happened. Returning `true` for a drop nobody
+    /// took — the callback gone in a teardown, the temporary file refused —
+    /// tells AppKit the drop landed and shows the user the accepting animation
+    /// over a pane that received nothing.
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let text = droppedText(from: sender) else { return false }
+        return onDropText?(text) ?? false
+    }
+
+    /// A drag carries its own pasteboard, so it asks the same question ⌘V does
+    /// and gets the same answer — except for an image with no file behind it,
+    /// which for a paste means "send Ctrl-V and let the program read the system
+    /// pasteboard". A dragged image is not *on* the system pasteboard, so that
+    /// answer is wrong here and the drop is refused instead.
+    private func droppedText(from sender: NSDraggingInfo) -> String? {
+        if case let .text(text) = PasteContent.read(from: sender.draggingPasteboard) {
+            return text
+        }
+        return nil
     }
 
     /// Tell the surface it does not have the keyboard.

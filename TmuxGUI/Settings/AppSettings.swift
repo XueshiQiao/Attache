@@ -401,8 +401,10 @@ enum AppSettings {
     /// desktop seen through a pane never passes through it.
     ///
     /// 0 is clear glass — the desktop shows through sharp. It is a real
-    /// setting, not a disabled state, and it is also the cheap one: a gaussian
-    /// blur over a whole window is GPU work every frame it changes.
+    /// setting and not a disabled state. What a radius costs has not been
+    /// measured here, and the work is the window server's rather than this
+    /// process's — which is a reason to measure it somewhere other than this
+    /// app's frame time, not a reason to assume it is free.
     static let blurRadiusRange: ClosedRange<CGFloat> = 0 ... 80
     static let defaultBlurRadius: CGFloat = 30
 
