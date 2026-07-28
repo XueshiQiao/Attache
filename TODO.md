@@ -696,10 +696,38 @@ snapshot to land on top of it.
       is more React-shaped: subscribing to specific tmux format variables with
       `refresh-client -B` instead of re-reading the whole window list.
 
-- [ ] **Search** within a pane's scrollback. libghostty has
-      `TerminalSurfaceSearchDelegate`; the buffer is already populated.
+- [ ] **Search** within a pane's scrollback, and **the bullet that used to be
+      here was wrong about the cost.** It said libghostty has the API and the
+      buffer is already populated, which is true and not sufficient:
+      `TerminalSurface` declares `search`, `searchSelection`, `startSearch`,
+      `navigateSearch`, `endSearch`, `scrollToRow` and `performBindingAction`
+      all `public`, but **nothing public hands out a `TerminalSurface`.**
+      `AppTerminalView.surface` is internal, and while
+      `TerminalViewState.surface` is public there is no public route to a
+      `TerminalViewState` either. Checked against the pinned submodule on
+      2026-07-28.
+
+      The same wall is why the app cannot scroll a pane programmatically, which
+      is why the scrollback half of 4b.4 and 4b.6 had to be confirmed by a
+      person scrolling rather than by a debug route — one was written, and
+      `readViewportText` returned nil because the in-memory session has no
+      surface handle to read from either.
+
+      So this is a submodule change before it is an app change: either
+      `libghostty-spm` exposes the surface (or forwards the search calls
+      through `TerminalView`), or the app drives tmux's own `copy-mode` search
+      instead. The second is more in keeping with the rest of this app anyway —
+      see the next item.
 - [ ] **Copy mode.** tmux has its own; decide whether to drive `copy-mode` or
-      use libghostty's selection. Driving tmux keeps the two views consistent.
+      use libghostty's selection. Driving tmux keeps the two views consistent,
+      and is the only one of the two that is reachable today — see the note on
+      Search above.
+
+      4b.3 left the model side of this deliberately undone: `pane_in_mode` and
+      `pane_mode` are not in `TmuxPaneModes`, and `%pane-mode-changed` — which
+      tmux sends on both entering and leaving copy mode — is still ignored. A
+      replay cannot render copy mode, so there was nothing to do with them yet;
+      whoever picks this up wants them first.
 - [ ] **Multiple app windows.** `MainViewController` assumes one. `TmuxServer`
       would need to be shared rather than owned.
 - [ ] **Pane splitting from the GUI.** `split-window` is trivial to send; the
