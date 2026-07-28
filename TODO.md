@@ -3,11 +3,15 @@
 Ordered roughly by what unblocks the most. Read [CLAUDE.md](CLAUDE.md) before
 starting — several of these touch code with non-obvious constraints.
 
-**Start at [section 4b](#4b--state-the-gui-reconstructs-instead-of-asking-tmux),
-item 4b.2.** That section is the current work and its items are ordered; it is
-written to be picked up cold, with the tmux facts already measured. Nothing else
-in this file is in front of it. (4b.1 is done — its entry is kept in place so the
-worst-first ordering still reads.)
+**[Section 4b](#4b--state-the-gui-reconstructs-instead-of-asking-tmux) is
+done** — every item in the 2026-07-27 audit is fixed, most recently on
+2026-07-28. What is left is section 1's four unverified settings behaviours,
+section 2's two deliberate build differences, section 5's features, and section
+6's never-reviewed subsystems. **Section 5's translucency is the largest thing
+not started.**
+
+Three things in 4b were fixed but *not* watched running, and they are the first
+thing to check when someone is at the machine — see [the end of 4b](#not-seen-running).
 
 ---
 
@@ -121,16 +125,17 @@ instance *of* is the subject of the next section, which is the current work.
 
 ---
 
-## 4b · State the GUI reconstructs instead of asking tmux
+## 4b · State the GUI reconstructed instead of asking tmux — done
 
 An audit on 2026-07-27, after three separate bugs turned out to be the same
-mistake. Every item here is the app inventing, inferring, or simply never
-setting something tmux has an authoritative answer for. **Ordered worst first —
-take them in this order.**
+mistake: the app inventing, inferring, or never setting something tmux has an
+authoritative answer for. All nine items are fixed, the last seven on
+2026-07-28. They are kept in worst-first order with what each one turned out to
+be, because in six of the nine the mechanism was not what the bullet said and
+the difference is the part worth reading.
 
 Everything stated about tmux below was measured on **tmux 3.6a** against an
-isolated `-L` server. Everything about the app is from reading the code. When a
-fix is written, re-measure rather than trusting these notes.
+isolated server. Re-measure rather than trusting these notes.
 
 ### 4b.1 A zoomed pane is invisible to the app — done
 
@@ -290,124 +295,172 @@ therefore keep asking; that is accepted, because each ask costs two commands and
 requires a deliberate human action, and the alternative silences the one moment
 the app is entitled to the size.
 
-### 4b.2 A session rename tears down a healthy session
+### 4b.2 A session rename tore down a healthy session — done
 
-- [ ] **Sessions are keyed by name everywhere, and `%session-renamed` is
-      received and thrown away.** Filed as issue #1; this is the fuller reading.
+Sessions were keyed by name everywhere — `TmuxServer.connections`,
+`MainViewController.controllers`, the rail's rows, its expanded set, its rename
+editor — and `%session-renamed` was parsed into `.other` and dropped. Both
+stages of the bullet were real and reproduced against a scratch server: the
+rail kept the old name indefinitely, and the next `list-sessions` for any
+unrelated reason (creating a third session was enough) printed `sessions no
+longer on the server, dropping connections: alpha`, sent `detach-client`, and
+destroyed the controller with its GPU surfaces, primed scrollback and hidden set
+before rebuilding under the new name.
 
-      Stage one is cosmetic: rename a session — in the GUI's own editor or from
-      any terminal — and the rail, the title band and the status line keep the
-      old name indefinitely. The GUI's own rename appears to do nothing.
+The identity is `$N` now, from `list-sessions -F '#{session_id}
+#{session_name}'`. Two things the bullet did not anticipate:
 
-      Stage two is not. The next time `refreshSessions` runs for any unrelated
-      reason, the old name is missing from `list-sessions`, so `TmuxServer`
-      **stops the live connection and drops it** and
-      `MainViewController.discardControllersForVanishedSessions` destroys the
-      controller — GPU surfaces, primed scrollback and the hidden-window set all
-      gone — then rebuilds from scratch under the new name. A rename becomes a
-      delayed teardown of a session that was working.
+- **The id is known before the attach**, so `TmuxControlClient` attaches with
+  `-t $0` rather than `-t '=name'` — verified on 3.6a that a session id is
+  accepted wherever a session target is. That also closes the window in which
+  any terminal can rename a session between it being listed and being attached
+  to, and it removed the several "no session id yet" guards that could silently
+  swallow a command.
+- **`%session-renamed` is broadcast to every control client on the server**,
+  not only to those attached to the renamed session — measured, a client
+  attached to `$0` is told about `$1`. Applied without checking the id, every
+  connection would end up named after whichever session was renamed last. Same
+  shape as the `%client-session-changed` trap already in CLAUDE.md.
 
-      Measured: renaming sends exactly `%session-renamed $0 renamed` and **no**
-      `%sessions-changed`, so nothing the app handles triggers a re-list.
+The rail carries ids too. Its `expandedSessions` had the same defect in
+miniature: keyed by name and pruned against the entries, a rename closed the
+session's window list.
 
-      Fix: key `TmuxServer.connections` and `MainViewController.controllers` by
-      `$N`; handle `%session-renamed` by updating a now-mutable name. The
-      starting point already exists and is dead code: `TmuxSessionInfo` in
-      `TmuxModel.swift` fetches `#{session_id}` and nothing parses it. Attaching
-      can stay by `=name`, since the id arrives moments later on
-      `%session-changed`.
+### 4b.3 A replayed screen restored text and colour and nothing else — done
 
-### 4b.3 A replayed screen restores text and colour and nothing else
+Eighteen mode variables ride along in the `display-message` the capture already
+makes. All or nothing: a half-read reply would put the surface in some *other*
+terminal's modes, so the field count is checked and an unparseable reply falls
+back to exactly the old behaviour.
 
-- [ ] **The snapshot replay reconstructs every terminal mode as "default".**
-      `SessionViewController.replayPayload` sends home, erase, the rows, and now
-      a cursor position. A terminal is more than that, and the app attaches to
-      sessions whose programs set their modes long ago.
+The emit order is the substance, and three of the four orderings were measured
+rather than reasoned:
 
-      Measured live with `less --mouse` in a pane: `alt=1 cursor=1 wrap=1
-      insert=0 kpcursor=1 kp=1 origin=0 mouse_any=1 mouse_sgr=1 sru=0 srl=23`.
-      None of it survives a repaint. Each of these is a format variable that
-      exists on 3.6a and can ride along in the `display-message` round trip
-      `capturePane` already makes — one format string, no extra commands:
+- **`cursor_y` is absolute even under origin mode.** With a scroll region of
+  rows 4-9 and DECOM on, putting the cursor at region-relative row 2 makes tmux
+  report row 4. `CUP` under DECOM counts from the top of the region, so tmux's
+  number sent straight through is `scroll_region_upper` rows of silent drift on
+  exactly the programs that use a region.
+- **DECSTBM and DECOM both home the cursor**, so both precede the cursor.
+- **The alternate screen is entered between the history and the rows** —
+  measured, `capture-pane -S -N -E -1` returns the *primary* screen's scrollback
+  while the plain capture returns the alternate screen. The switch is stated in
+  both directions on a repaint, because a program that has exited needs
+  `?1049l` as much as one that started needs `?1049h`.
+- **The cursor shape mapping was measured**: DECSCUSR 0 reads back as
+  `default`, 1/2 `block`, 3/4 `underline`, 5/6 `bar`, with the odd values
+  setting `cursor_blinking`. `CSI ?12h` sets `cursor_blinking` alone, which
+  DECSCUSR cannot express, so blink is carried separately.
 
-      | Lost | tmux variable | Emit | What breaks today |
-      |---|---|---|---|
-      | Mouse tracking | `mouse_standard_flag`, `mouse_button_flag`, `mouse_all_flag`, `mouse_sgr_flag`, `mouse_utf8_flag` | DECSET 1000/1002/1003/1006/1005 | the wheel over a vim or less pane scrolls libghostty's own buffer instead of the program |
-      | Alternate screen | `alternate_on` | `CSI ?1049h` | quitting vim "restores" a primary screen libghostty never saved |
-      | Cursor visibility | `cursor_flag` | `CSI ?25h/l` | htop gets a cursor painted on its status area after every repaint |
-      | Scroll region | `scroll_region_upper`, `scroll_region_lower` | DECSTBM, **before** the cursor restore, since it homes the cursor | a program scrolling inside a region wrecks the screen after a repaint |
-      | Application cursor keys | `keypad_cursor_flag` | `CSI ?1h/l` | changes what libghostty sends for arrow keys |
-      | Application keypad | `keypad_flag` | `ESC =` / `ESC >` | same, for the keypad |
-      | Cursor shape and blink | `cursor_shape`, `cursor_blinking`, `cursor_very_visible` | DECSCUSR | cosmetic |
-      | Wrap / origin / insert | `wrap_flag`, `origin_flag`, `insert_flag` | `CSI ?7`, `CSI ?6`, `CSI 4` | rare, but silently wrong |
-      | Copy mode | `pane_in_mode`, `pane_mode`, and `%pane-mode-changed` fires on both enter and exit and is currently ignored | — | a replay cannot render copy mode, but the app could at least know |
+`pane_in_mode`/`pane_mode` and `%pane-mode-changed` are still not handled — see
+copy mode in section 5, which is where that belongs.
 
-      Note `cursor_x`/`cursor_y` keep reporting the *underlying* screen while a
-      pane is in copy mode, so today's replay is at least self-consistent there.
+### 4b.4 The first paint parked the cursor wrongly — done
 
-### 4b.4 The first paint of a pane still parks the cursor wrongly
+The premise the old comment rested on was escapable exactly as the bullet said,
+and the fix is one capture more rather than one clever trick. `capture-pane` is
+asked twice: `-S -N -E -1` for the history and a plain capture for the screen.
+Measured — a 10-row pane with 52 rows of history answers the first with 52 rows
+ending `L51` and the second with 10 rows starting `L52`. No overlap, no gap, so
+after the history has scrolled through the viewport, viewport row 0 is screen
+row 0 and `CUP` means what tmux said.
 
-- [ ] **The repaint path was fixed; the prime path was not.** The first time a
-      pane is shown — the first thing anyone sees on launch — the cursor lands
-      at the end of the bottom-most line with anything on it. For a session full
-      of running TUIs that is their status bars, app-wide, every launch.
+The screen's rows stopped being trimmed for the same reason: every row has to be
+written or the cursor row is counted from the wrong place. Trimming survives for
+the one case that still needs it — a pane tmux would not give a cursor for.
 
-      The comment at `replayPayload` says the cursor cannot be restored there
-      because the prime replays scrollback that scrolled off the top, so tmux's
-      row number has nothing to be relative to. **That premise is escapable:**
-      `capture-pane -S - -E -1` returns history *only* — measured, 32 lines,
-      ending exactly where the visible screen begins. Replay history, then the
-      visible screen with the same erase + rows + cursor restore the repaint
-      path uses, and the correspondence exists.
+### 4b.5 Activity dots updated only when something unrelated poked the model — done
 
-### 4b.5 Activity dots update only when something unrelated pokes the model
+`refresh-client -B 'tmuxgui-activity:@*:#{window_activity_flag}'` after the
+attach, plus a `%subscription-changed` handler. Reproduced and verified: with
+the background window's flag cleared first, one `printf` into it and nothing
+else at all left the pre-fix app saying `False` three seconds later and the
+fixed one saying `True`.
 
-- [ ] **The dot is stale exactly when it matters.** Output arriving in a
-      background window produces **only `%output`** on the control stream — no
-      structural notification — while `window_activity_flag` flips server-side.
-      The dot therefore appears whenever the next unrelated notification happens
-      to arrive, which for a quiet session is never. The case it fails is the
-      one it exists for: you are in session A, the agent in session B finishes
-      and goes quiet.
+Two things the bullet did not say. **Subscribing produces one
+`%subscription-changed` per window immediately**, so the dots are right from the
+attach rather than after the first change. And **it depends on the user's
+`monitor-activity`, which tmux leaves off by default** — measured, with it off
+the flag never leaves 0 and there is nothing to subscribe to. That is not this
+app's to override: it is the same option that decides whether a plain
+`tmux attach` shows the `#` in its status line.
 
-      Fix, measured working on 3.6a: control-mode format subscriptions.
-      `refresh-client -B 'actwatch:@*:#{window_activity_flag}'` produced
-      `%subscription-changed actwatch $0 @1 1 - : 1` the moment the background
-      window gained activity. One subscription per connection replaces the
-      accidental coupling. The same mechanism would watch `window_zoomed_flag`
-      for 4b.1.
+### 4b.6 The first paint could print the same output twice — done
 
-### 4b.6 The first paint can print the same output twice
+Real, and reproduced: showing a session whose pane had printed six lines while
+off screen drew `sh-3.2$ sh-3.2$ for i in …` where tmux has one prompt — the
+router's buffer and the snapshot's first row on one line.
 
-- [ ] **`TmuxOutputRouter.register` returns whether it replayed backlog and the
-      only caller drops the value.** Its own doc says the return exists so "the
-      caller can decide whether the pane also needs a capture-pane snapshot";
-      `SessionViewController.makeSurface` ignores it, so the prime always runs
-      and `capture-pane -S -N` re-delivers everything the backlog just did.
+**Picking one of the two sources, which is what the bullet proposed and what the
+router's own doc said the return value was for, does not work.** The choice has
+to be made when the snapshot comes back, and by then it is wrong either way:
+showing a session sends `refresh-client -C`, tmux reflows, and the pane writes.
+Measured — every first paint took the "it wrote while the capture was in flight"
+branch, so no pane would ever have been given its scrollback.
 
-      Visible on the app's headline case: show a session whose pane streamed
-      between attach and first display — an agent mid-run — and its recent
-      output appears twice in scrollback. Reasoning only, not observed.
+So both go out and the snapshot *erases* first: home, `CSI 2 J`, and on a first
+paint `CSI 3 J` for the saved lines. The buffer is replaced rather than added
+to, which makes the second copy impossible instead of unlikely. `CSI 3 J` is
+asked for and not relied on — if this libghostty ignores it the residue is
+scrollback, never the screen.
 
-### 4b.7 Bracketed paste is decided by a reconstructed state
+### 4b.7 Bracketed paste was decided by a reconstructed state — done
 
-- [ ] ⌘V reaches libghostty's paste, which brackets the text only if *it*
-      believes bracketed paste is on — and after any replay it believes nothing
-      is on. A multi-line paste into vim after a repaint staircases the
-      indentation. tmux has no format variable for the mode, but it tracks it:
-      `paste-buffer -p` brackets "if the application has requested bracketed
-      paste mode". Going through `load-buffer` + `paste-buffer -p -t %id` makes
-      tmux the authority. Reasoning only.
+`paste-buffer -p` is authoritative, exactly as the bullet said. Measured with
+`cat -v`: mode off and `-p` gives the bare text, mode on and `-p` gives
+`^[[200~…^[[201~`, mode on without `-p` gives bare.
 
-### 4b.8 ⌘1-9 counts slots while the rail shows tmux indices
+**The text goes through a file, and that is the design rather than a detail.**
+tmux's parser expands `$VAR` inside a double-quoted argument — measured,
+`set-buffer -b probe "…$HOME…"` stores `/Users/joey` — and a single-quoted
+argument is literal but can carry neither a newline nor a single quote.
+Clipboard text is arbitrary and usually multi-line, so no quoting of it is both
+correct and safe. `load-buffer` takes a path, so the only thing interpolated is
+a path this app chose — the same reasoning as targeting tmux by id. The file is
+owner-only and deleted the moment tmux answers; `-d` drops the buffer so the
+user's own paste buffers are untouched.
 
-- [ ] `SessionViewController.selectWindow(atVisibleSlot:)` takes a positional
-      index into the hidden-filtered list, while `SidebarRows` draws
-      `window.index`. With tmux's default `base-index 0` the row labelled **0**
-      is ⌘1 and the row labelled **3** is ⌘4; hide a window and every shortcut
-      below it shifts. `TitleBandView`'s comment even claims the rail is what
-      ⌘1-9 counts against. Either show slot numbers or select by index —
-      `#{base-index}` is queryable.
+Intercepted at the Edit menu rather than by overriding `paste(_:)`, which is
+where it belongs: libghostty declares that method `internal`, so
+`TmuxTerminalView` cannot override it. Everything that is not a pane is
+forwarded back down the responder chain.
+
+### 4b.8 ⌘1-9 counted slots while the rail showed tmux indices — done
+
+They address `window_index` now, the way tmux's own `prefix 0-9` does. ⌘0 is
+new, for the same reason `prefix 0` exists: a `base-index 0` session has a
+window 0 and it was the one row with no shortcut. A hidden window is not
+selected — its row is not in the rail, so its number addresses nothing, and
+selecting it would bring it back because `syncWithModel` restores whatever tmux
+makes active.
+
+Worth recording because it changes how bad this was: with `base-index 1`, which
+is what this machine's `~/.tmux.conf` sets, the numbers lined up by coincidence
+until a window was hidden. The bullet's example assumed tmux's default of 0.
+
+### Not seen running
+
+Three of the seven were fixed and verified only as far as tmux, because both
+displays on this machine were asleep for the whole session and there is no way
+to wake one from an agent's shell — `screencapture` answers `could not create
+image from display`, the inspector's own compositing returns plain white, and
+neither `cliclick` nor `osascript … System Events` can synthesise a keystroke
+without an Accessibility grant. What a person should check first:
+
+- [ ] **⌘4** selects the row the rail labels **4**, and ⌘0 reaches window 0 on a
+      `base-index 0` session. Only the lookup is tested; nobody has watched a
+      keypress arrive.
+- [ ] **⌘V into a pane** pastes, and a multi-line paste into `vim` after
+      switching windows does *not* staircase. The tmux exchange is verified end
+      to end; the menu interception and the file write are not.
+- [ ] **Scroll a pane up on arriving at a session.** The history should be
+      there, once, with no duplicate of the last screenful — that is the half of
+      4b.4 and 4b.6 that lives in libghostty's own buffer, which nothing outside
+      the app can read.
+- [ ] While there: a pane running `less` or `vim` should take the **scroll
+      wheel** after a window switch, and `htop` should not gain a stray cursor.
+      That is 4b.3 arriving, and it is the item with the most sequences and the
+      least observation behind it.
 
 ### Checked and found fine
 
@@ -417,17 +470,7 @@ is bounded with the honest failure direction. `freeIndexAtEnd`'s margin, the
 placeholder cell size, the metrics window, `scrollbackPrimeLines` as a ceiling
 tmux clamps. `capture-pane` on an alternate-screen pane returns primary history
 plus the alternate screen as text, so the prime's *content* is complete — only
-the modes in 4b.3 are missing.
-
-      It predates the first-show fix below; that fix only made it certain to run
-      in the case it addresses, and Codex found it while reviewing that fix.
-      Fixing it means the model carrying tmux's active pane, and the single
-      `list-windows` round trip cannot supply it: `#{window_active_pane}` does
-      not exist in tmux 3.6a — verified, it expands to empty. One extra query
-      per refresh does, for the whole session at once:
-      `list-panes -s -t $id -F '#{window_id} #{pane_id} #{pane_active}'`.
-      `%window-pane-changed` is already handled and already triggers a refresh,
-      so the notification side needs nothing new.
+the modes in 4b.3 were missing, and they are supplied now.
 
 The probe's modal is gone too — it was fixed by the settings work rather than
 here, and the bullet outlived it. The report renders inline on the About page;
