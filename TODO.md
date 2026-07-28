@@ -438,29 +438,41 @@ Worth recording because it changes how bad this was: with `base-index 1`, which
 is what this machine's `~/.tmux.conf` sets, the numbers lined up by coincidence
 until a window was hidden. The bullet's example assumed tmux's default of 0.
 
-### Not seen running
+### What a person confirmed, and what is still on trust
 
-Three of the seven were fixed and verified only as far as tmux, because both
-displays on this machine were asleep for the whole session and there is no way
-to wake one from an agent's shell — `screencapture` answers `could not create
-image from display`, the inspector's own compositing returns plain white, and
-neither `cliclick` nor `osascript … System Events` can synthesise a keystroke
-without an Accessibility grant. What a person should check first:
+Most of 4b was verified against tmux alone while both displays on this machine
+were asleep — `screencapture` answers `could not create image from display`,
+the inspector's own compositing returns plain white, and neither `cliclick` nor
+`osascript … System Events` can synthesise a keystroke without an Accessibility
+grant. Note that a sleeping display and a missing Screen Recording permission
+produce the *same* symptom from a shell, and only the first of the two is
+something waiting fixes.
 
-- [ ] **⌘4** selects the row the rail labels **4**, and ⌘0 reaches window 0 on a
-      `base-index 0` session. Only the lookup is tested; nobody has watched a
-      keypress arrive.
-- [ ] **⌘V into a pane** pastes, and a multi-line paste into `vim` after
-      switching windows does *not* staircase. The tmux exchange is verified end
-      to end; the menu interception and the file write are not.
+Confirmed once the screen was awake again:
+
+- **The first paint's cursor and screen**, by driving a pane to a fixed picture
+  with the cursor parked at row 3 column 11 and nothing written since. Before:
+  the cursor sat at the end of the bottom-most used row, and the *scrollback was
+  painted into the viewport* — the app showed thirteen rows tmux did not have on
+  screen. After: the viewport is exactly tmux's twenty-five rows and the cursor
+  is where tmux says. That is 4b.4 and the visible half of 4b.6.
+- **⌘4 selects the row the rail labels 4** — confirmed by the owner, at the
+  keyboard.
+- **⌘V into a pane**, including a multi-line paste after a window switch —
+  confirmed by the owner. That is the half of 4b.7 that lives in the menu and
+  the file write; the tmux exchange was already verified.
+
+Still on trust, and worth a look by whoever is next at the machine:
+
 - [ ] **Scroll a pane up on arriving at a session.** The history should be
-      there, once, with no duplicate of the last screenful — that is the half of
-      4b.4 and 4b.6 that lives in libghostty's own buffer, which nothing outside
-      the app can read.
-- [ ] While there: a pane running `less` or `vim` should take the **scroll
-      wheel** after a window switch, and `htop` should not gain a stray cursor.
-      That is 4b.3 arriving, and it is the item with the most sequences and the
-      least observation behind it.
+      there, once. The screenshot above is strong indirect evidence — the
+      history is no longer in the viewport, so it went somewhere, and the only
+      somewhere is the scrollback — but nothing outside the app can read
+      libghostty's buffer, so nobody has counted the copies.
+- [ ] **A pane running `less` or `vim` should take the scroll wheel after a
+      window switch, and `htop` should not gain a stray cursor.** That is 4b.3
+      arriving. The owner reports it looks right; it is the item with the most
+      sequences and the least deliberate observation behind it.
 
 ### Checked and found fine
 
