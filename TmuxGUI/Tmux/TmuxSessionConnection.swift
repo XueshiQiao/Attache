@@ -225,6 +225,41 @@ final class TmuxSessionConnection {
         client.send("refresh-client -C \(want.columns)x\(want.rows)")
     }
 
+    /// The name this connection's activity subscription goes out under. Only
+    /// ever compared against what comes back, so any string would do; this one
+    /// says where it came from if it shows up in someone else's `tmux` output.
+    private static let activitySubscription = "tmuxgui-activity"
+    private var subscribedToActivity = false
+
+    /// Ask tmux to tell us when a window gains or loses activity, instead of
+    /// finding out by accident.
+    ///
+    /// Output arriving in a background window produces **only `%output`** on
+    /// the control stream — no structural notification — while
+    /// `window_activity_flag` flips server-side. So the sidebar dot used to
+    /// appear whenever the next unrelated notification happened to arrive,
+    /// which for a quiet session is never: exactly the case the dot exists for,
+    /// which is that you are in session A and the agent in session B has gone
+    /// quiet.
+    ///
+    /// `@*` is every window in this session, so one subscription replaces the
+    /// accidental coupling. Verified on tmux 3.6a: subscribing produces one
+    /// `%subscription-changed` per window immediately, so the dots are right
+    /// from the attach rather than only after the first change.
+    ///
+    /// This depends on the user's `monitor-activity` — measured, the flag stays
+    /// 0 for a background window's output with it off, which is tmux's default.
+    /// That is not something for this app to override: it is the same setting
+    /// that decides whether a plain `tmux attach` shows the `#` in its status
+    /// line, and the dot is meant to mean the same thing.
+    private func subscribeToActivity() {
+        guard !subscribedToActivity else { return }
+        subscribedToActivity = true
+        client.send(
+            "refresh-client -B '\(Self.activitySubscription):@*:#{window_activity_flag}'"
+        )
+    }
+
     func sendKeys(paneID: String, data: Data) {
         client.sendKeys(pane: paneID, data: data)
     }
@@ -610,7 +645,16 @@ final class TmuxSessionConnection {
                     session: sessionName
                 )
             }
+            subscribeToActivity()
             refreshWindows()
+
+        case .subscriptionChanged(let name, let window, let value):
+            guard name == Self.activitySubscription, let window,
+                  let index = windows.firstIndex(where: { $0.id == window }) else { return }
+            let active = value == "1"
+            guard windows[index].hasActivity != active else { return }
+            windows[index].hasActivity = active
+            notifyModelChanged()
 
         case .sessionRenamed(let id, let name):
             // The id test is the whole point. This notification is broadcast to

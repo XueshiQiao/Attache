@@ -31,6 +31,13 @@ enum TmuxNotification {
     /// `saved` is the arrangement tmux would return to; `visible` is what it is
     /// showing right now. They differ exactly while a pane is zoomed.
     case layoutChange(window: String, saved: String, visible: String)
+    /// A value this client asked `refresh-client -B` to watch has changed.
+    ///
+    /// `%subscription-changed <name> <session-id> <window-id> <window-index>
+    /// <pane-id> : <value>` — verified on tmux 3.6a. The `:` is a field of its
+    /// own, which is what makes the value safe to take as "everything after
+    /// it" however many spaces it contains.
+    case subscriptionChanged(name: String, window: String?, value: String)
     case paused(pane: String)
     case resumed(pane: String)
     case exited(reason: String?)
@@ -94,6 +101,19 @@ enum TmuxNotification {
             guard let id = parts.first else { return nil }
             return .sessionRenamed(
                 session: String(id), name: parts.count > 1 ? String(parts[1]) : ""
+            )
+
+        case "%subscription-changed":
+            let tokens = String(decoding: rest, as: UTF8.self).split(separator: " ")
+            // The separator is located rather than counted. The fields before
+            // it describe *what* changed and their number depends on the scope
+            // the subscription was made at; everything after it is the value.
+            guard let name = tokens.first,
+                  let separator = tokens.firstIndex(of: ":") else { return nil }
+            return .subscriptionChanged(
+                name: String(name),
+                window: tokens.first { $0.hasPrefix("@") }.map(String.init),
+                value: tokens[tokens.index(after: separator)...].joined(separator: " ")
             )
 
         case "%window-add":
