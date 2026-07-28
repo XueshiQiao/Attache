@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>窗口毛玻璃 · TmuxGUI 设计笔记</title>
+<style>
+  :root {
+    --bg: #faf9f5;
+    --surface: #ffffff;
+    --ink: #1f1e1c;
+    --ink-soft: #5a5751;
+    --ink-faint: #8a857c;
+    --rule: #e6e2d4;
+    --rule-soft: #efece1;
+    --code-bg: #f3f0e6;
+    --accent: #d97757;
+    --accent-soft: #f4e2d6;
+    --good: #4f8a5c;
+    --warn: #b6711c;
+    --bad: #b14338;
+    --serif: "Tiempos", "Source Serif Pro", "Iowan Old Style", Georgia, serif;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Monaco, "Cascadia Code", monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .container {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 80px 40px 120px;
+  }
+
+  header.hero { margin-bottom: 56px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin-bottom: 18px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 48px;
+    line-height: 1.1;
+    margin: 0 0 20px;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+  }
+  .lede {
+    font-family: var(--serif);
+    font-size: 22px;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: 640px;
+  }
+
+  h2 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 30px;
+    line-height: 1.2;
+    margin: 64px 0 16px;
+    letter-spacing: -0.01em;
+  }
+  h3 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 17px;
+    margin: 36px 0 10px;
+    letter-spacing: -0.005em;
+  }
+  p { margin: 0 0 16px; }
+  p, li { color: var(--ink); }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+  a:hover { border-bottom-color: var(--accent); }
+
+  ul, ol { padding-left: 24px; margin: 0 0 16px; }
+  li { margin-bottom: 8px; }
+  li code { font-size: 0.92em; }
+
+  code {
+    font-family: var(--mono);
+    background: var(--code-bg);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+  pre {
+    background: #1f1e1c;
+    color: #f6f3eb;
+    padding: 20px 24px;
+    border-radius: 8px;
+    overflow-x: auto;
+    line-height: 1.55;
+    font-size: 13.5px;
+    margin: 20px 0 28px;
+  }
+  pre code {
+    background: transparent;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+  }
+  .tok-comment  { color: #9b9081; font-style: italic; }
+  .tok-keyword  { color: #e89b6f; }
+  .tok-fn       { color: #f0d68a; }
+  .tok-string   { color: #b8d49d; }
+  .tok-num      { color: #d8b9e3; }
+
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px 32px;
+    margin: 32px 0 48px;
+    padding: 18px 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-soft);
+  }
+  .meta-row b { color: var(--ink); font-weight: 500; margin-right: 8px; }
+
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 18px 22px;
+    margin: 28px 0;
+    border-radius: 0 6px 6px 0;
+    color: var(--ink);
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 6px;
+    display: block;
+  }
+
+  .figure {
+    margin: 36px 0;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 28px 24px 18px;
+  }
+  .figure svg { display: block; width: 100%; height: auto; }
+  .figure .caption {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--rule);
+  }
+  .figure .caption b { color: var(--ink-soft); font-weight: 600; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 24px 0 32px;
+    font-size: 14.5px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-weight: 600;
+    color: var(--ink-soft);
+    background: var(--rule-soft);
+    font-size: 13px;
+    letter-spacing: 0.01em;
+  }
+  td code { font-size: 0.88em; }
+
+  .pill {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .pill.good    { background: #e3f0e2; color: var(--good); }
+  .pill.warn    { background: #f5e7d0; color: var(--warn); }
+  .pill.bad     { background: #f5dad6; color: var(--bad); }
+  .pill.neutral { background: var(--rule-soft); color: var(--ink-soft); }
+
+  .footer {
+    margin-top: 96px;
+    padding-top: 24px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  /* SVG defaults */
+  svg text { font-family: var(--sans); font-size: 12.5px; fill: var(--ink); }
+  svg .label-mono  { font-family: var(--mono); font-size: 11.5px; fill: var(--ink-soft); }
+  svg .label-soft  { fill: var(--ink-soft); }
+  svg .label-faint { fill: var(--ink-faint); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header class="hero">
+  <div class="eyebrow">Engineering note · TmuxGUI · 2026-07-28</div>
+  <h1>窗口毛玻璃：三种做法，<br>以及公开 API 为什么只能给你一半</h1>
+  <p class="lede">「半径可调」和「Metal 图层底下也有效」是两件事。macOS 的公开接口每次只给一件，
+  而一个终端两件都需要——这份笔记记录三种实现各自是什么、差在哪，以及最后为什么落在一个私有符号上。</p>
+</header>
+
+<div class="meta-row">
+  <span><b>代码</b><code>TmuxGUI/UI/WindowGlass.swift</code></span>
+  <span><b>私有调用</b><code>WindowServerBlur.swift</code></span>
+  <span><b>提交</b><code>f0c2baf … fcf6450</code></span>
+  <span><b>状态</b><span class="pill good">已上线</span></span>
+</div>
+
+<h2>1 · 症状：一个窗口里有三种玻璃</h2>
+
+<p>第一版做完，报回来的现象是「一个窗口里三种风格，受不了」。这不是审美分歧，是三块区域真的由三套不同的东西画的，
+而当时那个「透明度」滑块只控制得了其中一层色。</p>
+
+<div class="figure">
+<svg viewBox="0 0 800 250" xmlns="http://www.w3.org/2000/svg" aria-label="窗口里三块区域各自的来源">
+  <defs>
+    <marker id="arr1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5a5751"/>
+    </marker>
+  </defs>
+  <text x="0" y="18" font-weight="600" fill="#1f1e1c">同一个窗口，三个不同的画法</text>
+
+  <rect x="40" y="42" width="300" height="180" rx="8" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <rect x="58" y="60" width="264" height="144" rx="7" fill="#e2ddcc" stroke="#cfc8b4"/>
+  <rect x="360" y="42" width="400" height="180" rx="8" fill="#eceadf" stroke="#e6e2d4"/>
+
+  <text x="190" y="52" text-anchor="middle" class="label-mono" fill="#d97757">① 面板周围的边距</text>
+  <text x="190" y="140" text-anchor="middle" class="label-mono" fill="#5a5751">② 侧栏面板</text>
+  <text x="560" y="140" text-anchor="middle" class="label-mono" fill="#5a5751">③ 内容区（panes）</text>
+
+  <line x1="150" y1="232" x2="150" y2="215" stroke="#d97757" stroke-width="1.5" marker-end="url(#arr1)"/>
+  <text x="150" y="246" text-anchor="middle" class="label-faint">AppKit 的 Liquid Glass 镶边</text>
+  <line x1="380" y1="232" x2="330" y2="200" stroke="#5a5751" stroke-width="1.2" marker-end="url(#arr1)"/>
+  <text x="440" y="246" class="label-faint">AppKit 的 .sidebar 材质</text>
+  <line x1="700" y1="232" x2="700" y2="215" stroke="#5a5751" stroke-width="1.2" marker-end="url(#arr1)"/>
+  <text x="700" y="246" text-anchor="middle" class="label-faint">我们自己加的材质</text>
+</svg>
+<div class="caption"><b>图 1.</b> 三块区域分属三个所有者，其中两个属于 AppKit。「调透明度」只作用在最上面那层色，
+所以滑块拉到 15% 时窗口仍然几乎不透——被挡住的不是色，是底下的材质。</div>
+</div>
+
+<div class="callout">
+<span class="label">核心事实</span>
+<p>macOS 的「材质」（<code>NSVisualEffectView</code>）不是一块可以透过去看的玻璃，
+而是<b>一块自带不透明度的磨砂板</b>。在它上面刷再淡的色也减不掉它自己的密度，
+它的模糊量则是 Apple 按材质写死的，没有任何接口可以改。</p>
+</div>
+
+<h2>2 · 三种机制，本质上不是一回事</h2>
+
+<p>三种做法把「透明」「模糊」「颜色」放在了不同的位置，所以它们不是同一个东西的三档参数，
+而是三套机制。任何一个绘制点如果自己去猜，就会把其中一样上两遍。</p>
+
+<table>
+  <thead><tr><th>风格</th><th>机制</th><th>模糊半径</th><th>Metal 图层底下</th><th>私有 API</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>Blur</b></td>
+      <td><code>CGSSetWindowBackgroundBlurRadius</code><br>窗口服务器给整窗背景加模糊</td>
+      <td><span class="pill good">任意可调</span></td>
+      <td><span class="pill good">有效</span></td>
+      <td><span class="pill bad">是</span></td>
+    </tr>
+    <tr>
+      <td><b>Liquid Glass</b></td>
+      <td><code>NSGlassEffectView</code><br>macOS 26 的原生玻璃，自带 <code>tintColor</code></td>
+      <td><span class="pill neutral">系统决定</span></td>
+      <td><span class="pill good">有效</span></td>
+      <td><span class="pill good">否</span></td>
+    </tr>
+    <tr>
+      <td><b>System material</b></td>
+      <td><code>NSVisualEffectView</code><br>经典磨砂材质，渲染一张模糊副本</td>
+      <td><span class="pill neutral">系统决定</span></td>
+      <td><span class="pill good">有效</span></td>
+      <td><span class="pill good">否</span></td>
+    </tr>
+    <tr>
+      <td><s>Blur（第一版）</s></td>
+      <td><code>CALayer.backgroundFilters</code> + <code>CIGaussianBlur</code></td>
+      <td><span class="pill good">任意可调</span></td>
+      <td><span class="pill bad">无效</span></td>
+      <td><span class="pill good">否</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>最后一行是这份笔记存在的原因：它是唯一一个「公开 + 半径可调」的组合，而它在这个 app 里不能用。</p>
+
+<h2>3 · 为什么 backdrop 滤镜够不到 pane</h2>
+
+<p><code>CALayer.backgroundFilters</code> 在 macOS 上是公开的，语义是「把<b>这一层背后</b>的东西过一遍滤镜」。
+问题在于每个 pane 是 libghostty 的 <b>Metal 图层</b>，被单独合成在那一层之上——
+透过 pane 看到的桌面根本没有经过这个滤镜。</p>
+
+<div class="figure">
+<svg viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg" aria-label="三种机制在合成栈里的位置">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97757"/>
+    </marker>
+  </defs>
+  <text x="0" y="18" font-weight="600" fill="#1f1e1c">合成顺序：模糊发生在哪一步</text>
+
+  <!-- lane labels -->
+  <text x="0" y="66"  class="label-mono" fill="#b14338">backdrop 滤镜</text>
+  <text x="0" y="166" class="label-mono" fill="#4f8a5c">材质 / Liquid Glass</text>
+  <text x="0" y="266" class="label-mono" fill="#4f8a5c">窗口服务器模糊</text>
+
+  <!-- lane 1: CALayer.backgroundFilters -->
+  <rect x="150" y="44" width="120" height="34" rx="5" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="210" y="66" text-anchor="middle" class="label-soft">桌面</text>
+  <rect x="290" y="44" width="150" height="34" rx="5" fill="#f5dad6" stroke="#e2b8b1"/>
+  <text x="365" y="66" text-anchor="middle" class="label-soft">滤镜（糊这里）</text>
+  <rect x="460" y="44" width="110" height="34" rx="5" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="515" y="66" text-anchor="middle" class="label-soft">色层</text>
+  <rect x="590" y="44" width="170" height="34" rx="5" fill="#e2ddcc" stroke="#cfc8b4"/>
+  <text x="675" y="66" text-anchor="middle" class="label-soft">Metal pane（单独合成）</text>
+  <path d="M675 82 C 675 104, 210 104, 210 84" stroke="#b14338" stroke-width="1.6" fill="none" marker-end="url(#arr2)"/>
+  <text x="440" y="118" text-anchor="middle" class="label-mono" fill="#b14338">pane 直接取未过滤的桌面 → 中间不糊</text>
+
+  <!-- lane 2 -->
+  <rect x="150" y="144" width="120" height="34" rx="5" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="210" y="166" text-anchor="middle" class="label-soft">桌面</text>
+  <rect x="290" y="144" width="150" height="34" rx="5" fill="#e3f0e2" stroke="#b6d3b4"/>
+  <text x="365" y="166" text-anchor="middle" class="label-soft">渲染出模糊副本</text>
+  <rect x="460" y="144" width="110" height="34" rx="5" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="515" y="166" text-anchor="middle" class="label-soft">色层</text>
+  <rect x="590" y="144" width="170" height="34" rx="5" fill="#e2ddcc" stroke="#cfc8b4"/>
+  <text x="675" y="166" text-anchor="middle" class="label-soft">Metal pane</text>
+  <text x="440" y="200" text-anchor="middle" class="label-mono" fill="#4f8a5c">模糊已经是一张真实的图，上面盖什么都正常合成</text>
+
+  <!-- lane 3 -->
+  <rect x="150" y="244" width="270" height="34" rx="5" fill="#e3f0e2" stroke="#b6d3b4"/>
+  <text x="285" y="266" text-anchor="middle" class="label-soft">桌面（窗口服务器已就地糊掉）</text>
+  <rect x="460" y="244" width="110" height="34" rx="5" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="515" y="266" text-anchor="middle" class="label-soft">色层</text>
+  <rect x="590" y="244" width="170" height="34" rx="5" fill="#e2ddcc" stroke="#cfc8b4"/>
+  <text x="675" y="266" text-anchor="middle" class="label-soft">Metal pane</text>
+  <text x="440" y="300" text-anchor="middle" class="label-mono" fill="#4f8a5c">窗口里画什么都与它无关，半径还可以随便调</text>
+</svg>
+<div class="caption"><b>图 2.</b> 差别不在效果强弱，在模糊<b>什么时候</b>发生。滤镜是合成时对 backdrop 求值，
+所以任何单独合成的图层都会绕过它；后两种是把模糊变成一张已经存在的内容，绕不过去。</div>
+</div>
+
+<p>现场表现完全对得上：拉动半径时窗口边缘、标题带、侧栏在变，<b>中间被 pane 盖住的地方纹丝不动</b>。
+这不是参数没调对，是这条路走不通。</p>
+
+<h2>4 · Ghostty 是怎么做的</h2>
+
+<p>参照物是 Ghostty（截图里那台叫 Otty，同族）。它的配置里有 <code>background-blur = &lt;强度&gt;</code>，
+默认 20；在 macOS 26 上还多两个特殊值 <code>macos-glass-regular</code> 和 <code>macos-glass-clear</code>。
+两条路它都走了。</p>
+
+<p>第一次去它二进制里找，用 <code>strings</code> 扫「CGS」「SkyLight」<b>一无所获</b>，差点得出「它没用私有接口」的结论。
+真正的位置是<b>导入表</b>：</p>
+
+<pre><code><span class="tok-comment"># strings 扫不到，nm 一眼就看到</span>
+$ nm -u /Applications/Ghostty.app/Contents/MacOS/ghostty | grep CGS
+_CGSDefaultConnectionForThread
+_CGSMainConnectionID
+_CGSSetWindowBackgroundBlurRadius</code></pre>
+
+<div class="callout">
+<span class="label">教训</span>
+<p>符号名住在导入表里，不在字符串段。<code>strings | grep</code> 扫不到<b>不能</b>说明一个 app 没有调用它——
+要用 <code>nm -u</code> 看未定义符号。这一步差点让整条结论反向。</p>
+</div>
+
+<p>这三个符号是 CoreGraphics 正常导出的，Ghostty 直接链接。这是窗口服务器级别的模糊，
+所以既能任意调半径，又完全不在乎窗口里画的是不是 Metal——正是公开 API 给不了的那个组合。</p>
+
+<h3>我们的接法：<code>dlsym</code> 而不是直接链接</h3>
+
+<pre><code><span class="tok-comment">// 直接链接的话，哪天系统拿掉这个符号，app 会启动就崩。</span>
+<span class="tok-comment">// 运行时解析，同样的系统只是没模糊。</span>
+<span class="tok-keyword">private static let</span> entryPoints = {
+    <span class="tok-keyword">guard let</span> c = <span class="tok-fn">dlsym</span>(RTLD_DEFAULT, <span class="tok-string">"CGSMainConnectionID"</span>),
+          <span class="tok-keyword">let</span> r = <span class="tok-fn">dlsym</span>(RTLD_DEFAULT, <span class="tok-string">"CGSSetWindowBackgroundBlurRadius"</span>)
+    <span class="tok-keyword">else</span> { TmuxLog.<span class="tok-fn">lifecycle</span>(<span class="tok-string">"窗口服务器模糊不可用"</span>); <span class="tok-keyword">return nil</span> }
+    <span class="tok-keyword">return</span> (<span class="tok-fn">unsafeBitCast</span>(c, …), <span class="tok-fn">unsafeBitCast</span>(r, …))
+}()</code></pre>
+
+<p>整个私有调用只有一个文件、一次调用。另外两种风格不碰任何私有接口，
+所以「打开它」的那个开关同时也是「关掉它」的开关——要上架 App Store 就切到另外两种。</p>
+
+<h2>5 · Liquid Glass 是 macOS 的，不是 libghostty 的</h2>
+
+<p>一个容易搞混的点：<code>NSGlassEffectView</code> 是 <b>macOS 26 AppKit 的公开类</b>，
+和 libghostty 没有关系。libghostty 只负责渲染终端网格（那些 Metal 图层），
+窗口的玻璃从头到尾是 AppKit 的事。</p>
+
+<pre><code><span class="tok-comment">// MacOSX26.5.sdk/…/AppKit.framework/Headers/NSGlassEffectView.h</span>
+<span class="tok-keyword">@interface</span> <span class="tok-fn">NSGlassEffectView</span>: NSView
+<span class="tok-keyword">@property</span> (nullable, strong) __kindof NSView *contentView;
+<span class="tok-keyword">@property</span> CGFloat cornerRadius;
+<span class="tok-keyword">@property</span> (nullable, copy) NSColor *tintColor;   <span class="tok-comment">// ← 它自己会上色</span>
+<span class="tok-keyword">@property</span> NSGlassEffectViewStyle style;        <span class="tok-comment">// regular / clear</span>
+<span class="tok-keyword">@end</span></code></pre>
+
+<p>最后那行注释是坑：<b>它自己会 tint</b>。如果绘制点再刷一层同样的颜色，
+同一个色就上了两遍——这正是「选了 clear 玻璃却看起来像实心窗口」的成因。</p>
+
+<h3>顺带：那圈 Liquid Glass 镶边</h3>
+
+<p>侧栏原本用的是 <code>NSSplitViewItem</code> 的 sidebar 模式，它在 macOS 26 上会把侧栏画成一块内嵌圆角面板，
+并且给面板的内嵌边距<b>镶一圈 Liquid Glass</b>。那圈镶边就是图 1 里的 ①：它属于 AppKit 拥有的边距，
+盖不住、调不了、关不掉。侧栏因此改成齐边到底。</p>
+
+<div class="callout">
+<span class="label">不要改回去</span>
+<p>项目历史上这块内嵌面板被「修」坏过两次——为了把红绿灯挪进面板而删掉它，结果红绿灯跑到了面板上方。
+这次去掉面板<b>不是</b>那个错误：窗口带 <code>.fullSizeContentView</code>，齐边之后红绿灯仍然浮在侧栏上。
+下次想动之前，先看红绿灯实际在哪。</p>
+</div>
+
+<h2>6 · <code>WindowGlass</code>：一处决定，三处询问</h2>
+
+<p>三套机制把颜色放在不同位置，所以绘制点不能自己判断。
+<code>WindowGlass.resolved()</code> 是唯一做决定的地方，每个绘制点问它要颜色，
+在「已经有别人上色了」的情况下拿到的是 <code>.clear</code>。</p>
+
+<div class="figure">
+<svg viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg" aria-label="WindowGlass 的数据流">
+  <defs>
+    <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5a5751"/>
+    </marker>
+  </defs>
+  <text x="0" y="18" font-weight="600" fill="#1f1e1c">决定在一处，消费在四处</text>
+
+  <rect x="40" y="44" width="180" height="70" rx="8" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="130" y="72" text-anchor="middle" class="label-mono" fill="#5a5751">AppSettings</text>
+  <text x="130" y="92" text-anchor="middle" class="label-faint">风格 · 色层 · 半径 · 侧栏深度</text>
+
+  <line x1="220" y1="79" x2="290" y2="79" stroke="#5a5751" marker-end="url(#arr3)"/>
+
+  <rect x="290" y="40" width="200" height="78" rx="8" fill="#f4e2d6" stroke="#d97757"/>
+  <text x="390" y="70" text-anchor="middle" font-weight="600" fill="#1f1e1c">WindowGlass.resolved()</text>
+  <text x="390" y="92" text-anchor="middle" class="label-faint">唯一做决定的地方</text>
+
+  <line x1="490" y1="60" x2="580" y2="46"  stroke="#5a5751" marker-end="url(#arr3)"/>
+  <line x1="490" y1="72" x2="580" y2="106" stroke="#5a5751" marker-end="url(#arr3)"/>
+  <line x1="490" y1="88" x2="580" y2="166" stroke="#5a5751" marker-end="url(#arr3)"/>
+  <line x1="490" y1="100" x2="580" y2="226" stroke="#5a5751" marker-end="url(#arr3)"/>
+
+  <rect x="580" y="30" width="200" height="34" rx="5" fill="#fff" stroke="#e6e2d4"/>
+  <text x="592" y="52" class="label-mono">PaneGridView → paneFill</text>
+  <rect x="580" y="90" width="200" height="34" rx="5" fill="#fff" stroke="#e6e2d4"/>
+  <text x="592" y="112" class="label-mono">SessionSidebar → railFill</text>
+  <rect x="580" y="150" width="200" height="34" rx="5" fill="#fff" stroke="#e6e2d4"/>
+  <text x="592" y="172" class="label-mono">GlassBackdropView</text>
+  <rect x="580" y="210" width="200" height="34" rx="5" fill="#fff" stroke="#e6e2d4"/>
+  <text x="592" y="232" class="label-mono">WindowServerBlur</text>
+
+  <text x="390" y="270" text-anchor="middle" class="label-mono" fill="#d97757">Liquid Glass 时 paneFill / railFill = .clear</text>
+  <text x="390" y="288" text-anchor="middle" class="label-faint">否则同一个颜色会上两遍</text>
+</svg>
+<div class="caption"><b>图 3.</b> 抽象存在的理由不是整洁，是避免三个文件里各写一遍条件判断——
+其中任何一处判断错，症状都是「颜色深了一倍」或「模糊没了」，而且看不出是谁干的。</div>
+</div>
+
+<h2>7 · 设置项：哪个旋钮属于哪种风格</h2>
+
+<p>三个通用旋钮 + 每种风格一个自己的。设置界面按当前风格显示对应那一个，
+inspector 的 <code>/settings</code> 路由能全部实时驱动（Debug 版、仅回环）。</p>
+
+<table>
+  <thead><tr><th>旋钮</th><th>范围</th><th>属于</th><th>作用</th></tr></thead>
+  <tbody>
+    <tr><td><code>windowOpacity</code></td><td>0 – 1</td><td>通用</td><td>在透出来的结果上再刷多少终端自己的颜色。100% = 实心窗口，也是零开销的那一档</td></tr>
+    <tr><td><code>railExtraTint</code></td><td>0 – 0.5</td><td>通用</td><td>侧栏比内容区深多少。分隔线去掉之后，这是唯一标出两半边界的东西</td></tr>
+    <tr><td><code>glassStyle</code></td><td>三选一</td><td>通用</td><td>选机制本身</td></tr>
+    <tr><td><code>blurRadius</code></td><td>0 – 80 pt</td><td>Blur</td><td>窗口服务器的模糊半径。0 = 清玻璃，桌面是锐的</td></tr>
+    <tr><td><code>liquidGlassIsClear</code></td><td>bool</td><td>Liquid Glass</td><td><code>clear</code> 比 <code>regular</code> 更透</td></tr>
+    <tr><td><code>chromeMaterial</code> / <code>frostiness</code></td><td>8 选 1 / 0 – 1</td><td>System material</td><td>选哪块磨砂板、以及那块板有多少</td></tr>
+  </tbody>
+</table>
+
+<pre><code><span class="tok-comment"># 实时切换，不用重启（Debug 版）</span>
+curl -s -X POST -H <span class="tok-string">'x-tmuxgui-inspect: 1'</span> \
+  <span class="tok-string">'http://127.0.0.1:47623/settings?style=blur&amp;blur=40&amp;windowOpacity=0.35&amp;rail=0.10'</span></code></pre>
+
+<h2>8 · 拿掉任何一块会怎样</h2>
+
+<table>
+  <thead><tr><th>拿掉…</th><th>症状</th><th>严重程度</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>window.isOpaque = false</code></td>
+      <td>三种风格<b>全部失效</b>，而且不报错。材质背后没有桌面可采样，只能采到窗口自己的底色——
+      侧栏那 0.55 的色层就这样空转了很久</td>
+      <td><span class="pill bad">致命</span></td>
+    </tr>
+    <tr>
+      <td>Liquid Glass 时把 <code>paneFill</code> 改回主题色</td>
+      <td>同一个颜色上两遍，clear 玻璃看起来像实心窗口</td>
+      <td><span class="pill bad">高</span></td>
+    </tr>
+    <tr>
+      <td><code>WindowServerBlur</code> 的 <code>dlsym</code> 改成直接链接</td>
+      <td>今天没差别。等哪个 macOS 拿掉这个符号，<b>app 启动就崩</b>，而不是没模糊</td>
+      <td><span class="pill bad">高</span></td>
+    </tr>
+    <tr>
+      <td>切走风格时不再发 <code>blurRadius = 0</code></td>
+      <td>半径存在窗口服务器那边的窗口上，不在进程里。切到别的风格后模糊会一直留着</td>
+      <td><span class="pill warn">中</span></td>
+    </tr>
+    <tr>
+      <td><code>PaneGridView</code> 的填充和 <code>window.backgroundColor</code> 不再一致</td>
+      <td>macOS 26 上那个视图的图层比自身高出 66pt，溢出部分画的是<b>窗口</b>的颜色。
+      两个相近的灰看不出来，两种不同的透明度叠在同一片桌面上一眼就看出来</td>
+      <td><span class="pill warn">中</span></td>
+    </tr>
+    <tr>
+      <td>把 split view 换成自己造的（为了去掉分隔线）</td>
+      <td>窗口<b>整个空白</b>，没有任何报错。<code>NSSplitViewController</code> 会自己建并接线，
+      补 <code>delegate</code> 也补不回来。现在的做法是给它已经建好的实例换类</td>
+      <td><span class="pill bad">高</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>9 · 没有验证的部分</h2>
+
+<p>说清楚比含糊过去重要：<b>这三种风格具体长什么样，写代码的人一次都没看见。</b></p>
+
+<p>app 自己的截图路由用 <code>CGWindowListCreateImage</code>，它只合成那一个窗口、不合成窗口背后的桌面——
+所以在半透明窗口上拿到的是材质「没有背景可采样」时的兜底灰：把窗口挪开一千点再拍，256 级里只差 1 级。
+<code>screencapture</code> 能拍到真实合成结果，但需要屏幕录制权限，而 agent 所在的 shell 没有。</p>
+
+<p>能验证的都验证了：四种配置都能正常绘制、侧栏和内容区颜色不同、文字在、冒烟测试通过、
+私有符号解析成功（启动日志有一行 <code>window-server blur available</code>）。
+「好不好看」这一项，只有人能签字。</p>
+
+<div class="footer">
+  <span>TmuxGUI · docs/window-glass.html</span>
+  <span>2026-07-28 · f0c2baf…fcf6450</span>
+</div>
+
+</div>
+</body>
+</html>
