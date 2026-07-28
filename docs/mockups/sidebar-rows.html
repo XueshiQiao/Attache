@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TmuxGUI · sidebar row options</title>
+<style>
+  :root{
+    /* Derived the way ChromeTheme.swift derives them, from Afterglow
+       (bg #212121, fg #d0d0d0) — the app's default dark scheme. */
+    --bg:        #2b2b2b;   /* blend(term-bg -> fg, 0.06) */
+    --rail:      #212121;   /* blend(bg -> black, 0.22)   */
+    --text:      #d0d0d0;
+    --muted:     #8e8e8e;   /* blend(bg -> fg, 0.60) */
+    --faint:     #6d6d6d;   /* blend(bg -> fg, 0.40) */
+    --hover:     #3a3a3a;   /* blend(bg -> fg, 0.09) */
+    --accent:    #4e7fb8;
+    --onAccent:  #ffffff;
+
+    --working:  #5aa9e6;
+    --needsyou: #e8a33d;
+    --done:     #5fbf7f;
+    --failed:   #e05c5c;
+
+    --page:     #17181a;
+    --card:     #1e1f22;
+    --edge:     #2f3136;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--page);
+    color:var(--text);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+    padding:34px 30px 90px;
+  }
+  h1{font-size:20px;font-weight:600;margin:0 0 6px;letter-spacing:-.01em}
+  .sub{color:var(--muted);font-size:13px;max-width:76ch;margin:0 0 26px}
+  .sub code{background:#0000004d;padding:1px 5px;border-radius:4px;font-size:12px}
+
+  /* ---- width control ---------------------------------------------- */
+  .ctl{
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    background:var(--card);border:1px solid var(--edge);border-radius:10px;
+    padding:13px 17px;margin-bottom:28px;position:sticky;top:12px;z-index:20;
+    box-shadow:0 6px 22px #0000006b;
+  }
+  .ctl label{font-size:12.5px;color:var(--muted);white-space:nowrap}
+  .ctl input[type=range]{width:280px;accent-color:var(--accent)}
+  .val{font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);
+       min-width:104px;display:inline-block}
+  .pill{font-size:11.5px;color:var(--faint);border:1px solid var(--edge);
+        border-radius:20px;padding:3px 11px}
+  .ctl button{
+    background:#2a2c30;color:var(--text);border:1px solid var(--edge);
+    border-radius:7px;padding:5px 12px;font-size:12.5px;cursor:pointer;font-family:inherit;
+  }
+  .ctl button:hover{background:#34373c}
+
+  /* ---- layout ------------------------------------------------------ */
+  .grid{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
+  .col{background:var(--card);border:1px solid var(--edge);border-radius:12px;
+       padding:15px 15px 18px;flex:0 0 auto}
+  .col > h2{font-size:13.5px;font-weight:600;margin:0 0 3px;letter-spacing:0}
+  .col > .why{font-size:11.5px;color:var(--muted);margin:0 0 13px;
+              max-width:26ch;min-height:4.2em;line-height:1.5}
+  .tag{display:inline-block;font-size:10px;letter-spacing:.05em;text-transform:uppercase;
+       color:var(--faint);border:1px solid var(--edge);border-radius:4px;padding:1px 6px;
+       margin-left:7px;vertical-align:2px;font-weight:600}
+  .tag.rec{color:#8fd0a5;border-color:#3c6b4e}
+
+  /* ---- the rail ---------------------------------------------------- */
+  .rail{
+    background:var(--rail);border-radius:9px;overflow:hidden;
+    padding:9px 0 12px;width:168px;transition:width .12s ease;
+    box-shadow:inset 0 0 0 1px #ffffff0d;
+  }
+  .rows{padding:0 6px}
+
+  .shead{
+    height:24px;border-radius:6px;display:flex;align-items:center;
+    padding:0 6px 0 4px;margin-top:9px;gap:6px;
+  }
+  .shead:first-child{margin-top:0}
+  .shead .chev{color:var(--faint);font-size:8px;width:14px;text-align:center;flex:0 0 14px}
+  .shead .nm{font-size:10px;font-weight:600;letter-spacing:.55px;color:var(--faint);
+             text-transform:uppercase;white-space:nowrap;overflow:hidden;
+             text-overflow:ellipsis;flex:1 1 auto}
+  .shead.cur .nm{color:var(--text)}
+  .shead .ct{font:10.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--faint);flex:0 0 auto}
+
+  .wrow{
+    border-radius:6px;margin-top:1px;padding:0 8px 0 0;
+    display:grid;grid-template-columns:28px 1fr;align-items:start;
+    column-gap:10px;overflow:hidden;
+  }
+  .wrow.one{height:27px;align-items:center}
+  .wrow.two{padding-top:4px;padding-bottom:5px}
+  .wrow.active{background:var(--accent)}
+  .wrow.hov{background:var(--hover)}
+  .idx{font:10.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--faint);
+       text-align:right;padding-left:14px}
+  .wrow.two .idx{padding-top:3px}
+  .wrow.active .idx{color:#ffffffb3}
+  .body{min-width:0}
+  .l1{display:flex;align-items:center;gap:6px;min-width:0}
+  .nm2{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;
+       text-overflow:ellipsis;flex:1 1 auto}
+  .wrow.active .nm2{color:var(--onAccent);font-weight:600}
+  .wrow.hov .nm2{color:var(--text)}
+
+  /* line two — git */
+  .l2{
+    display:flex;align-items:center;gap:5px;margin-top:1px;min-width:0;
+    font:10.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:var(--faint);white-space:nowrap;overflow:hidden;
+  }
+  .wrow.active .l2{color:#ffffff9e}
+  .l2 .br{color:var(--muted);overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
+  .wrow.active .l2 .br{color:#ffffffd6}
+  .l2 .dirty{color:#d9a441;flex:0 0 auto}
+  .l2 .sync{color:#7fb2df;flex:0 0 auto}
+  .l2 .clean{color:#5fbf7f;flex:0 0 auto}
+  .wrow.active .l2 .dirty,.wrow.active .l2 .sync,.wrow.active .l2 .clean{color:#ffffffcc}
+  .l2 .none{color:var(--faint);font-style:italic;font-family:inherit;font-size:10.5px}
+
+  /* agent chips / dots */
+  .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  .dot.working {background:var(--working)}
+  .dot.needsyou{background:var(--needsyou)}
+  .dot.done    {background:var(--done)}
+  .dot.act     {background:#e8a33d}
+  .ring{
+    width:9px;height:9px;border-radius:50%;flex:0 0 auto;position:relative;
+    border:1.6px solid var(--working);border-right-color:transparent;
+    animation:spin 1.05s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes breathe{0%,100%{opacity:1}50%{opacity:.32}}
+  .dot.needsyou.pulse{animation:breathe 1.5s ease-in-out infinite}
+
+  .chip{
+    font:9.5px/1 -apple-system,BlinkMacSystemFont,sans-serif;font-weight:600;
+    letter-spacing:.02em;padding:2.5px 6px;border-radius:20px;flex:0 0 auto;
+    white-space:nowrap;text-transform:uppercase;
+  }
+  .chip.needsyou{background:#e8a33d;color:#231602}
+  .chip.working {background:#5aa9e633;color:#9fd0f5}
+  .chip.done    {background:#5fbf7f2e;color:#8fd8a8}
+
+  .agentline{
+    display:flex;align-items:center;gap:6px;margin-top:2px;min-width:0;
+    font:10.5px/1.35 -apple-system,BlinkMacSystemFont,sans-serif;white-space:nowrap;overflow:hidden;
+  }
+  .agentline .who{color:var(--muted);overflow:hidden;text-overflow:ellipsis}
+  .agentline.needsyou .who{color:#e8a33d;font-weight:600}
+  .agentline.working  .who{color:#8fc4ea}
+  .agentline.done     .who{color:#8fd8a8}
+  .agentline .ago{color:var(--faint);flex:0 0 auto;
+                  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:9.5px}
+
+  /* variant C — left stripe */
+  .wrow.striped{position:relative;padding-left:0}
+  .stripe{position:absolute;left:0;top:3px;bottom:3px;width:2.5px;border-radius:2px}
+  .stripe.working{background:var(--working)}
+  .stripe.needsyou{background:var(--needsyou)}
+  .stripe.done{background:var(--done)}
+
+  .hidden{font-size:10.5px;color:var(--faint);padding:0 0 0 32px;height:20px;
+          display:flex;align-items:center;margin-top:1px}
+
+  .note{font-size:11px;color:var(--faint);margin-top:13px;line-height:1.6;max-width:26ch}
+  .note b{color:var(--muted);font-weight:600}
+
+  .legend{margin-top:34px;background:var(--card);border:1px solid var(--edge);
+          border-radius:12px;padding:17px 20px}
+  .legend h3{font-size:13.5px;margin:0 0 11px;font-weight:600}
+  .legend table{border-collapse:collapse;font-size:12.5px;width:100%}
+  .legend td,.legend th{padding:6px 13px 6px 0;text-align:left;vertical-align:top;
+                        border-bottom:1px solid #ffffff0f}
+  .legend th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;
+             letter-spacing:.04em}
+  .legend td:first-child{white-space:nowrap;color:var(--text)}
+  .legend td.d{color:var(--muted)}
+  .sw{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;
+      vertical-align:-1px}
+  .warn{color:#e8a33d}
+</style>
+</head>
+<body>
+
+<h1>Sidebar rows — four ways to fit Git + agent status</h1>
+<p class="sub">
+  Drawn at the app's real numbers: <code>ChromeTheme</code> derived from Afterglow, rows inset
+  6&nbsp;pt, index column at 14&nbsp;pt, name at 12&nbsp;pt, second line at 10.5&nbsp;pt mono.
+  <b>Drag the slider</b> — the default sidebar is only <b>168&nbsp;pt</b> wide, which is the whole
+  design problem: at that width the second line holds roughly 20 characters.
+</p>
+
+<div class="ctl">
+  <label for="w">Sidebar width</label>
+  <input type="range" id="w" min="120" max="400" value="168" step="1">
+  <span class="val" id="wv">168 pt (default)</span>
+  <span class="pill">range in AppSettings: 120–400</span>
+  <button id="snap168">168</button>
+  <button id="snap220">220</button>
+  <button id="snap300">300</button>
+</div>
+
+<div class="grid">
+
+  <!-- ============ A ============ -->
+  <div class="col">
+    <h2>A · Git on line 2, agent as a dot<span class="tag rec">recommended</span></h2>
+    <p class="why">The agent is a coloured dot where the activity dot already is. Git text never
+      moves or disappears, so the row's shape is constant.</p>
+    <div class="rail">
+      <div class="rows">
+        <div class="shead cur"><span class="chev">▾</span><span class="nm">main</span><span class="ct">+</span></div>
+
+        <div class="wrow two active">
+          <div class="idx">9</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">tmux-gui</span><span class="ring"></span></div>
+            <div class="l2"><span class="br">main</span><span class="dirty">+3 ~1</span><span class="sync">↑2</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two">
+          <div class="idx">18</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">blog</span><span class="dot needsyou pulse"></span></div>
+            <div class="l2"><span class="br">post/glass-note</span><span class="dirty">~2</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two hov">
+          <div class="idx">2</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">PastePaw</span><span class="dot done"></span></div>
+            <div class="l2"><span class="br">main</span><span class="clean">✓</span><span class="sync">↓1</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two">
+          <div class="idx">4</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">AnyDrag</span></div>
+            <div class="l2"><span class="br">release/2.4</span><span class="dirty">+11</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two">
+          <div class="idx">12</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">zsh</span></div>
+            <div class="l2"><span class="none">~ · not a repo</span></div>
+          </div>
+        </div>
+
+        <div class="hidden">2 hidden</div>
+      </div>
+    </div>
+    <p class="note"><b>Row height 40 pt</b> (was 27). Agent needs 9 pt on line 1 — it eats into the
+      window name, which is the one thing you already know.</p>
+  </div>
+
+  <!-- ============ B ============ -->
+  <div class="col">
+    <h2>B · One shared line, agent wins</h2>
+    <p class="why">Line 2 shows the agent while it is doing something, and falls back to Git when it
+      is not. Most information per pixel; the line changes meaning under you.</p>
+    <div class="rail">
+      <div class="rows">
+        <div class="shead cur"><span class="chev">▾</span><span class="nm">main</span><span class="ct">+</span></div>
+
+        <div class="wrow two active">
+          <div class="idx">9</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">tmux-gui</span></div>
+            <div class="agentline working"><span class="ring"></span><span class="who">Claude · working</span><span class="ago">2m</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two">
+          <div class="idx">18</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">blog</span></div>
+            <div class="agentline needsyou"><span class="dot needsyou pulse"></span><span class="who">needs you</span><span class="ago">14s</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two hov">
+          <div class="idx">2</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">PastePaw</span></div>
+            <div class="agentline done"><span class="dot done"></span><span class="who">done</span><span class="ago">6m</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two">
+          <div class="idx">4</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">AnyDrag</span></div>
+            <div class="l2"><span class="br">release/2.4</span><span class="dirty">+11</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two">
+          <div class="idx">12</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">zsh</span></div>
+            <div class="l2"><span class="none">~ · not a repo</span></div>
+          </div>
+        </div>
+
+        <div class="hidden">2 hidden</div>
+      </div>
+    </div>
+    <p class="note"><b>Row height 40 pt.</b> Full width for whichever line matters.
+      <span class="warn">Cost:</span> while an agent runs you cannot see that branch's Git state at
+      all, and the row's text changes on its own.</p>
+  </div>
+
+  <!-- ============ C ============ -->
+  <div class="col">
+    <h2>C · Colour stripe down the edge</h2>
+    <p class="why">Agent state is a 2.5&nbsp;pt bar on the row's leading edge — zero text width used.
+      Scans down the whole list in one look.</p>
+    <div class="rail">
+      <div class="rows">
+        <div class="shead cur"><span class="chev">▾</span><span class="nm">main</span><span class="ct">+</span></div>
+
+        <div class="wrow two striped active">
+          <span class="stripe working"></span>
+          <div class="idx">9</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">tmux-gui</span></div>
+            <div class="l2"><span class="br">main</span><span class="dirty">+3 ~1</span><span class="sync">↑2</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two striped">
+          <span class="stripe needsyou"></span>
+          <div class="idx">18</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">blog</span></div>
+            <div class="l2"><span class="br">post/glass-note</span><span class="dirty">~2</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two striped hov">
+          <span class="stripe done"></span>
+          <div class="idx">2</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">PastePaw</span></div>
+            <div class="l2"><span class="br">main</span><span class="clean">✓</span><span class="sync">↓1</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two striped">
+          <div class="idx">4</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">AnyDrag</span></div>
+            <div class="l2"><span class="br">release/2.4</span><span class="dirty">+11</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two striped">
+          <div class="idx">12</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">zsh</span></div>
+            <div class="l2"><span class="none">~ · not a repo</span></div>
+          </div>
+        </div>
+
+        <div class="hidden">2 hidden</div>
+      </div>
+    </div>
+    <p class="note">Widest text of the four. <span class="warn">Cost:</span> a colour with no word
+      next to it has to be learned, and it collides with the active row's accent fill.</p>
+  </div>
+
+  <!-- ============ D ============ -->
+  <div class="col">
+    <h2>D · Agent chip on line 1, Git on line 2</h2>
+    <p class="why">Only the state that actually interrupts you gets words; working and done stay
+      quiet. The chip is a real word, so nothing has to be learned.</p>
+    <div class="rail">
+      <div class="rows">
+        <div class="shead cur"><span class="chev">▾</span><span class="nm">main</span><span class="ct">+</span></div>
+
+        <div class="wrow two active">
+          <div class="idx">9</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">tmux-gui</span><span class="ring"></span></div>
+            <div class="l2"><span class="br">main</span><span class="dirty">+3 ~1</span><span class="sync">↑2</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two">
+          <div class="idx">18</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">blog</span><span class="chip needsyou">needs you</span></div>
+            <div class="l2"><span class="br">post/glass-note</span><span class="dirty">~2</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two hov">
+          <div class="idx">2</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">PastePaw</span><span class="dot done"></span></div>
+            <div class="l2"><span class="br">main</span><span class="clean">✓</span><span class="sync">↓1</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two">
+          <div class="idx">4</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">AnyDrag</span></div>
+            <div class="l2"><span class="br">release/2.4</span><span class="dirty">+11</span></div>
+          </div>
+        </div>
+
+        <div class="wrow two">
+          <div class="idx">12</div>
+          <div class="body">
+            <div class="l1"><span class="nm2">zsh</span></div>
+            <div class="l2"><span class="none">~ · not a repo</span></div>
+          </div>
+        </div>
+
+        <div class="hidden">2 hidden</div>
+      </div>
+    </div>
+    <p class="note"><b>Row height 40 pt.</b> <span class="warn">Cost:</span> at 168 pt the chip
+      squeezes the window name hard — drag the slider to 220 and watch it stop fighting.</p>
+  </div>
+
+</div>
+
+<div class="legend">
+  <h3>What each mark means</h3>
+  <table>
+    <tr><th style="width:170px">Mark</th><th>Meaning</th><th>Where the value comes from</th></tr>
+    <tr>
+      <td><span class="ring" style="display:inline-block;vertical-align:-1px"></span> spinner</td>
+      <td class="d">Agent is working</td>
+      <td class="d">tmux pane option <code>@agent_state=working</code></td>
+    </tr>
+    <tr>
+      <td><span class="sw" style="background:#e8a33d"></span> amber, breathing</td>
+      <td class="d">Agent is blocked on you — permission or a question</td>
+      <td class="d"><code>@agent_state=needs-input</code></td>
+    </tr>
+    <tr>
+      <td><span class="sw" style="background:#5fbf7f"></span> green</td>
+      <td class="d">Agent finished its turn (fades after a few minutes)</td>
+      <td class="d"><code>@agent_state=done</code></td>
+    </tr>
+    <tr>
+      <td><code style="color:#8e8e8e">main</code></td>
+      <td class="d">Current branch, truncated from the left when long</td>
+      <td class="d"><code>git status --porcelain=v2 --branch</code></td>
+    </tr>
+    <tr>
+      <td><code style="color:#d9a441">+3 ~1</code></td>
+      <td class="d">3 staged / added, 1 modified but unstaged</td>
+      <td class="d">same call, one pass</td>
+    </tr>
+    <tr>
+      <td><code style="color:#7fb2df">↑2 ↓1</code></td>
+      <td class="d">2 commits to push, 1 to pull — <b>against the last fetch, not the network</b></td>
+      <td class="d"><code># branch.ab</code> line</td>
+    </tr>
+    <tr>
+      <td><code style="color:#5fbf7f">✓</code></td>
+      <td class="d">Clean tree</td>
+      <td class="d">no entries in the porcelain output</td>
+    </tr>
+  </table>
+</div>
+
+<script>
+  const w = document.getElementById('w'), wv = document.getElementById('wv');
+  const rails = document.querySelectorAll('.rail');
+  function apply(v){
+    rails.forEach(r => r.style.width = v + 'px');
+    wv.textContent = v + ' pt' + (v === 168 ? ' (default)' : '');
+  }
+  w.addEventListener('input', e => apply(+e.target.value));
+  document.getElementById('snap168').onclick = () => { w.value = 168; apply(168); };
+  document.getElementById('snap220').onclick = () => { w.value = 220; apply(220); };
+  document.getElementById('snap300').onclick = () => { w.value = 300; apply(300); };
+  apply(168);
+</script>
+</body>
+</html>
