@@ -15,6 +15,33 @@ import Foundation
 /// about a repaint needs a running app, a GPU surface and someone to look at
 /// the result — which on a machine whose displays are asleep is not available
 /// at all.
+///
+/// ## Why the order is what it is
+///
+/// Almost every sequence here has a side effect on the cursor or on which
+/// buffer is being written to, so this is a sequence of steps rather than a
+/// bag of settings:
+///
+/// 1. **The primary screen, on a first paint.** History belongs in the primary
+///    buffer's scrollback — that is where a real terminal put it — so the
+///    replay starts there whatever the pane is doing now.
+/// 2. **Erase.** A repaint replaces the screen rather than adding to it, and a
+///    first paint has to replace whatever `TmuxOutputRouter.register` handed
+///    over a moment earlier, or the snapshot is a second copy of it.
+/// 3. **History, on a first paint only.** A repaint's scrollback is real and
+///    nothing here replaces it.
+/// 4. **The alternate screen, if the pane is on it.** After the history, so
+///    vim's screen does not land in the scrollback, and before the rows, so
+///    they land on the buffer they belong to. Emitted either way on a repaint,
+///    because a program that has *exited* since the last paint needs the
+///    switch back as much as one that just started needs the switch in.
+/// 5. **The rows.**
+/// 6. **The scroll region**, which homes the cursor, so it cannot come after
+///    the cursor is placed.
+/// 7. **Origin mode**, which also homes the cursor *and* changes what a cursor
+///    position means.
+/// 8. **Everything else**, none of which moves the cursor.
+/// 9. **The cursor.**
 enum TmuxScreenReplay {
     /// - Parameter isFirstPaint: whether this is the first thing a pane's
     ///   surface has ever been shown. It decides two things that must not
@@ -23,10 +50,12 @@ enum TmuxScreenReplay {
     static func payload(
         for snapshot: TmuxPaneSnapshot, isFirstPaint: Bool
     ) -> Data {
-        // Home and erase. A repaint is replacing the screen, not adding to it.
-        var payload = Data(Array("\u{1b}[H\u{1b}[2J".utf8))
+        var payload = Data()
+        let alternate = snapshot.modes?.alternateScreen ?? false
 
         if isFirstPaint {
+            payload += esc("[?1049l")
+            payload += esc("[H") + esc("[2J")
             // `CSI 3 J` — erase saved lines. Asked for rather than relied on:
             // if this build of libghostty does not implement it the sequence is
             // ignored, and the residue is that output the router had already
@@ -39,14 +68,24 @@ enum TmuxScreenReplay {
             // so erasing the scrollback there would throw away history nothing
             // is about to replace — the pane's own, going back to before the
             // app was running.
-            payload.append(contentsOf: Array("\u{1b}[3J".utf8))
+            payload += esc("[3J")
             append(snapshot.history, to: &payload)
             // Separator, so the first row of the screen starts a line of its
             // own rather than continuing the last line of the history.
-            if !snapshot.history.isEmpty { payload.append(contentsOf: [0x0d, 0x0a]) }
+            if !snapshot.history.isEmpty { payload += crlf }
+
+            // Deliberately no second erase when the pane is *not* on the
+            // alternate screen: the last rows of the history are still in the
+            // viewport, mid-scroll, and clearing here would punch a hole
+            // between the scrollback and the screen.
+            if alternate { payload += esc("[?1049h") + esc("[H") + esc("[2J") }
+        } else {
+            payload += esc(alternate ? "[?1049h" : "[?1049l")
+            payload += esc("[H") + esc("[2J")
         }
 
         append(snapshot.screen, to: &payload)
+        if let modes = snapshot.modes { payload += modeSequences(modes) }
 
         // Put the cursor back where tmux has it. Writing the rows leaves it
         // after the last byte of the last one — the end of the bottom-most line
@@ -62,9 +101,76 @@ enum TmuxScreenReplay {
         // viewport, viewport row 0 is screen row 0. See
         // `TmuxSessionConnection.capturePane`.
         if let cursor = snapshot.cursor {
-            payload.append(contentsOf: Array("\u{1b}[\(cursor.row + 1);\(cursor.column + 1)H".utf8))
+            payload += esc("[\(cursorRow(cursor, snapshot.modes));\(cursor.column + 1)H")
         }
         return payload
+    }
+
+    /// The row for `CUP`, one-based, in whatever coordinate system origin mode
+    /// has just put the terminal in.
+    ///
+    /// tmux reports the cursor's *screen* row even when origin mode is on —
+    /// measured on 3.6a — and `CUP` under origin mode counts from the top of
+    /// the scroll region. Sending tmux's number straight through would put the
+    /// cursor `scroll_region_upper` rows too far down, silently, on exactly the
+    /// programs that use a scroll region.
+    private static func cursorRow(_ cursor: TmuxPaneCursor, _ modes: TmuxPaneModes?) -> Int {
+        guard let modes, modes.origin else { return cursor.row + 1 }
+        return max(1, cursor.row - modes.scrollRegionUpper + 1)
+    }
+
+    /// Every mode, in an order chosen so that nothing later undoes something
+    /// earlier. See the type's own note.
+    private static func modeSequences(_ modes: TmuxPaneModes) -> Data {
+        var payload = Data()
+
+        // DECSTBM first: it homes the cursor. One-based on the wire, zero-based
+        // from tmux.
+        payload += esc("[\(modes.scrollRegionUpper + 1);\(modes.scrollRegionLower + 1)r")
+        // DECOM second, for the same reason and one more: it decides what the
+        // cursor position at the end of this means.
+        payload += esc(modes.origin ? "[?6h" : "[?6l")
+
+        payload += esc(modes.cursorVisible ? "[?25h" : "[?25l")
+        payload += esc(modes.wrap ? "[?7h" : "[?7l")
+        payload += esc(modes.insert ? "[4h" : "[4l")
+        payload += esc(modes.applicationCursorKeys ? "[?1h" : "[?1l")
+        // Not a CSI: DECKPAM and DECKPNM are two-byte sequences.
+        payload += esc(modes.applicationKeypad ? "=" : ">")
+
+        // The mouse modes are why the wheel over a `less` or a vim pane
+        // scrolled libghostty's own buffer instead of reaching the program.
+        payload += esc(modes.mouseStandard ? "[?1000h" : "[?1000l")
+        payload += esc(modes.mouseButton ? "[?1002h" : "[?1002l")
+        payload += esc(modes.mouseAll ? "[?1003h" : "[?1003l")
+        payload += esc(modes.mouseSGR ? "[?1006h" : "[?1006l")
+        payload += esc(modes.mouseUTF8 ? "[?1005h" : "[?1005l")
+
+        payload += esc("[\(decscusr(modes)) q")
+        // Carried separately because tmux does: `CSI ?12h` sets
+        // `cursor_blinking` while leaving the shape at `default`, which
+        // DECSCUSR 0 cannot express.
+        payload += esc(modes.cursorBlinking ? "[?12h" : "[?12l")
+        return payload
+    }
+
+    /// tmux's shape word and blink flag back into one DECSCUSR parameter.
+    /// The mapping was measured rather than assumed; see `TmuxPaneModes`.
+    private static func decscusr(_ modes: TmuxPaneModes) -> Int {
+        switch modes.cursorShape {
+        case "block": modes.cursorBlinking ? 1 : 2
+        case "underline": modes.cursorBlinking ? 3 : 4
+        case "bar": modes.cursorBlinking ? 5 : 6
+        // Including any word a future tmux invents: "leave it alone" is the
+        // one answer that cannot be wrong about a shape this does not know.
+        default: 0
+        }
+    }
+
+    private static let crlf = Data([0x0d, 0x0a])
+
+    private static func esc(_ tail: String) -> Data {
+        Data(Array("\u{1b}\(tail)".utf8))
     }
 
     /// Rows joined by CR LF, with none after the last — a trailing newline
@@ -75,8 +181,8 @@ enum TmuxScreenReplay {
     /// down a row without returning to column one.
     private static func append(_ rows: [Data], to payload: inout Data) {
         for (index, row) in rows.enumerated() {
-            if index > 0 { payload.append(contentsOf: [0x0d, 0x0a]) }
-            payload.append(row)
+            if index > 0 { payload += crlf }
+            payload += row
         }
     }
 }

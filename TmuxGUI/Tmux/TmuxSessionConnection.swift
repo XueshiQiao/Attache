@@ -427,16 +427,21 @@ final class TmuxSessionConnection {
     ) {
         captureHistory(paneID: paneID, lines: historyLines) { [weak self] history in
             guard let self else {
-                completion(TmuxPaneSnapshot(history: [], screen: [], cursor: nil))
+                completion(TmuxPaneSnapshot(
+                    history: [], screen: [], cursor: nil, modes: nil
+                ))
                 return
             }
             self.client.runBytes("capture-pane -p -e -t \(paneID)") { [weak self] output, failed in
                 guard let self, !failed else {
-                    completion(TmuxPaneSnapshot(history: history, screen: [], cursor: nil))
+                    completion(TmuxPaneSnapshot(
+                        history: history, screen: [], cursor: nil, modes: nil
+                    ))
                     return
                 }
-                self.client.run("display-message -p -t \(paneID) '#{cursor_x},#{cursor_y}'") { reply, failed in
-                    let cursor = failed ? nil : Self.parseCursor(reply.first)
+                self.client.run("display-message -p -t \(paneID) '\(Self.stateFormat)'") { reply, failed in
+                    let state = failed ? nil : Self.parseState(reply.first)
+                    let cursor = state?.cursor
                     completion(TmuxPaneSnapshot(
                         history: history,
                         // Every row when the cursor is known, because the
@@ -447,7 +452,8 @@ final class TmuxSessionConnection {
                         // an otherwise empty screen — the old behaviour, kept
                         // for the one case that still needs it.
                         screen: cursor == nil ? Self.trimmingTrailingBlanks(output) : output,
-                        cursor: cursor
+                        cursor: cursor,
+                        modes: state?.modes
                     ))
                 }
             }
@@ -468,12 +474,75 @@ final class TmuxSessionConnection {
         }
     }
 
-    private static func parseCursor(_ reply: String?) -> TmuxPaneCursor? {
-        let parts = (reply ?? "").split(separator: ",")
-        guard parts.count == 2, let column = Int(parts[0]), let row = Int(parts[1]),
-              column >= 0, row >= 0
+    /// The pane's cursor and every mode it is in, as one `display-message`.
+    ///
+    /// Comma-separated and positional rather than `key=value`, because every
+    /// value here is either digits or one of tmux's four cursor-shape words —
+    /// none of them can contain a comma, and a positional list cannot be
+    /// half-parsed into something plausible the way a key-value list can.
+    ///
+    /// Every variable was checked against tmux 3.6a with `less --mouse`
+    /// running before being relied on. A variable this tmux does not have
+    /// expands to nothing, which shortens the reply and makes the field-count
+    /// guard below reject the whole thing rather than shift every later field
+    /// left by one.
+    private static let stateFormat = [
+        "#{cursor_x}", "#{cursor_y}",
+        "#{alternate_on}", "#{cursor_flag}", "#{wrap_flag}", "#{insert_flag}",
+        "#{origin_flag}", "#{keypad_cursor_flag}", "#{keypad_flag}",
+        "#{mouse_standard_flag}", "#{mouse_button_flag}", "#{mouse_all_flag}",
+        "#{mouse_sgr_flag}", "#{mouse_utf8_flag}",
+        "#{scroll_region_upper}", "#{scroll_region_lower}",
+        "#{cursor_shape}", "#{cursor_blinking}",
+    ].joined(separator: ",")
+
+    private struct PaneState {
+        let cursor: TmuxPaneCursor
+        let modes: TmuxPaneModes
+    }
+
+    /// All or nothing. A half-read reply would put the app in some *other*
+    /// terminal's modes, which is worse than staying in none of them — and the
+    /// caller already has a well-defined behaviour for "tmux would not say".
+    private static func parseState(_ reply: String?) -> PaneState? {
+        // Empty fields kept: `split` drops them by default, and a variable
+        // that expanded to nothing would then shift every later field left
+        // instead of failing the count.
+        let parts = (reply ?? "").split(separator: ",", omittingEmptySubsequences: false)
+        guard parts.count == 18 else { return nil }
+        let numbers = parts.map { Int($0) }
+        func flag(_ index: Int) -> Bool? { numbers[index].map { $0 != 0 } }
+
+        guard let column = numbers[0], let row = numbers[1], column >= 0, row >= 0,
+              let alternate = flag(2), let cursorVisible = flag(3), let wrap = flag(4),
+              let insert = flag(5), let origin = flag(6), let cursorKeys = flag(7),
+              let keypad = flag(8), let mouseStandard = flag(9), let mouseButton = flag(10),
+              let mouseAll = flag(11), let mouseSGR = flag(12), let mouseUTF8 = flag(13),
+              let upper = numbers[14], let lower = numbers[15], upper >= 0, lower >= upper,
+              let blinking = flag(17)
         else { return nil }
-        return TmuxPaneCursor(column: column, row: row)
+
+        return PaneState(
+            cursor: TmuxPaneCursor(column: column, row: row),
+            modes: TmuxPaneModes(
+                alternateScreen: alternate,
+                cursorVisible: cursorVisible,
+                wrap: wrap,
+                insert: insert,
+                origin: origin,
+                applicationCursorKeys: cursorKeys,
+                applicationKeypad: keypad,
+                mouseStandard: mouseStandard,
+                mouseButton: mouseButton,
+                mouseAll: mouseAll,
+                mouseSGR: mouseSGR,
+                mouseUTF8: mouseUTF8,
+                scrollRegionUpper: upper,
+                scrollRegionLower: lower,
+                cursorShape: String(parts[16]),
+                cursorBlinking: blinking
+            )
+        )
     }
 
     /// `capture-pane` returns one line per row of the pane, blanks included.
