@@ -602,10 +602,15 @@ final class MainViewController: NSSplitViewController {
     private func discardControllersForVanishedSessions() {
         let live = Set(server.sessionIDs)
         for (id, controller) in controllers where !live.contains(id) {
+            // The name comes off the controller's own connection, not from
+            // `describe`: `TmuxServer` has already dropped the connection this
+            // id would be looked up through by the time this runs, so the
+            // lookup would fail on every line it is wanted for.
+            let name = controller.connection.sessionName
             TmuxLog.lifecycle(
-                "dropping the view controller for \(describe(id)) — the session is gone"
+                "dropping the view controller for \(id) (\(name)) — the session is gone"
                     + " from the server",
-                session: id
+                session: name
             )
             controller.releaseSurfaces()
             controller.view.removeFromSuperview()
