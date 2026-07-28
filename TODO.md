@@ -10,8 +10,10 @@ section 2's two deliberate build differences, section 5's features, and section
 6's never-reviewed subsystems. **Section 5's translucency is the largest thing
 not started.**
 
-Three things in 4b were fixed but *not* watched running, and they are the first
-thing to check when someone is at the machine — see [the end of 4b](#not-seen-running).
+Everything in 4b has been watched running as well as measured — the last of it
+on 2026-07-28, once the machine's displays were awake again. What that took,
+and the one thing still resting on inference rather than a count, is at
+[the end of 4b](#what-a-person-confirmed-and-what-is-still-on-trust).
 
 ---
 
@@ -462,17 +464,20 @@ Confirmed once the screen was awake again:
   confirmed by the owner. That is the half of 4b.7 that lives in the menu and
   the file write; the tmux exchange was already verified.
 
-Still on trust, and worth a look by whoever is next at the machine:
+- **Scrolling a pane up on arriving at a session**, and **`less`/`vim` taking
+  the scroll wheel after a window switch** — both looked at by the owner, both
+  fine. Those are the halves of 4b.3 and 4b.6 that live inside libghostty and
+  cannot be read from outside it.
 
-- [ ] **Scroll a pane up on arriving at a session.** The history should be
-      there, once. The screenshot above is strong indirect evidence — the
-      history is no longer in the viewport, so it went somewhere, and the only
-      somewhere is the scrollback — but nothing outside the app can read
-      libghostty's buffer, so nobody has counted the copies.
-- [ ] **A pane running `less` or `vim` should take the scroll wheel after a
-      window switch, and `htop` should not gain a stray cursor.** That is 4b.3
-      arriving. The owner reports it looks right; it is the item with the most
-      sequences and the least deliberate observation behind it.
+One thing is still inference rather than a count: **nobody has counted the
+copies in the scrollback.** A duplicate of the last screenful would have been
+plain to see when scrolling up and was not there, and the screenshot above
+shows the history is no longer in the viewport — so it went somewhere, and the
+only somewhere is the scrollback. But `readViewportText` reads the visible rows
+only, the surface handle the scroll bindings hang off is not public, and a
+`/text` debug route written to settle this returned `<no surface to read>` on
+the in-memory backend this app uses. So it is a good look rather than a
+measurement.
 
 ### Checked and found fine
 
