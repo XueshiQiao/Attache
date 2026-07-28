@@ -80,6 +80,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // this window by its inside.
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        // The rule that comes with this line: a view that owns a mouse gesture
+        // must override `mouseDownCanMoveWindow` to return false. AppKit asks
+        // the hit view that question *before* it delivers `mouseDown`, and the
+        // inherited answer is yes — so a view can implement dragging correctly,
+        // show the right cursor, and never receive an event. That is what made
+        // pane splitters undraggable and text unselectable until 2026-07-28;
+        // both are fixed by two overrides rather than by any change here.
         window.isMovableByWindowBackground = true
         // Not opaque, so the materials inside have a desktop to sample.
         //

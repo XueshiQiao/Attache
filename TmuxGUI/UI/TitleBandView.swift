@@ -42,14 +42,19 @@ final class TitleBandView: NSView {
 
     override var isFlipped: Bool { true }
 
-    /// The whole band drags the window. That is what it is for — with the tab
-    /// strip gone this is the only thing in the content half that does, and the
-    /// window has no system title bar to grab.
-    override var mouseDownCanMoveWindow: Bool { true }
-
-    /// Nothing here handles a click, so nothing here can swallow the drag. The
-    /// label opts out too; a text field that takes hit tests would leave a dead
-    /// strip in the middle of the band where the window stops moving.
+    /// The band is invisible to hit testing, and that is what makes it drag the
+    /// window.
+    ///
+    /// Not by answering `mouseDownCanMoveWindow` — this view used to, and that
+    /// override was dead code for as long as it existed: a view that returns
+    /// nil here is never the hit view, so AppKit never asks it anything. The
+    /// press falls through to `SessionViewController`'s root view, which is the
+    /// one that says yes, and says it in writing since 2026-07-28.
+    ///
+    /// Returning nil covers the label as well, which is the point: an
+    /// `NSTextField` is an `NSControl` and refuses to move a window, so a label
+    /// that took hit tests would leave a dead strip across the middle of the
+    /// band where dragging stops.
     override func hitTest(_: NSPoint) -> NSView? { nil }
 
     func applyChromeTheme() {

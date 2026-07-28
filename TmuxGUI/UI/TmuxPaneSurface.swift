@@ -54,6 +54,26 @@ final class TmuxTerminalView: TerminalView {
         _ = resignFirstResponder()
     }
 
+    /// A press in a pane belongs to the pane.
+    ///
+    /// Without this the window is dragged instead, and libghostty's selection
+    /// never sees a single event: `AppDelegate` sets
+    /// `isMovableByWindowBackground`, and AppKit asks the hit view this
+    /// question *before* delivering `mouseDown`. The default is inherited and
+    /// it is yes, so a view that implements dragging perfectly still gets
+    /// nothing — measured on both panes of a split window before this line
+    /// existed, while AppKit's own `NSSplitDividerView` in the same window
+    /// reported false.
+    ///
+    /// The rule this is an instance of is at `isMovableByWindowBackground` in
+    /// `AppDelegate`: anything that owns a gesture has to say so here.
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    // There is deliberately no `mouseUp` here. Copy-on-select is libghostty's,
+    // through the `copy-on-select` key in the terminal configuration — see
+    // `AppSettings.terminalConfiguration`. A copy made here as well is what made
+    // the setting do the opposite of what it said.
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command),
            NSApp.mainMenu?.performKeyEquivalent(with: event) == true

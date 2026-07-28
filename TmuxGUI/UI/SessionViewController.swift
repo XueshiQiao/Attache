@@ -123,7 +123,7 @@ final class SessionViewController: NSViewController {
     required init?(coder _: NSCoder) { fatalError("not supported") }
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 1100, height: 720))
+        view = ContentHalfView(frame: NSRect(x: 0, y: 0, width: 1100, height: 720))
         view.wantsLayer = true
     }
 
@@ -855,6 +855,24 @@ final class SessionViewController: NSViewController {
         }
         surfaces.removeAll()
     }
+}
+
+/// The content half's root view, and the one thing on this side of the window
+/// that drags it.
+///
+/// Everything drawn over it — the pane grid, the panes — answers no, because a
+/// press there belongs to a splitter or to a selection. What is left is the
+/// strip behind `TitleBandView`, which is transparent to hit tests, so the
+/// press lands here.
+///
+/// Written down rather than inherited. This view was a plain `NSView` and got
+/// the same unwritten default that made pane splitters undraggable: AppKit
+/// asks the hit view `mouseDownCanMoveWindow` and non-opaque views say yes. The
+/// band carried an override of its own that had never once been consulted. One
+/// accident was holding up the feature and the other was the bug, and they were
+/// the same accident.
+private final class ContentHalfView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
 }
 
 #if DEBUG

@@ -528,6 +528,17 @@ final class PaneGridView: NSView {
 
     // MARK: - Splitter dragging
 
+    /// Everything in this view is either a pane or a splitter, and neither
+    /// drags the window.
+    ///
+    /// The splitter's cursor came from `resetCursorRects` and worked; the drag
+    /// came from `mouseDown` and never arrived, because AppKit asks this
+    /// question first and the inherited answer is yes. Two mechanisms, one of
+    /// which asks nobody — which is why the pointer said "resize" over a line
+    /// that could not be resized. See `TmuxTerminalView` for the other half and
+    /// `AppDelegate` for the rule.
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func resetCursorRects() {
         super.resetCursorRects()
         for splitter in splitters {

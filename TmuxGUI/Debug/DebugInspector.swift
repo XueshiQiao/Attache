@@ -643,6 +643,17 @@
             let isEffectivelyHidden: Bool
             let alpha: Double
             let wantsLayer: Bool
+            /// Whether pressing here drags the window instead of reaching this
+            /// view's `mouseDown`.
+            ///
+            /// The same kind of field as `layer.overhang`: a view can implement
+            /// `mouseDown`, `mouseDragged` and `resetCursorRects` correctly, show
+            /// the right cursor, and never receive a single event — because
+            /// AppKit asks the hit view this question first and starts a window
+            /// drag if the answer is yes. Nothing else in a view's state hints
+            /// at it, and the default is inherited rather than written down
+            /// anywhere.
+            let mouseDownCanMoveWindow: Bool
             /// `top,left,bottom,right`. The system's own answer to "how far in
             /// is it safe to draw", and the only honest input for clearing the
             /// traffic lights. Invisible in every other form of inspection.
@@ -660,6 +671,7 @@
                 isEffectivelyHidden = hiddenAncestor || view.isHidden
                 alpha = (Double(view.alphaValue) * 1000).rounded() / 1000
                 wantsLayer = view.wantsLayer
+                mouseDownCanMoveWindow = view.mouseDownCanMoveWindow
                 let insets = view.safeAreaInsets
                 safeAreaInsets = "\(insets.top),\(insets.left),\(insets.bottom),\(insets.right)"
                 layer = view.layer.map { layer in
