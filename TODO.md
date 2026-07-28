@@ -5,10 +5,12 @@ starting — several of these touch code with non-obvious constraints.
 
 **[Section 4b](#4b--state-the-gui-reconstructs-instead-of-asking-tmux) is
 done** — every item in the 2026-07-27 audit is fixed, most recently on
-2026-07-28. What is left is section 1's four unverified settings behaviours,
-section 2's two deliberate build differences, section 5's features, and section
-6's never-reviewed subsystems. **Section 5's translucency is the largest thing
-not started.**
+2026-07-28. **Translucency is built** and is no longer the largest thing not
+started; what it still owes — starting with the fact that nobody has seen the
+mechanism now in the tree — is the first item of [section 5](#5--features).
+Besides that, what is left is section 1's four unverified settings behaviours,
+section 2's two deliberate build differences, the rest of section 5's features,
+and section 6's never-reviewed subsystems.
 
 Everything in 4b has been watched running as well as measured — the last of it
 on 2026-07-28, once the machine's displays were awake again. What that took,
@@ -635,41 +637,66 @@ snapshot to land on top of it.
 
 ---
 
-## 5 · Features not started
+## 5 · Features
 
-- [ ] **Translucency, the way Ghostty does it.** Asked for 2026-07-27, after
-      the window tabs moved into the rail: the app should read as one piece of
-      frosted glass rather than as flat fills.
+- **Translucency, the way Ghostty does it — built on 2026-07-28, and unverified
+  in the one way that matters.** Asked for 2026-07-27, after the window tabs
+  moved into the rail: the app should read as one piece of frosted glass rather
+  than as flat fills.
 
-      Half of it already exists and is worth reading before starting.
-      `SessionSidebarView.draw` paints `ChromeTheme.background` at **0.55
-      alpha** over the `NSVisualEffectView` the sidebar split view item
-      supplies, which is what makes the rail sample the desktop behind the
-      window while still taking its colour from the terminal scheme. The pane
-      side is the opposite: `PaneGridView` fills `ChromeTheme.background`
-      opaque, the window is `isOpaque = true`, and the surfaces are built with
-      `withBackgroundOpacity(0)` so the grid's fill is what shows through
-      between glyphs.
+  What it turned into is `WindowGlass`, which resolves **one of three**
+  mechanisms rather than the single one this item assumed. They are not settings
+  of the same thing — each puts the transparency, the blur and the colour in a
+  different place, so a drawing site that guessed would apply one of them twice,
+  and which of them looks right is not answerable by reading.
+  [`docs/window-glass.html`](docs/window-glass.html) is the design note, and it
+  exists because none of this is guessable from the code.
 
-      So the work is on the pane side, and the order matters:
+  - **Blur** — this app's own. The window is not opaque and the *window server*
+    blurs the desktop behind it, through `CGSSetWindowBackgroundBlurRadius`,
+    resolved with `dlsym` in `WindowServerBlur`. The only one of the three where
+    the radius is a number the user can turn.
+  - **Liquid Glass** — macOS 26's `NSGlassEffectView`. It tints the backdrop
+    itself, so the halves paint nothing at all.
+  - **System material** — the classic `NSVisualEffectView`, whose blur is fixed
+    per material and whose own opacity no tint on top can reduce.
 
-      1. `window.isOpaque = false` plus a background colour with alpha, or an
-         `NSVisualEffectView` behind the content half.
-      2. A user setting for the opacity, and one for whether the blur follows
-         the window or the desktop (`.behindWindow` vs `.withinWindow`).
-      3. Measure it. Ghostty's own docs warn that background blur costs real
-         GPU time; this app already has a throughput probe, and the question
-         "does 19 MB/s still arrive on time through a blurred window" is
-         exactly the kind it answers.
+  Settings has a Glass section — the style, the tint, the rail's extra depth,
+  and whichever single control belongs to the chosen style — and the debug
+  inspector drives every one of them live, because choosing between three looks
+  means seeing three looks without a relaunch between each.
 
-      Two traps are already known and both will bite here. `PaneGridView.draw`
-      must keep matching `window.backgroundColor`, because on macOS 26 that
-      view's backing layer runs 66pt past its bounds and paints the *window's*
-      colour in the overhang — with translucency the two being different stops
-      being invisible. And `ChromeTheme` derives every colour from the terminal
-      scheme's foreground/background pair on the assumption they are opaque; a
-      contrast floor computed against a colour that is now translucent is no
-      longer a contrast floor.
+  **The first attempt was a `CALayer.backgroundFilters` gaussian, and it cannot
+  do this job at all.** Public, adjustable, and the obvious choice: a backdrop
+  filter is evaluated against what is behind *that layer*, and every pane is a
+  libghostty Metal layer composited above it, so the desktop seen through a pane
+  never passes through the filter. The symptom is a radius that changes the
+  window's edges, the title band and the rail, and leaves the middle of the
+  window alone. Worth knowing before anyone reaches for it again.
+
+  Of the two traps this item warned about, one is handled and one is not.
+  `PaneGridView` and `window.backgroundColor` are both filled from
+  `WindowGlass.resolved().paneFill`, so the 66pt overhang paints what the view
+  paints. **`ChromeTheme`'s contrast floor is still computed against the opaque
+  scheme background** — the accent has to clear 3:1 against `background`
+  (`ChromeTheme.swift`), and `background` is now painted at `windowOpacity` over
+  whatever happens to be on the desktop. That is no longer a floor.
+
+  What it still owes:
+
+  - [ ] **Nobody has looked at the version in the tree.** The blur was a layer
+        filter when it was last seen; it became the window server's on
+        2026-07-28 and has not been in front of anyone since. A window's own
+        capture composites nothing behind it, so this needs `screencapture` with
+        Screen Recording consent, or a person.
+  - [ ] **Measure it.** Ghostty's own docs warn that background blur costs real
+        GPU time; this app has a throughput probe, and "does 19 MB/s still
+        arrive on time through a blurred window" is exactly the kind of question
+        it answers. Nothing has been measured. That the blur is the window
+        server's work rather than this process's changes *where* to look, not
+        whether to.
+  - [ ] **The contrast floor above**, which is a real defect on any scheme whose
+        accent was marginal to begin with.
 
 - [ ] **Write down what the layout has to be renegotiated for, in one place.**
       Low priority, asked for 2026-07-28, and the reasoning is worth keeping

@@ -393,11 +393,11 @@ enum AppSettings {
     /// more or less of it — which is why turning the other two knobs never
     /// produced the frosted-but-see-through look this was after.
     ///
-    /// Done with `CALayer.backgroundFilters` and `CIGaussianBlur`, which is
-    /// public on macOS (it is not on iOS) and blurs what is behind the layer
-    /// rather than the layer itself. That is the same thing a browser's
-    /// `backdrop-filter: blur()` does, and it is what the mockup this was
-    /// dialled in on used.
+    /// Done by asking the window server for it — see `WindowServerBlur`, which
+    /// also records why the obvious public route, a `CALayer.backgroundFilters`
+    /// gaussian, blurs this window's edges and not its middle: every pane is a
+    /// Metal layer composited above the layer the filter hangs on, so the
+    /// desktop seen through a pane never passes through it.
     ///
     /// 0 is clear glass — the desktop shows through sharp. It is a real
     /// setting, not a disabled state, and it is also the cheap one: a gaussian

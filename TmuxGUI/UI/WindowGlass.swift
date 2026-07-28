@@ -11,10 +11,12 @@ import Cocoa
 /// other — they put the transparency, the blur and the colour in different
 /// places, and a drawing site that guessed would double one of them:
 ///
-/// - **`.blur`** is this app's own. The window is not opaque, a `CIGaussianBlur`
-///   on the content view's layer blurs the desktop behind it at whatever radius
-///   is asked for, and each half paints the theme colour over the result. It is
-///   the only one of the three where the blur is a number the user can turn.
+/// - **`.blur`** is this app's own. The window is not opaque, the window server
+///   blurs the desktop behind it at whatever radius is asked for, and each half
+///   paints the theme colour over the result. It is the only one of the three
+///   where the blur is a number the user can turn. `WindowServerBlur` holds the
+///   call and the reason it is not the obvious `CALayer.backgroundFilters`
+///   gaussian: a backdrop filter cannot reach under the panes' Metal layers.
 /// - **`.liquidGlass`** is macOS 26's `NSGlassEffectView`, which is what Ghostty
 ///   calls `macos-glass-regular` and `macos-glass-clear`. The glass does the
 ///   blurring *and* the tinting — it takes a `tintColor` — so the halves must
