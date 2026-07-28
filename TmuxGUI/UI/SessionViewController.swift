@@ -594,12 +594,18 @@ final class SessionViewController: NSViewController {
             // that is the change the snapshot is now for.
             pendingRepaints[pane.id] = connection.router.deliveryCount(paneID: pane.id)
         }
+        armRepaintDrain()
+    }
 
+    /// Start, or restart, the one timer every pending repaint waits on.
+    private func armRepaintDrain() {
         repaintWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             let due = self.pendingRepaints
             self.pendingRepaints.removeAll()
+            var stillPriming = [String: UInt64]()
+
             // Sorted only so the log reads the same way twice; the captures are
             // independent round trips and their order carries no meaning.
             for (paneID, outputBefore) in due.sorted(by: { $0.key < $1.key }) {
@@ -612,8 +618,18 @@ final class SessionViewController: NSViewController {
                 // A pane whose first paint has not come back yet is having its
                 // whole screen fetched already — a second snapshot on top of
                 // that is a wasted round trip at best, and at worst it lands
-                // first. `primeSurface` releases the pane to this path.
-                guard surface.hasPrimedHistory else { continue }
+                // first. But it is **held rather than dropped**: `paintedFrames`
+                // has already been advanced for this geometry, so a pane let go
+                // of here would never be asked for again, and if its geometry
+                // changed while the first paint was in flight it would keep text
+                // wrapped for the old width for the life of the app. That is the
+                // defect the whole `pendingRepaints` map exists to prevent, and
+                // it comes back the moment a pane can leave this loop unserved.
+                // `primeSurface` always resolves, so this terminates.
+                guard surface.hasPrimedHistory else {
+                    stillPriming[paneID] = outputBefore
+                    continue
+                }
 
                 self.repaintWhenQuiet(
                     paneID: paneID,
@@ -621,6 +637,12 @@ final class SessionViewController: NSViewController {
                     attemptsLeft: Self.repaintRetryLimit
                 )
             }
+
+            guard !stillPriming.isEmpty else { return }
+            for (paneID, outputBefore) in stillPriming {
+                self.pendingRepaints[paneID] = outputBefore
+            }
+            self.armRepaintDrain()
         }
         repaintWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
@@ -661,7 +683,15 @@ final class SessionViewController: NSViewController {
         // next pane opened rather than waiting for a relaunch.
         let history = isFirstPaint ? AppSettings.scrollbackPrimeLines : nil
         connection.capturePane(paneID: paneID, historyLines: history) { [weak self] snapshot in
-            guard let self, !snapshot.screen.isEmpty else { return }
+            guard let self else { return }
+            // Set before anything can return, not on the way out of the happy
+            // path. A first paint that ends without setting it leaves the pane
+            // permanently ineligible for a repaint — `scheduleRepaint` holds it
+            // back until it is set — so an empty capture, which is tmux
+            // refusing the command, would freeze that pane's wrapping for the
+            // life of the app.
+            if isFirstPaint { self.surfaces[paneID]?.hasPrimedHistory = true }
+            guard !snapshot.screen.isEmpty else { return }
             // Through the router, not straight at the surface: the check and
             // the hand-off have to happen under the lock the reader queue
             // takes, or live output can be enqueued between them.
@@ -670,10 +700,7 @@ final class SessionViewController: NSViewController {
                 data: TmuxScreenReplay.payload(for: snapshot, isFirstPaint: isFirstPaint),
                 ifDeliveryCountIs: since
             )
-            guard !painted else {
-                if isFirstPaint { self.surfaces[paneID]?.hasPrimedHistory = true }
-                return
-            }
+            guard !painted else { return }
             self.retryRepaint(paneID: paneID, attemptsLeft: attemptsLeft, isFirstPaint: isFirstPaint,
                               reason: "it started writing while the capture was in flight")
         }
@@ -691,10 +718,6 @@ final class SessionViewController: NSViewController {
                     + " has not stopped; a pane redrawing continuously does not need a snapshot",
                 session: connection.sessionName
             )
-            // Released to the ordinary repaint path either way. A pane that
-            // never got its first paint and was left out of that path too would
-            // never be snapshotted again for the life of the app.
-            if isFirstPaint { surfaces[paneID]?.hasPrimedHistory = true }
             return
         }
 
