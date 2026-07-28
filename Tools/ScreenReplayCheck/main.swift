@@ -65,6 +65,10 @@ func modes(
     )
 }
 
+/// The reset that goes out before any row is written, so the CR LFs between
+/// rows cannot scroll inside a region the previous program left behind.
+let neutral = "<ESC>[r<ESC>[?6l<ESC>[?7h<ESC>[4l"
+
 /// What `modes()` with no arguments renders as, for the cases that are not
 /// about the modes at all.
 let quietModes3 =
@@ -91,7 +95,7 @@ let cases: [Case] = [
             cursor: TmuxPaneCursor(column: 0, row: 1), modes: nil
         ),
         isFirstPaint: false,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2Jab<CR><LF>cd<ESC>[2;1H"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2Jab<CR><LF>cd<ESC>[2;1H"
     ),
     // History supplied to a repaint is ignored rather than written. Nothing
     // asks for it, and writing it would stack a second copy of the scrollback
@@ -103,7 +107,7 @@ let cases: [Case] = [
             cursor: TmuxPaneCursor(column: 2, row: 0), modes: nil
         ),
         isFirstPaint: false,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2Jnew<ESC>[1;3H"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2Jnew<ESC>[1;3H"
     ),
     // The first paint. Scrollback erased, history written into it, separated
     // from the screen by exactly one CR LF, cursor placed last.
@@ -114,7 +118,7 @@ let cases: [Case] = [
             cursor: TmuxPaneCursor(column: 3, row: 1), modes: nil
         ),
         isFirstPaint: true,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2J<ESC>[3Jh1<CR><LF>h2<CR><LF>s1<CR><LF>s2<ESC>[2;4H"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2J<ESC>[3Jh1<CR><LF>h2<CR><LF>s1<CR><LF>s2<ESC>[2;4H"
     ),
     // A pane with nothing above the screen. The separator is what would put a
     // blank line into the scrollback if it went out unconditionally.
@@ -125,7 +129,7 @@ let cases: [Case] = [
             cursor: TmuxPaneCursor(column: 0, row: 0), modes: nil
         ),
         isFirstPaint: true,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2J<ESC>[3Jonly<ESC>[1;1H"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2J<ESC>[3Jonly<ESC>[1;1H"
     ),
     // tmux would not say where the cursor is. Everything else still goes, and
     // the cursor is left wherever the rows put it — the pre-existing
@@ -135,7 +139,7 @@ let cases: [Case] = [
         name: "no cursor: no CUP at the end",
         snapshot: TmuxPaneSnapshot(history: [], screen: rows(["x"]), cursor: nil, modes: nil),
         isFirstPaint: false,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2Jx"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2Jx"
     ),
     // Blank rows are rows. `capture-pane` returns one line per pane row, so a
     // screen with a prompt at the top and nothing below it is mostly empty
@@ -148,7 +152,7 @@ let cases: [Case] = [
             cursor: TmuxPaneCursor(column: 1, row: 0), modes: nil
         ),
         isFirstPaint: false,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2J$<CR><LF><CR><LF><ESC>[1;2H"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2J$<CR><LF><CR><LF><ESC>[1;2H"
     ),
     // tmux counts from zero and CUP counts from one. Getting this wrong is one
     // row and one column of drift, which is invisible on a shell prompt and
@@ -160,7 +164,7 @@ let cases: [Case] = [
             cursor: TmuxPaneCursor(column: 9, row: 2), modes: nil
         ),
         isFirstPaint: false,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2Jr<ESC>[3;10H"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2Jr<ESC>[3;10H"
     ),
     // Bytes above 0x7f pass through untouched. The whole reason this path
     // takes `Data` rather than `String`: a round trip through `String`
@@ -171,7 +175,7 @@ let cases: [Case] = [
             history: [], screen: [Data([0x41, 0xe9, 0xff, 0x42])], cursor: nil, modes: nil
         ),
         isFirstPaint: false,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2JA<e9><ff>B"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2JA<e9><ff>B"
     ),
     // A quiet shell. Every mode goes out with a value whether it is on or off:
     // a mode left unmentioned is whatever the *previous* program left the
@@ -183,7 +187,7 @@ let cases: [Case] = [
             cursor: TmuxPaneCursor(column: 0, row: 0), modes: modes()
         ),
         isFirstPaint: false,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2Ja<CR><LF>b<CR><LF>c"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2Ja<CR><LF>b<CR><LF>c"
             + quietModes3 + "<ESC>[1;1H"
     ),
     // `less --mouse`: alternate screen, SGR mouse, application cursor keys and
@@ -200,7 +204,7 @@ let cases: [Case] = [
             )
         ),
         isFirstPaint: false,
-        expected: "<ESC>[?1049h<ESC>[H<ESC>[2JL1<CR><LF>L2<CR><LF>L3"
+        expected: "<ESC>[?1049h" + neutral + "<ESC>[H<ESC>[2JL1<CR><LF>L2<CR><LF>L3"
             + "<ESC>[1;2r<ESC>[?6l<ESC>[?25h<ESC>[?7h<ESC>[4l<ESC>[?1h<ESC>="
             + "<ESC>[?1000h<ESC>[?1002l<ESC>[?1003l<ESC>[?1006h<ESC>[?1005l"
             + "<ESC>[0 q<ESC>[?12l<ESC>[3;1H"
@@ -218,8 +222,8 @@ let cases: [Case] = [
             modes: modes(rows: 1, alternateScreen: true)
         ),
         isFirstPaint: true,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2J<ESC>[3Jpast<CR><LF>"
-            + "<ESC>[?1049h<ESC>[H<ESC>[2Jvim"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2J<ESC>[3Jpast<CR><LF>"
+            + "<ESC>[?1049h" + neutral + "<ESC>[H<ESC>[2Jvim"
             + "<ESC>[1;1r<ESC>[?6l<ESC>[?25h<ESC>[?7h<ESC>[4l<ESC>[?1l<ESC>>"
             + "<ESC>[?1000l<ESC>[?1002l<ESC>[?1003l<ESC>[?1006l<ESC>[?1005l"
             + "<ESC>[0 q<ESC>[?12l<ESC>[1;1H"
@@ -236,7 +240,7 @@ let cases: [Case] = [
             modes: modes(rows: 1, alternateScreen: false)
         ),
         isFirstPaint: false,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2J$"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2J$"
             + "<ESC>[1;1r<ESC>[?6l<ESC>[?25h<ESC>[?7h<ESC>[4l<ESC>[?1l<ESC>>"
             + "<ESC>[?1000l<ESC>[?1002l<ESC>[?1003l<ESC>[?1006l<ESC>[?1005l"
             + "<ESC>[0 q<ESC>[?12l<ESC>[1;2H"
@@ -253,7 +257,7 @@ let cases: [Case] = [
             modes: modes(origin: true, scrollRegionUpper: 3, scrollRegionLower: 8)
         ),
         isFirstPaint: false,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2Jx"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2Jx"
             + "<ESC>[4;9r<ESC>[?6h<ESC>[?25h<ESC>[?7h<ESC>[4l<ESC>[?1l<ESC>>"
             + "<ESC>[?1000l<ESC>[?1002l<ESC>[?1003l<ESC>[?1006l<ESC>[?1005l"
             + "<ESC>[0 q<ESC>[?12l<ESC>[2;5H"
@@ -268,7 +272,7 @@ let cases: [Case] = [
             modes: modes(rows: 1, cursorVisible: false, cursorShape: "bar", cursorBlinking: true)
         ),
         isFirstPaint: false,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2Jy"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2Jy"
             + "<ESC>[1;1r<ESC>[?6l<ESC>[?25l<ESC>[?7h<ESC>[4l<ESC>[?1l<ESC>>"
             + "<ESC>[?1000l<ESC>[?1002l<ESC>[?1003l<ESC>[?1006l<ESC>[?1005l"
             + "<ESC>[5 q<ESC>[?12h<ESC>[1;1H"
@@ -283,7 +287,7 @@ let cases: [Case] = [
             modes: modes(rows: 1, cursorShape: "hollow-block-from-a-future-tmux")
         ),
         isFirstPaint: false,
-        expected: "<ESC>[?1049l<ESC>[H<ESC>[2Jz"
+        expected: "<ESC>[?1049l" + neutral + "<ESC>[H<ESC>[2Jz"
             + "<ESC>[1;1r<ESC>[?6l<ESC>[?25h<ESC>[?7h<ESC>[4l<ESC>[?1l<ESC>>"
             + "<ESC>[?1000l<ESC>[?1002l<ESC>[?1003l<ESC>[?1006l<ESC>[?1005l"
             + "<ESC>[0 q<ESC>[?12l"

@@ -25,23 +25,35 @@ import Foundation
 /// 1. **The primary screen, on a first paint.** History belongs in the primary
 ///    buffer's scrollback — that is where a real terminal put it — so the
 ///    replay starts there whatever the pane is doing now.
-/// 2. **Erase.** A repaint replaces the screen rather than adding to it, and a
+/// 2. **A neutral terminal**, before a single row is written. The surface is in
+///    whatever modes the *previous* program left it in, and two of them decide
+///    what writing a row even does: a scroll region makes the CR LFs between
+///    rows scroll inside that region instead of the screen, so a 24-row
+///    snapshot written into a pane left on rows 1-10 by a vim shuffles itself
+///    inside those ten and overwrites the rest; and origin mode makes the home
+///    that follows land at the top of that region rather than of the screen.
+///    Insert mode and autowrap are reset with them for the same reason —
+///    cheaper to state than to reason about. The pane's *real* modes go on at
+///    step 7, once there is nothing left to write.
+/// 3. **Erase.** A repaint replaces the screen rather than adding to it, and a
 ///    first paint has to replace whatever `TmuxOutputRouter.register` handed
 ///    over a moment earlier, or the snapshot is a second copy of it.
-/// 3. **History, on a first paint only.** A repaint's scrollback is real and
+/// 4. **History, on a first paint only.** A repaint's scrollback is real and
 ///    nothing here replaces it.
-/// 4. **The alternate screen, if the pane is on it.** After the history, so
+/// 5. **The alternate screen, if the pane is on it.** After the history, so
 ///    vim's screen does not land in the scrollback, and before the rows, so
 ///    they land on the buffer they belong to. Emitted either way on a repaint,
 ///    because a program that has *exited* since the last paint needs the
-///    switch back as much as one that just started needs the switch in.
-/// 5. **The rows.**
-/// 6. **The scroll region**, which homes the cursor, so it cannot come after
+///    switch back as much as one that just started needs the switch in. Each
+///    buffer keeps its own scroll region, so the neutral reset is repeated
+///    after the switch rather than assumed to have carried across.
+/// 6. **The rows.**
+/// 7. **The scroll region**, which homes the cursor, so it cannot come after
 ///    the cursor is placed.
-/// 7. **Origin mode**, which also homes the cursor *and* changes what a cursor
+/// 8. **Origin mode**, which also homes the cursor *and* changes what a cursor
 ///    position means.
-/// 8. **Everything else**, none of which moves the cursor.
-/// 9. **The cursor.**
+/// 9. **Everything else**, none of which moves the cursor.
+/// 10. **The cursor.**
 enum TmuxScreenReplay {
     /// - Parameter isFirstPaint: whether this is the first thing a pane's
     ///   surface has ever been shown. It decides two things that must not
@@ -55,6 +67,7 @@ enum TmuxScreenReplay {
 
         if isFirstPaint {
             payload += esc("[?1049l")
+            payload += neutral
             payload += esc("[H") + esc("[2J")
             // `CSI 3 J` — erase saved lines. Asked for rather than relied on:
             // if this build of libghostty does not implement it the sequence is
@@ -78,9 +91,10 @@ enum TmuxScreenReplay {
             // alternate screen: the last rows of the history are still in the
             // viewport, mid-scroll, and clearing here would punch a hole
             // between the scrollback and the screen.
-            if alternate { payload += esc("[?1049h") + esc("[H") + esc("[2J") }
+            if alternate { payload += esc("[?1049h") + neutral + esc("[H") + esc("[2J") }
         } else {
             payload += esc(alternate ? "[?1049h" : "[?1049l")
+            payload += neutral
             payload += esc("[H") + esc("[2J")
         }
 
@@ -166,6 +180,16 @@ enum TmuxScreenReplay {
         default: 0
         }
     }
+
+    /// A terminal that will do what writing a row looks like it does.
+    ///
+    /// `ESC[r` is DECSTBM with no parameters: the scroll region becomes the
+    /// whole screen. Without it the CR LFs between rows scroll inside whatever
+    /// region the previous program left behind. The other three are here
+    /// because reasoning about whether they matter costs more than sending
+    /// them, and every one of them is set to its real value a few bytes later.
+    private static let neutral =
+        esc("[r") + esc("[?6l") + esc("[?7h") + esc("[4l")
 
     private static let crlf = Data([0x0d, 0x0a])
 

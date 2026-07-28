@@ -38,7 +38,19 @@ final class TmuxControlClient {
     /// The session's current name, for the log only. Kept up to date by
     /// `TmuxSessionConnection` so a line written after a rename says what the
     /// user would now call the session.
-    var sessionLabel: String
+    ///
+    /// Locked, and not out of tidiness. It is written on the callback queue
+    /// when tmux announces a rename and read from `Process.terminationHandler`,
+    /// which runs on a queue of the system's choosing — so a session renamed at
+    /// the moment its client exits is two threads on one `String`, which is not
+    /// a stale log line but undefined behaviour.
+    var sessionLabel: String {
+        get { labelLock.lock(); defer { labelLock.unlock() }; return storedLabel }
+        set { labelLock.lock(); storedLabel = newValue; labelLock.unlock() }
+    }
+
+    private var storedLabel: String
+    private let labelLock = NSLock()
     private let callbackQueue: DispatchQueue
     private let process = Process()
     private let stdinPipe = Pipe()
@@ -76,7 +88,7 @@ final class TmuxControlClient {
     {
         self.tmuxPath = tmuxPath
         self.sessionID = sessionID
-        sessionLabel = sessionName
+        storedLabel = sessionName
         self.callbackQueue = callbackQueue
     }
 

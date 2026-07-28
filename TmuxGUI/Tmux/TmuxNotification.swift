@@ -104,16 +104,33 @@ enum TmuxNotification {
             )
 
         case "%subscription-changed":
-            let tokens = String(decoding: rest, as: UTF8.self).split(separator: " ")
-            // The separator is located rather than counted. The fields before
-            // it describe *what* changed and their number depends on the scope
-            // the subscription was made at; everything after it is the value.
-            guard let name = tokens.first,
-                  let separator = tokens.firstIndex(of: ":") else { return nil }
+            // The separator is located rather than counted: the fields before
+            // it say *what* changed, and how many there are depends on the
+            // scope the subscription was made at. Everything after it is the
+            // value, taken as the rest of the line rather than as tokens
+            // rejoined — a value's own spacing is the value's business.
+            //
+            // The window is looked for in the header alone. A value that
+            // happens to begin with `@` is ordinary text, and a search over the
+            // whole line would read it as the window this notification is about.
+            let text = String(decoding: rest, as: UTF8.self)
+            let header: Substring
+            let value: String
+            if let separator = text.range(of: " : ") {
+                header = text[..<separator.lowerBound]
+                value = String(text[separator.upperBound...])
+            } else if text.hasSuffix(" :") {
+                header = text.dropLast(2)
+                value = ""
+            } else {
+                return nil
+            }
+            let fields = header.split(separator: " ")
+            guard let name = fields.first else { return nil }
             return .subscriptionChanged(
                 name: String(name),
-                window: tokens.first { $0.hasPrefix("@") }.map(String.init),
-                value: tokens[tokens.index(after: separator)...].joined(separator: " ")
+                window: fields.first { $0.hasPrefix("@") }.map(String.init),
+                value: value
             )
 
         case "%window-add":

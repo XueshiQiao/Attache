@@ -112,6 +112,11 @@ final class TmuxSessionConnection {
     }
 
     func stop() {
+        // Before the client goes: a command completion is the only other thing
+        // that removes these, and a client that is being torn down will never
+        // deliver one. What would be left behind is the user's clipboard.
+        for url in pasteFilesInFlight { try? FileManager.default.removeItem(at: url) }
+        pasteFilesInFlight.removeAll()
         router.removeAll()
         client.stop()
     }
@@ -260,6 +265,19 @@ final class TmuxSessionConnection {
         )
     }
 
+    /// Files this connection has written for a paste and not yet cleaned up.
+    /// Emptied by `stop()`, because the only other cleanup runs in a command
+    /// completion and a client that dies never delivers one.
+    private var pasteFilesInFlight = Set<URL>()
+    /// Distinguishes one paste from the next. tmux's paste buffers are
+    /// server-global and a fixed name is a shared mutable slot: two pastes in
+    /// flight — from two sessions, or from one ⌘V too soon after another —
+    /// could have the second `load-buffer` land before the first
+    /// `paste-buffer`, and the first pane would receive the other's clipboard.
+    /// Clipboards hold passwords and shells run what is pasted into them, so
+    /// this is not a cosmetic race.
+    private var pasteCounter = 0
+
     /// Paste through tmux, so tmux decides whether to bracket it.
     ///
     /// Returns false when it could not be attempted, and the caller falls back
@@ -275,11 +293,12 @@ final class TmuxSessionConnection {
     /// path this app chose. That is the same reasoning as targeting tmux by id:
     /// remove the category rather than escape around it.
     ///
-    /// The file is written with owner-only permissions and deleted the moment
-    /// tmux answers, because a clipboard holds whatever the user last copied
-    /// and none of it belongs in a file that outlives the paste. `-d` on the
-    /// paste drops the buffer for the same reason, and keeps the user's own
-    /// paste buffers untouched.
+    /// The file is created owner-only in one step, deleted the moment tmux
+    /// answers, and deleted again by `stop()` if that answer never comes,
+    /// because a clipboard holds whatever the user last copied and none of it
+    /// belongs in a file that outlives the paste. `-d` on the paste drops the
+    /// buffer for the same reason, and keeps the user's own paste buffers
+    /// untouched.
     ///
     /// Verified end to end on tmux 3.6a over a control mode client: a file with
     /// `$HOME`, double quotes and `#{format}` in it arrives at the program
@@ -289,31 +308,40 @@ final class TmuxSessionConnection {
     @discardableResult
     func paste(text: String, into paneID: String) -> Bool {
         guard !text.isEmpty else { return false }
+        pasteCounter += 1
+        let token = "\(sessionID.dropFirst())-\(pasteCounter)"
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("tmuxgui-paste-\(sessionID.dropFirst()).txt")
+            .appendingPathComponent("tmuxgui-paste-\(token).txt")
         let path = url.path
         // The path is this app's own, but the temporary directory comes from
         // the system and a quote in it would end the argument early. Refusing
         // is the only answer that cannot send half a command.
         guard !path.contains("'"), !path.contains("\n") else { return false }
 
-        guard (try? Data(text.utf8).write(to: url, options: [.atomic, .completeFileProtection]))
-            != nil,
-            (try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o600], ofItemAtPath: path
-            )) != nil
-        else { return false }
+        // Permissions at creation rather than afterwards: setting them as a
+        // second step leaves the text world-readable for the moment in
+        // between, and leaves a file behind if that step is the one that fails.
+        guard FileManager.default.createFile(
+            atPath: path, contents: Data(text.utf8),
+            attributes: [.posixPermissions: 0o600]
+        ) else { return false }
+        pasteFilesInFlight.insert(url)
 
-        let buffer = "tmuxgui-paste"
+        let buffer = "tmuxgui-paste-\(token)"
         client.run("load-buffer -b \(buffer) '\(path)'") { [weak self] _, failed in
             // Deleted whatever happened. tmux has finished with the file by the
             // time it answers, and a paste that failed is not a reason to leave
-            // the user's clipboard sitting in /var/folders.
-            try? FileManager.default.removeItem(at: url)
+            // the user's clipboard sitting in the temporary directory.
+            self?.discardPasteFile(url)
             guard let self, !failed else { return }
             self.client.send("paste-buffer -p -d -b \(buffer) -t \(paneID)")
         }
         return true
+    }
+
+    private func discardPasteFile(_ url: URL) {
+        pasteFilesInFlight.remove(url)
+        try? FileManager.default.removeItem(at: url)
     }
 
     func sendKeys(paneID: String, data: Data) {
@@ -701,6 +729,14 @@ final class TmuxSessionConnection {
                         + " commands still target \(sessionID)",
                     session: sessionName
                 )
+            } else {
+                // This carries the session's name *now*, and the attach is the
+                // one moment the name from `list-sessions` can already be
+                // stale: a rename between the listing and the attach is
+                // announced to clients that existed at the time, and this one
+                // did not. Without this the connection keeps the listed name
+                // until some unrelated refresh happens to correct it.
+                noteName(name)
             }
             subscribeToActivity()
             refreshWindows()
