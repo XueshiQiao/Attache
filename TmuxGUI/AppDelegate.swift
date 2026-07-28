@@ -81,12 +81,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.isOpaque = true
-        // Has to match `PaneGridView`'s fill. That view's backing layer runs
-        // 66pt past its own bounds on macOS 26 and paints the *window's* colour
-        // in the overhang; while both were the system grey the mismatch was
-        // invisible, and a theme is exactly what exposes it.
+        // Not opaque, so the materials inside have a desktop to sample.
+        //
+        // This one line is why the rail's 0.55 tint did nothing for a year:
+        // `NSVisualEffectView` composites what is *behind the window*, and an
+        // opaque window has nothing behind it. Measured before the change —
+        // rail (43,46,56), panes (42,46,56), both fully opaque and, to the eye,
+        // the same colour. The alpha was already there and had nothing to let
+        // through.
+        //
+        // Set here rather than left to `applyWindowChrome` because a window
+        // that starts opaque and is made translucent a moment later flashes.
+        window.isOpaque = false
+        // Has to match `PaneGridView`'s fill, alpha included. That view's
+        // backing layer runs 66pt past its own bounds on macOS 26 and paints
+        // the *window's* colour in the overhang; while both were the system
+        // grey the mismatch was invisible, a theme exposed it, and translucency
+        // exposes it twice over — two different alphas over the same desktop
+        // are visible in a way two similar greys were not.
         window.backgroundColor = ChromeTheme.current.background
+            .withAlphaComponent(AppSettings.windowOpacity)
         // An empty toolbar, and it is load-bearing rather than decoration.
         // `NSSplitViewItem.allowsFullHeightLayout` only lifts the sidebar into
         // the titlebar band — which is what puts the traffic lights inside the

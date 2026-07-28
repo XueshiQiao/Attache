@@ -24,6 +24,17 @@ struct ChromeTheme {
     /// Window and chrome fill. Nudged off the terminal background so the tab
     /// strip and rail separate from pane content instead of merging with it.
     let background: NSColor
+    /// The rail's tint. The same colour as `background`, a step deeper.
+    ///
+    /// A *colour* difference and deliberately not an alpha difference. Making
+    /// the rail more opaque was the first attempt and it reads as "deeper" only
+    /// because it stops being glass: measured, at 85% window opacity plus a
+    /// 12% extra tint the rail came out at 97% and no longer sampled the
+    /// desktop at all — moving the window changed every pixel of the content
+    /// half and not one of the rail's. Both halves carry the same alpha now, so
+    /// both show the same amount of what is behind the window, and the rail is
+    /// simply painted in a darker colour.
+    let railBackground: NSColor
     /// Primary label colour — the scheme's own foreground.
     let text: NSColor
     /// Replaces `secondaryLabelColor`.
@@ -70,6 +81,11 @@ struct ChromeTheme {
 
         let background = Self.blend(terminalBackground, toward: foreground, by: 0.06)
         self.background = background
+        // Toward black rather than away from the foreground: "deeper" has to
+        // mean the same thing on a light scheme as on a dark one, and blending
+        // away from the foreground would lighten the rail on a light scheme —
+        // the opposite of what the divider is there to say.
+        railBackground = Self.blend(background, toward: .black, by: 0.22)
         text = foreground
         mutedText = Self.blend(background, toward: foreground, by: 0.60)
         faintText = Self.blend(background, toward: foreground, by: 0.40)
@@ -104,6 +120,7 @@ struct ChromeTheme {
         sourceName: String
     ) {
         self.background = background
+        railBackground = Self.blend(background, toward: .black, by: 0.22)
         self.text = text
         self.mutedText = mutedText
         self.faintText = faintText

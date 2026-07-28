@@ -123,6 +123,18 @@
                 AppSettings.fontFamily = value
                 changed.append("fontFamily")
             }
+            // Here for the same reason font size is: the only honest way to
+            // check a look is to change it while the app is running and read
+            // both sides. More so for these two — what they change is what is
+            // *behind* the window, which no amount of reading the code shows.
+            if let raw = parameters["windowOpacity"], let value = Double(raw) {
+                AppSettings.windowOpacity = CGFloat(value)
+                changed.append("windowOpacity")
+            }
+            if let raw = parameters["backgroundBlur"], let value = Bool(raw) {
+                AppSettings.backgroundBlur = value
+                changed.append("backgroundBlur")
+            }
             if let raw = parameters["appearance"], let value = AppSettings.Appearance(rawValue: raw) {
                 AppSettings.appearance = value
                 AppSettings.applyAppearanceOverride()

@@ -475,11 +475,19 @@ final class PaneGridView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let theme = ChromeTheme.current
-        // Must match the window's own background colour. On macOS 26 this
-        // view's backing layer runs 66pt past its bounds and paints the
-        // *window's* colour in the overhang; the two agreeing is what keeps
-        // that from being visible the moment a theme leaves the system grey.
-        theme.background.setFill()
+        // Must match the window's own background colour, alpha included. On
+        // macOS 26 this view's backing layer runs 66pt past its bounds and
+        // paints the *window's* colour in the overhang; the two agreeing is
+        // what keeps that from being visible the moment a theme leaves the
+        // system grey. Two different alphas over the same desktop are more
+        // visible than two similar greys ever were, so this is now the tighter
+        // of the two constraints rather than the looser.
+        //
+        // A tint over the material behind it, not a fill instead of it: the
+        // surfaces are built with `withBackgroundOpacity(0)`, so what shows
+        // between glyphs is this fill, and what shows through this fill is the
+        // desktop. See `AppSettings.windowOpacity`.
+        theme.background.withAlphaComponent(AppSettings.windowOpacity).setFill()
         dirtyRect.fill()
 
         theme.separator.setFill()

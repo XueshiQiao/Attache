@@ -132,6 +132,50 @@ struct AppearancePage: View {
             }
 
             Section {
+                LabeledContent {
+                    HStack(spacing: 8) {
+                        Slider(
+                            value: Binding(
+                                get: { store.windowOpacity },
+                                set: { store.setWindowOpacity($0) }
+                            ),
+                            in: AppSettings.windowOpacityRange
+                        )
+                        Text("\(Int((store.windowOpacity * 100).rounded()))%")
+                            .font(.system(.body, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                        Button("Reset") { store.resetWindowOpacity() }
+                            .disabled(store.windowOpacity == AppSettings.defaultWindowOpacity)
+                    }
+                } label: {
+                    iconLabel("square.on.square.intersection.dashed", .teal, "Window opacity")
+                }
+
+                Toggle(isOn: Binding(
+                    get: { store.backgroundBlur },
+                    set: { store.setBackgroundBlur($0) }
+                )) {
+                    iconLabel(
+                        "drop.halffull",
+                        store.backgroundBlur ? .teal : .gray,
+                        "Blur what is behind the window"
+                    )
+                }
+                .disabled(store.windowOpacity >= 1.0)
+            } footer: {
+                Text(
+                    "The rail is drawn a little deeper than the panes, so the two halves "
+                        + "still read as two halves. 100% is a solid window and turns all of "
+                        + "this off — which is the setting to reach for over a busy desktop, "
+                        + "or if the blur ever costs frames."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
                 Toggle(isOn: Binding(
                     get: { store.showsPaneFocusRing },
                     set: { store.setShowsPaneFocusRing($0) }

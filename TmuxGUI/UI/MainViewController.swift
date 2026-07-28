@@ -35,7 +35,7 @@ final class MainViewController: NSSplitViewController {
     let server: TmuxServer
 
     private let sidebar = SessionSidebarView(frame: .zero)
-    private let content = Content()
+    private lazy var content = Content(backdrop: contentBackdrop)
     /// Keyed by tmux's `$N`, like `TmuxServer.connections`. Keyed by name, a
     /// rename read as "that session is gone" and threw the controller away —
     /// GPU surfaces, primed scrollback and the hidden-window set with it.
@@ -436,6 +436,14 @@ final class MainViewController: NSSplitViewController {
         // column edge to edge, which removed the panel entirely — the opposite
         // of the ask. `allowsFullHeightLayout` is what puts the traffic lights
         // *inside* that panel rather than in a band above it.
+        contentBackdrop.material = .underWindowBackground
+        contentBackdrop.blendingMode = AppSettings.backgroundBlur ? .behindWindow : .withinWindow
+        // `.followsWindowActiveState` is the default and is wrong here: it
+        // desaturates the material when the window is not key, which on a
+        // terminal reads as the panes greying out every time the user looks at
+        // another app.
+        contentBackdrop.state = .active
+
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: Hosting(view: sidebar))
         sidebarItem.allowsFullHeightLayout = true
         // Not collapsible. Collapsing is standard sidebar behaviour and comes
@@ -475,6 +483,22 @@ final class MainViewController: NSSplitViewController {
         override func loadView() { view = hosted }
     }
 
+    /// The material the panes are drawn over.
+    ///
+    /// The sidebar half gets one of these free — `NSSplitViewItem`'s sidebar
+    /// behaviour supplies it, and that is where the rail's translucency has
+    /// always come from. The content half gets nothing, so it had to be added,
+    /// and adding it is most of what makes the window read as one sheet of
+    /// glass rather than as a frosted rail glued to a solid terminal.
+    ///
+    /// `.underWindowBackground` rather than `.sidebar`: the two are different
+    /// materials, and using the sidebar's on both halves makes the divider
+    /// disappear entirely. The rail is supposed to read a little deeper — see
+    /// `AppSettings.railExtraTint` — and starting from the same material is
+    /// what leaves that difference to the tint rather than to two system
+    /// materials that shift independently across appearances.
+    private let contentBackdrop = NSVisualEffectView()
+
     /// The right-hand half, and the parent of whichever session is on screen.
     ///
     /// Its existence is not decoration. `NSSplitViewController` overrides
@@ -484,9 +508,28 @@ final class MainViewController: NSSplitViewController {
     /// area and an empty 792pt one beside it. Session controllers are children
     /// of this instead, where `addChild` means what it says.
     private final class Content: NSViewController {
+        /// Installed by `MainViewController`, behind every session's view.
+        let backdrop: NSVisualEffectView
+
+        init(backdrop: NSVisualEffectView) {
+            self.backdrop = backdrop
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        @available(*, unavailable)
+        required init?(coder _: NSCoder) { fatalError("not supported") }
+
         override func loadView() {
             let view = NSView()
             view.wantsLayer = true
+            backdrop.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(backdrop)
+            NSLayoutConstraint.activate([
+                backdrop.topAnchor.constraint(equalTo: view.topAnchor),
+                backdrop.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                backdrop.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                backdrop.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
             self.view = view
         }
 
@@ -538,6 +581,9 @@ final class MainViewController: NSSplitViewController {
             splitView.setPosition(AppSettings.sidebarWidth, ofDividerAt: 0)
         }
         view.window?.backgroundColor = ChromeTheme.current.background
+            .withAlphaComponent(AppSettings.windowOpacity)
+        contentBackdrop.blendingMode = AppSettings.backgroundBlur
+            ? .behindWindow : .withinWindow
         sidebar.applyChromeTheme()
         for controller in controllers.values { controller.applySettings() }
     }

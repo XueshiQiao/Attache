@@ -35,6 +35,8 @@ enum AppSettings {
         static let sidebarWidth         = "TmuxGUISidebarWidth"
         static let closingTabKills      = "TmuxGUIClosingTabKills"
         static let paneFocusRing        = "TmuxGUIPaneFocusRing"
+        static let windowOpacity        = "TmuxGUIWindowOpacity"
+        static let backgroundBlur       = "TmuxGUIBackgroundBlur"
     }
 
     /// Posted after any setting changes, with `ChromeTheme.current` already
@@ -88,6 +90,21 @@ enum AppSettings {
     /// Zero collapses the session rail underneath the traffic lights, which
     /// float over it because the window has no title bar.
     static let sidebarWidthRange: ClosedRange<CGFloat> = 120 ... 400
+
+    /// How much of what is behind the window shows through it.
+    ///
+    /// 1.0 is the app as it was before any of this existed, and it has to stay
+    /// reachable: a terminal that cannot be made solid is unusable over a busy
+    /// desktop, and this is a preference, not a look the app imposes.
+    ///
+    /// The floor is not 0. A fully transparent window is one whose text sits on
+    /// the wallpaper with nothing behind it — unreadable, and reachable by
+    /// accident from a slider. 0.3 still reads as glass and still has a
+    /// background.
+    static let windowOpacityRange: ClosedRange<CGFloat> = 0.3 ... 1.0
+    static let defaultWindowOpacity: CGFloat = 0.85
+
+
 
     // ─── Accessors ───────────────────────────────────────────────────────────
 
@@ -157,6 +174,35 @@ enum AppSettings {
                 forKey: Key.sidebarWidth
             )
         }
+    }
+
+    /// How opaque the window is, 0.3 to 1.0. See `windowOpacityRange`.
+    static var windowOpacity: CGFloat {
+        get {
+            clamp(
+                (store.object(forKey: Key.windowOpacity) as? Double).map { CGFloat($0) }
+                    ?? defaultWindowOpacity,
+                to: windowOpacityRange, fallback: defaultWindowOpacity
+            )
+        }
+        set {
+            store.set(
+                Double(clamp(newValue, to: windowOpacityRange, fallback: defaultWindowOpacity)),
+                forKey: Key.windowOpacity
+            )
+        }
+    }
+
+    /// Whether the material behind the window blurs the desktop.
+    ///
+    /// Absent reads as `true`: translucency without blur is a window you can
+    /// read the desktop's text through, which is the effect nobody wants. Off
+    /// still leaves the window translucent — it is the difference between
+    /// frosted and plain glass — and it is the setting to reach for if the blur
+    /// ever costs measurable frames.
+    static var backgroundBlur: Bool {
+        get { store.object(forKey: Key.backgroundBlur) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.backgroundBlur) }
     }
 
     /// Whether the ✕ on a tab kills the tmux window instead of hiding it.

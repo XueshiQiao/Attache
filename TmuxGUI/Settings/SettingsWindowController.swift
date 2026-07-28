@@ -39,6 +39,8 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var sidebarWidth: CGFloat
     @Published private(set) var closingTabKillsWindow: Bool
     @Published private(set) var showsPaneFocusRing: Bool
+    @Published private(set) var windowOpacity: CGFloat
+    @Published private(set) var backgroundBlur: Bool
 
     // ─── Throughput probe (About page) ───────────────────────────────────────
     @Published private(set) var isProbing = false
@@ -59,6 +61,8 @@ final class SettingsStore: ObservableObject {
         sidebarWidth = AppSettings.sidebarWidth
         closingTabKillsWindow = AppSettings.closingTabKillsWindow
         showsPaneFocusRing = AppSettings.showsPaneFocusRing
+        windowOpacity = AppSettings.windowOpacity
+        backgroundBlur = AppSettings.backgroundBlur
     }
 
     // MARK: Font
@@ -153,6 +157,20 @@ final class SettingsStore: ObservableObject {
     func setShowsPaneFocusRing(_ shows: Bool) {
         AppSettings.showsPaneFocusRing = shows
         showsPaneFocusRing = shows
+        AppSettings.notifyChanged()
+    }
+
+    func setWindowOpacity(_ opacity: CGFloat) {
+        AppSettings.windowOpacity = opacity
+        windowOpacity = AppSettings.windowOpacity
+        AppSettings.notifyChanged()
+    }
+
+    func resetWindowOpacity() { setWindowOpacity(AppSettings.defaultWindowOpacity) }
+
+    func setBackgroundBlur(_ blurs: Bool) {
+        AppSettings.backgroundBlur = blurs
+        backgroundBlur = blurs
         AppSettings.notifyChanged()
     }
 

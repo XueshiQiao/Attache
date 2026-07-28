@@ -534,10 +534,17 @@ final class SessionSidebarView: NSView {
     /// theme still decides what colour that glass reads as. `NSVisualEffectView`
     /// draws first because it is the split view item's own backing view; this
     /// only has to leave enough of it showing.
-    private static let tintAlpha: CGFloat = 0.55
-
+    ///
+    /// The alpha was a constant 0.55 and produced nothing, because the window
+    /// was opaque and a material with nothing behind it samples the window's
+    /// own fill. Measured then: rail (43,46,56), panes (42,46,56) — the same
+    /// colour to the eye, both solid. It follows the opacity setting now, plus
+    /// `railExtraTint`, which is what keeps the rail reading a little deeper
+    /// than the panes. That difference is the only thing marking where the list
+    /// ends and the terminal begins once neither has a fill of its own.
     override func draw(_ dirtyRect: NSRect) {
-        ChromeTheme.current.background.withAlphaComponent(Self.tintAlpha).setFill()
+        ChromeTheme.current.railBackground
+            .withAlphaComponent(AppSettings.windowOpacity).setFill()
         dirtyRect.fill()
     }
 
