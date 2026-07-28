@@ -169,7 +169,20 @@ final class TmuxSessionConnection {
     /// Sent at most once per distinct size tmux is holding, so a session whose
     /// `window-size` is `smallest` or `manual` — where this app cannot win and
     /// should not — costs two commands rather than two per notification.
-    func reclaimWindowSizeIfTaken() {
+    ///
+    /// - Parameter isUserReturning: true when the app has just been brought back
+    ///   to the front. That resets the attempt counter, because the counter
+    ///   exists to stop this connection arguing forever with a `window-size`
+    ///   setting it cannot beat — and a person switching back to this window is
+    ///   not that argument continuing, it is a new one they just started. Left
+    ///   counted, the third notification-driven attempt against some earlier
+    ///   size would silence every later return to the app, which is exactly the
+    ///   case this whole method exists for.
+    func reclaimWindowSizeIfTaken(isUserReturning: Bool = false) {
+        if isUserReturning {
+            reclaimedAt = nil
+            reclaimAttempts = 0
+        }
         guard let want = lastReportedGrid, let target = sessionTarget,
               let size = activeWindow?.visibleLayout?.frame,
               size.columns != want.columns || size.rows != want.rows
@@ -187,10 +200,15 @@ final class TmuxSessionConnection {
         guard reclaimAttempts < Self.reclaimAttemptLimit else { return }
         reclaimAttempts += 1
 
+        // Which trigger fired is in the line, because the two are the whole
+        // story when this goes wrong and they are indistinguishable otherwise:
+        // the notification path can exhaust its attempts against a client that
+        // keeps taking the size, and only the return path resets that.
         TmuxLog.lifecycle(
             "window is \(disagreement) but this app is laid out for"
                 + " \(want.columns)x\(want.rows) — another client has the size;"
-                + " taking it back (attempt \(reclaimAttempts))",
+                + " taking it back (attempt \(reclaimAttempts),"
+                + " \(isUserReturning ? "user returned to the app" : "tmux notification"))",
             session: sessionName
         )
         client.send("switch-client -t \(target)")

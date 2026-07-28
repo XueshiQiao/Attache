@@ -244,6 +244,52 @@ arrives from outside — `tmux resize-pane -Z` run inside a pane, another termin
 on the same session, or a session that was already zoomed when the app attached.
 All three are handled; none of them is the one the bullet described.
 
+### 4b.1b The app never noticed tmux ignoring its size — done
+
+Reported 2026-07-28 with a screenshot: two panes drawn in the top-left corner of
+a much larger window, the rest dead space. The session had an ordinary terminal
+attached to it as well, at a different size.
+
+The mechanism is not the one the bullet for this would have guessed, and it is
+worth stating exactly, because "take the size back" was already written and
+already worked. `reportGrid` sends `refresh-client -C` **once per distinct size**
+— it deduplicates. If tmux declines, because `window-size latest` has made some
+other client the most recent, then **tmux sends nothing at all**: the layout did
+not change, so there is no `%layout-change`. And `reclaimWindowSizeIfTaken` was
+reachable only from `syncWithModel`, which runs on notifications. So the app
+asked once, was ignored, was never told it had been ignored, and never asked
+again. Deadlock, and it holds for as long as the app stays open.
+
+Measured on the real server: the app reported `refresh-client -C 126x42`, tmux
+kept the window at 278x74, and `taking it back` appeared **zero** times in the
+log — the recovery path never ran once. Bringing the app to the front then fixed
+it in one attempt.
+
+So the missing input was never a tmux notification. It was *the user coming back
+to the window*, which tmux cannot know about. `MainViewController` now observes
+`didBecomeActive` and `didBecomeKey`, coalesces them (one click delivers both,
+and acting on each sent two `switch-client` + `refresh-client` pairs 13ms apart),
+and reclaims from the state that has settled rather than from the notification.
+
+**The second half came from the report and matters more than the first.** Taking
+the size back on every `%layout-change` regardless of focus is a fight, not a
+fix: the user resizes in their terminal, tmux announces it, a backgrounded app
+grabs it back, and the layout visibly jumps back and forth. Eight
+notification-driven reclaims were observed in one short run. Two clients of
+different sizes cannot both be satisfied — tmux gives a window one size — so the
+rule is now that this app only ever claims the size while it is the **key
+window**. Backgrounded it draws what tmux says even when that leaves dead space,
+because dead space is honest and a fight is not. Verified on the real server:
+eight rounds of activity in the terminal while the app was hidden produced **0**
+reclaims, and returning to the app produced exactly **1**.
+
+`window-size manual` and `smallest` are still bounded per notification, but a
+return now resets that counter — a person switching back is a new intent, not the
+previous argument continuing. Codex flagged that repeated focus changes can
+therefore keep asking; that is accepted, because each ask costs two commands and
+requires a deliberate human action, and the alternative silences the one moment
+the app is entitled to the size.
+
 ### 4b.2 A session rename tears down a healthy session
 
 - [ ] **Sessions are keyed by name everywhere, and `%session-renamed` is
@@ -564,6 +610,31 @@ snapshot to land on top of it.
       scheme's foreground/background pair on the assumption they are opaque; a
       contrast floor computed against a colour that is now translucent is no
       longer a contrast floor.
+
+- [ ] **Write down what the layout has to be renegotiated for, in one place.**
+      Low priority, asked for 2026-07-28, and the reasoning is worth keeping
+      because it came from the right observation: this app already *is* a
+      unidirectional data flow in the React sense — tmux is the store, a tmux
+      command is the action, a control-mode notification is the subscription,
+      `syncWithModel` is the render, and only two values are authored locally.
+      What it lacks is React's dependency list. Nothing anywhere states which
+      events make the grid need renegotiating with tmux, so an input can simply
+      be missing and nothing points at the hole.
+
+      4b.1b was exactly that: tmux notifications, window resize, font change and
+      session switch were all wired up, and *the user returning to the app* was
+      not. It cost a screenshot and a wrong first diagnosis to find.
+
+      The work is to collect those triggers into one place with a line each on
+      why it is there — not to add an abstraction layer. A layer holding state
+      between the app and tmux would be a second place that can disagree with
+      tmux, which is the mistake all of section 4b is made of; the reconciling is
+      already done twice over (tmux only announces real changes,
+      `PaneGridView.setContent` already reuses surfaces); and what gets rendered
+      is a GPU terminal surface whose rebuild costs the pane's scrollback, so the
+      reuse rules are nothing like a DOM's. See 4b.5 for the part that genuinely
+      is more React-shaped: subscribing to specific tmux format variables with
+      `refresh-client -B` instead of re-reading the whole window list.
 
 - [ ] **Search** within a pane's scrollback. libghostty has
       `TerminalSurfaceSearchDelegate`; the buffer is already populated.

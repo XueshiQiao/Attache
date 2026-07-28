@@ -431,12 +431,35 @@ final class SessionViewController: NSViewController {
         titleBand.show(name: connection.activeWindow?.name)
         releaseSurfacesForDepartedPanes()
 
-        // Only for the session on screen. A session the user is not looking at
-        // has no business fighting another terminal over its size — this app's
-        // grid describes the window it is drawn in, and that window is showing
-        // exactly one session.
-        if isViewLoaded, view.window != nil { connection.reclaimWindowSizeIfTaken() }
+        // Only for the session on screen, and only while this app is the one
+        // being looked at. A session the user is not looking at has no business
+        // fighting another terminal over its size — this app's grid describes
+        // the window it is drawn in, and that window is showing exactly one
+        // session.
+        //
+        // `isKeyWindow` rather than merely having a window, and that is the
+        // whole difference between taking a size back and a fight. Two clients
+        // of different sizes cannot both be satisfied: tmux gives a window one
+        // size. So a background app that takes the size back on every
+        // `%layout-change` produces exactly the loop it looks like — the user
+        // resizes in their terminal, tmux announces it, this app grabs it back,
+        // tmux announces that, the terminal's own client reacts, and the layout
+        // visibly jumps back and forth with nobody winning. Observed here: eight
+        // notification-driven reclaims in one short run.
+        //
+        // Backgrounded, the right behaviour is to draw what tmux says even when
+        // it does not fit — dead space is honest, a fight is not. The moment the
+        // user comes back to this window it becomes the key window, and
+        // `MainViewController` asks for the size then. That is the one moment
+        // this app is entitled to it, and no window has a key window while its
+        // app is inactive, so this single test covers both conditions.
+        if isViewLoaded, view.window?.isKeyWindow == true {
+            connection.reclaimWindowSizeIfTaken()
+        }
 
+        // The *visible* layout, so a zoomed pane is drawn at the size tmux
+        // actually gave it. The pane *set* comes from the saved layout instead,
+        // in the release pass above — see `TmuxWindow`.
         guard let window = connection.activeWindow, let layout = window.visibleLayout else { return }
 
         for paneID in layout.panes.map(\.id) where surfaces[paneID] == nil {

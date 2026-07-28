@@ -87,10 +87,97 @@ final class MainViewController: NSSplitViewController {
             guard let controller = self else { return }
             Task { @MainActor in controller.applySettings() }
         }
+
+        observeReturningToTheApp()
     }
 
     deinit {
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
+        for observer in returnObservers { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    private var returnObservers = [NSObjectProtocol]()
+
+    /// Take the window size back whenever the user comes back to this app.
+    ///
+    /// This is the one thing tmux cannot tell the app, and the reason the size
+    /// mechanism was ineffective in the case it was written for. tmux's default
+    /// `window-size latest` sizes a session's windows to whichever client had
+    /// the most recent activity, so attaching an ordinary terminal to the same
+    /// session and typing in it hands that terminal the size — and the app then
+    /// draws tmux's smaller layout inside its own larger window, leaving the
+    /// dead space below and to the right of the panes that this presents as.
+    ///
+    /// A real terminal recovers from that by *being* used: keystrokes from an
+    /// attached client are activity, so switching to it makes it the latest and
+    /// tmux reflows. This app never gets there. Its keystrokes go out as
+    /// `send-keys` commands rather than as client input, and — the part that
+    /// made the existing fix inert — `reclaimWindowSizeIfTaken` was reachable
+    /// only from `syncWithModel`, which runs on tmux's structural
+    /// notifications. Coming back to a window produces none: measured, the app
+    /// regaining focus generates nothing at all on the control stream. So the
+    /// only moment at which the app could act was a moment it was never told
+    /// about.
+    ///
+    /// Both notifications, because they answer different questions and either
+    /// one alone leaves a real gap. `didBecomeActive` fires when the app is
+    /// brought forward from another application — the case in the report — but
+    /// not when the user moves between two windows of this app. `didBecomeKey`
+    /// fires for that, and also when the app is activated by clicking its
+    /// window. Asking twice costs nothing: the size is compared against tmux's
+    /// before anything is sent, so a redundant call returns without a command.
+    private func observeReturningToTheApp() {
+        for name in [NSApplication.didBecomeActiveNotification, NSWindow.didBecomeKeyNotification] {
+            returnObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.setNeedsWindowSizeReclaim()
+            })
+        }
+    }
+
+    private var reclaimScheduled = false
+
+    /// Coalesce to one reclaim per return, and decide from the state that has
+    /// settled rather than from the notification.
+    ///
+    /// One click on the app's icon delivers *both* notifications, and acting on
+    /// each sent two `switch-client` + `refresh-client` pairs for a single
+    /// user action — observed in the log, two attempts 13ms apart. Neither
+    /// notification is the wrong one to listen to, so the fix is to treat both
+    /// as the same request rather than to drop one.
+    ///
+    /// Deferring also fixes what filtering on the notification could not.
+    /// `didBecomeActive` carries no window, so a settings window in front would
+    /// still have asked for a reclaim of a terminal window the user never
+    /// returned to — resizing a session shared with another terminal for
+    /// nobody's benefit. And filtering `didBecomeKey` on the window identity is
+    /// unreliable at the moment it arrives, because key status is still moving.
+    /// By the next turn it has stopped, so `isKeyWindow` can simply be asked.
+    private func setNeedsWindowSizeReclaim() {
+        guard !reclaimScheduled else { return }
+        reclaimScheduled = true
+        Task { @MainActor [weak self] in
+            self?.reclaimScheduled = false
+            self?.reclaimWindowSizeForShownSession()
+        }
+    }
+
+    /// Only the session on screen, only once it really has a window, and only
+    /// when that window is the one the user is looking at.
+    ///
+    /// A session the user is not looking at has no business arguing about a size
+    /// that describes a window showing something else — the same reason
+    /// `syncWithModel` guards its own call this way. The key-window test is the
+    /// stronger version of that for this trigger: the terminal window being
+    /// *attached* is not the same as it being the window that just came forward.
+    private func reclaimWindowSizeForShownSession() {
+        guard let controller = currentSession,
+              controller.isViewLoaded,
+              let window = controller.view.window,
+              window.isKeyWindow
+        else { return }
+        controller.connection.reclaimWindowSizeIfTaken(isUserReturning: true)
     }
 
     /// The rail's clicks, both levels of them.
