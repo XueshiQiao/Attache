@@ -39,6 +39,7 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var sidebarWidth: CGFloat
     @Published private(set) var closingTabKillsWindow: Bool
     @Published private(set) var showsPaneFocusRing: Bool
+    @Published private(set) var copyOnSelect: Bool
     @Published private(set) var windowOpacity: CGFloat
     @Published private(set) var backgroundBlur: Bool
     @Published private(set) var blurRadius: CGFloat
@@ -67,6 +68,7 @@ final class SettingsStore: ObservableObject {
         sidebarWidth = AppSettings.sidebarWidth
         closingTabKillsWindow = AppSettings.closingTabKillsWindow
         showsPaneFocusRing = AppSettings.showsPaneFocusRing
+        copyOnSelect = AppSettings.copyOnSelect
         windowOpacity = AppSettings.windowOpacity
         backgroundBlur = AppSettings.backgroundBlur
         blurRadius = AppSettings.blurRadius
@@ -169,6 +171,12 @@ final class SettingsStore: ObservableObject {
     func setShowsPaneFocusRing(_ shows: Bool) {
         AppSettings.showsPaneFocusRing = shows
         showsPaneFocusRing = shows
+        AppSettings.notifyChanged()
+    }
+
+    func setCopyOnSelect(_ copies: Bool) {
+        AppSettings.copyOnSelect = copies
+        copyOnSelect = copies
         AppSettings.notifyChanged()
     }
 

@@ -65,6 +65,33 @@ struct BehaviourPage: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
             Section {
+                Toggle(isOn: Binding(
+                    get: { store.copyOnSelect },
+                    set: { store.setCopyOnSelect($0) }
+                )) {
+                    iconLabel(
+                        "text.cursor",
+                        store.copyOnSelect ? .blue : .gray,
+                        "Copy on select"
+                    )
+                }
+            } header: {
+                Text("Selection")
+            } footer: {
+                // Off is macOS; on is what iTerm2 and most Linux terminals do.
+                // Said plainly because the cost only shows up later: a
+                // selection made while reading has already replaced whatever
+                // was on the clipboard.
+                Text(
+                    "Off, selected text goes to the clipboard only when you press ⌘C. On, it "
+                        + "goes there the moment you release the mouse — which also means any "
+                        + "selection you make while reading replaces what you last copied."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
                 HStack {
                     featureLabel(
                         "clock.arrow.circlepath", .orange,

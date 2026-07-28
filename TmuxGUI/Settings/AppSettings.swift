@@ -35,6 +35,7 @@ enum AppSettings {
         static let sidebarWidth         = "TmuxGUISidebarWidth"
         static let closingTabKills      = "TmuxGUIClosingTabKills"
         static let paneFocusRing        = "TmuxGUIPaneFocusRing"
+        static let copyOnSelect         = "TmuxGUICopyOnSelect"
         static let windowOpacity        = "TmuxGUIWindowOpacity"
         static let backgroundBlur       = "TmuxGUIBackgroundBlur"
         static let chromeMaterial       = "TmuxGUIChromeMaterial"
@@ -457,6 +458,20 @@ enum AppSettings {
         set { store.set(newValue, forKey: Key.paneFocusRing) }
     }
 
+    /// Whether releasing the mouse after selecting text puts it on the
+    /// clipboard.
+    ///
+    /// Absent reads as `false`, which is ⌘C and the macOS convention. On is the
+    /// habit people bring from iTerm2 and from Linux terminals. Neither is
+    /// obviously right — the cost of on is that the clipboard is overwritten by
+    /// a selection made while reading — so this is a setting rather than a
+    /// decision. `object(forKey:) as? Bool` rather than `bool(forKey:)`,
+    /// because only the former can tell an absent key from a stored `false`.
+    static var copyOnSelect: Bool {
+        get { store.object(forKey: Key.copyOnSelect) as? Bool ?? false }
+        set { store.set(newValue, forKey: Key.copyOnSelect) }
+    }
+
     // ─── Derived values ──────────────────────────────────────────────────────
 
     /// The font overrides, as libghostty config keys. Applied on top of the
@@ -467,6 +482,14 @@ enum AppSettings {
             let family = fontFamily
             if !family.isEmpty { builder.withFontFamily(family) }
             builder.withFontSize(Float(fontSize))
+            // Stated in both positions, and that is the point: libghostty's own
+            // default is `true`, so this app copied every selection to the
+            // clipboard for as long as it has existed, with nothing anywhere
+            // saying so. The first version of the setting added a second copy
+            // in `mouseUp` on top of that one — two mechanisms for one
+            // behaviour, which is how "off" ended up copying and "on" ended up
+            // not. There is one mechanism now and it is libghostty's.
+            builder.withCustom("copy-on-select", copyOnSelect ? "true" : "false")
         }
     }
 

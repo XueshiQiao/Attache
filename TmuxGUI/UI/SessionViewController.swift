@@ -63,6 +63,18 @@ final class SessionViewController: NSViewController {
 
     private var surfaces = [String: TmuxPaneSurface]()
     private var adoptedCellSize = false
+    /// Everything about the current settings that can move a character cell.
+    /// One expression, so the seed below and the comparison in `applySettings`
+    /// cannot drift apart.
+    private static var fontDescription: String {
+        "\(AppSettings.fontFamily)|\(AppSettings.fontSize)"
+    }
+
+    /// The font the controller's configuration was last known to carry. Seeded
+    /// rather than left empty because `controller` is built from exactly this
+    /// configuration, so the first `applySettings` must not read as a font
+    /// change.
+    private var appliedFontDescription = SessionViewController.fontDescription
     private var focusedPaneID: String?
 
     /// Windows the user hid from the rail.
@@ -249,23 +261,58 @@ final class SessionViewController: NSViewController {
     ///    metrics are already current — the coordinator drops it as unchanged.
     func applySettings() {
         let configuration = AppSettings.terminalConfiguration()
-        if controller.terminalConfiguration != configuration {
-            // Gated on the font config actually differing, so a settings change
-            // that cannot move the cell size — a colour scheme, the rail width —
-            // never resets the latch or suspends calibration. Logged because
-            // entering this branch is the only thing after launch that changes
-            // the grid out from under tmux.
-            TmuxLog.lifecycle(
-                "font changed — re-measuring the cell size for \(surfaces.count) surface(s)",
-                session: connection.sessionName
-            )
-            adoptedCellSize = false
-            gridView.prepareForCellSizeChange()
-            controller.setTerminalConfiguration(configuration)
-            for surface in surfaces.values { surface.view.fitToSize() }
-            // Guarantee a layout pass this turn even if nothing reported a new
-            // cell size, so the calibration suspension above cannot latch on.
-            gridView.needsLayout = true
+        // The font inputs, compared separately from the configuration as a
+        // whole. libghostty's configuration is opaque from here — its command
+        // list is internal — so "did the cell size just move" has to be asked
+        // of this app's own inputs. It stopped being the same question as "did
+        // the configuration change" when copy-on-select joined the config: a
+        // switch that cannot touch a glyph would otherwise reset the latch,
+        // suspend calibration and log a font change that never happened.
+        let fontDescription = Self.fontDescription
+
+        if controller.terminalConfiguration == configuration {
+            // Nothing to push — *or* the controller was created on this very
+            // line, because it is lazy, and a lazy controller is created with
+            // whatever the configuration is at that moment. Recording the font
+            // on this path is not tidiness: without it the marker keeps the
+            // font this session controller happened to be *constructed* at,
+            // and a later change back to that font reads as no change at all.
+            // The latch would stay closed, the surfaces would keep the other
+            // font's cell size, and the grid this app reports to tmux would be
+            // wrong for the rest of the run — the one failure this file exists
+            // to prevent. Found by review, not by running it.
+            appliedFontDescription = fontDescription
+        } else {
+            let fontChanged = fontDescription != appliedFontDescription
+
+            if fontChanged {
+                // Before the push, and in this order — see the note above.
+                // Logged because entering this branch is the only thing after
+                // launch that changes the grid out from under tmux.
+                TmuxLog.lifecycle(
+                    "font changed — re-measuring the cell size for \(surfaces.count) surface(s)",
+                    session: connection.sessionName
+                )
+                adoptedCellSize = false
+                gridView.prepareForCellSizeChange()
+            }
+            // Through the controller rather than by recreating surfaces: it
+            // reaches every live surface, hidden windows included, and a
+            // recreated surface would lose its scrollback.
+            //
+            // The marker moves only if the push was taken. A refused push
+            // leaves the controller on the old font, and a marker that had
+            // moved anyway would make the retry look like nothing to do.
+            if controller.setTerminalConfiguration(configuration) {
+                appliedFontDescription = fontDescription
+            }
+            if fontChanged {
+                for surface in surfaces.values { surface.view.fitToSize() }
+                // Guarantee a layout pass this turn even if nothing reported a
+                // new cell size, so the calibration suspension above cannot
+                // latch on.
+                gridView.needsLayout = true
+            }
         }
         controller.setTheme(AppSettings.terminalTheme())
 
