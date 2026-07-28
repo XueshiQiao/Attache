@@ -220,6 +220,14 @@ Then screenshot and look: `screencapture -x -o -R x,y,w,h out.png`. Move the
 window to a known position first — the coordinates are global and a second
 display puts it at a negative x.
 
+**A self-capture cannot see through its own window.** The inspector's `/shot`
+uses `CGWindowListCreateImage`, which composites that window and nothing
+behind it, so on a translucent window it returns the material's no-backdrop
+grey — the same picture at two window positions a thousand points apart,
+differing by one step out of 255. Anything about translucency, blur or how the
+chrome sits over a wallpaper needs `screencapture` (Screen Recording consent)
+or a person. Say which one you had.
+
 **Do not `screencapture` between `dd` and `du`.** Observed here: capturing
 mid-drag sometimes ends the gesture, so the `du` arrives with nothing to deliver
 to and the drop is lost. It looks exactly like the app dropping the action.
@@ -272,17 +280,36 @@ one of them presents as "the code is obviously correct and yet".
   not clipped. Whichever sibling is added last wins. A view can have a correct
   frame, `isHidden == false`, alpha 1, and confirmed `draw(_:)` calls, and still
   render nothing. Check `addSubview` order first.
-- **A sidebar's inset panel is the design, not a defect — and
-  `allowsFullHeightLayout` needs a toolbar.** On macOS 26 an
-  `NSSplitViewItem` with sidebar behaviour draws the rail as an inset rounded
-  panel. The traffic lights belong *inside* that panel, and
-  `allowsFullHeightLayout` is what lifts it into the titlebar band to put them
-  there — but the flag does nothing unless `window.toolbar` is set. An empty
-  `NSToolbar` is enough, and the main window carries one for exactly this and
-  no other reason. Both windows here were "fixed" twice by deleting the panel
-  instead, which produced a flat rail with the lights above it: the opposite of
-  the ask, arrived at because the first window happened to come right when a
-  toolbar item was added for an unrelated reason and nobody asked why.
+- **The sidebar's inset panel was the design, and then macOS 26 made it
+  unusable.** On macOS 26 an `NSSplitViewItem` with sidebar behaviour draws the
+  rail as an inset rounded panel, and `allowsFullHeightLayout` — which needs a
+  toolbar, an empty one is enough — lifts it into the titlebar band so the
+  traffic lights sit inside it. That was right, and deleting the panel to move
+  the lights was wrong twice. It is gone now anyway, for a reason none of that
+  touches: the panel arrives with the system's **Liquid Glass rim** around its
+  inset margin, and that margin belongs to AppKit. On a translucent window the
+  rim is a third kind of glass beside the rail's tint and the panes', and it
+  cannot be tinted, covered or switched off. The rail is a plain split item and
+  edge to edge; the window's `.fullSizeContentView` keeps the lights over it.
+  Do not restore the panel to fix the lights — check where they actually are
+  first.
+- **Handing `NSSplitViewController` a split view brings the window up
+  completely blank.** It creates and wires its own, in ways that setting
+  `delegate` on a replacement does not reproduce, and there is no error: the
+  window opens, the app runs, and nothing is drawn. `MainViewController`
+  re-classes the instance AppKit already made instead — safe only because the
+  subclass adds no stored properties and the instance really is a plain
+  `NSSplitView`, which is checked on every launch.
+- **A macOS material is not a pane of glass, and the two things people mean by
+  "transparency" are separate.** `NSVisualEffectView` is a frosted sheet with an
+  opacity of its own that no tint painted over it can reduce — a window at 15%
+  tint over one still barely shows the desktop — and its blur is fixed per
+  material with no API to change it. `CALayer.backgroundFilters` with a
+  `CIGaussianBlur` is the public way to blur a window's backdrop at a radius of
+  your choosing (public on macOS, not on iOS); `NSGlassEffectView` is macOS 26's
+  own, and it tints the backdrop itself, so anything painted on top applies the
+  colour twice. `WindowGlass` keeps all three apart and every drawing site asks
+  it rather than deciding.
 - **libghostty claims ⌘ keys.** Its terminal view treats them as candidates for
   its own keybinds before the main menu is consulted. `TmuxTerminalView`
   overrides `performKeyEquivalent` to give the menu first refusal.
