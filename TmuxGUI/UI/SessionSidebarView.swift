@@ -543,8 +543,7 @@ final class SessionSidebarView: NSView {
     /// than the panes. That difference is the only thing marking where the list
     /// ends and the terminal begins once neither has a fill of its own.
     override func draw(_ dirtyRect: NSRect) {
-        ChromeTheme.current.railBackground
-            .withAlphaComponent(AppSettings.windowOpacity).setFill()
+        WindowGlass.resolved().railFill.setFill()
         dirtyRect.fill()
     }
 

@@ -487,7 +487,10 @@ final class PaneGridView: NSView {
         // surfaces are built with `withBackgroundOpacity(0)`, so what shows
         // between glyphs is this fill, and what shows through this fill is the
         // desktop. See `AppSettings.windowOpacity`.
-        theme.background.withAlphaComponent(AppSettings.windowOpacity).setFill()
+        // Asked for rather than computed: with Liquid Glass the answer is
+        // `.clear`, because that glass tints the backdrop itself and a fill on
+        // top would apply the same colour twice. See `WindowGlass`.
+        WindowGlass.resolved().paneFill.setFill()
         dirtyRect.fill()
 
         theme.separator.setFill()

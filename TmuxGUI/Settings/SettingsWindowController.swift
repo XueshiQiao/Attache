@@ -41,6 +41,12 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var showsPaneFocusRing: Bool
     @Published private(set) var windowOpacity: CGFloat
     @Published private(set) var backgroundBlur: Bool
+    @Published private(set) var blurRadius: CGFloat
+    @Published private(set) var railExtraTint: CGFloat
+    @Published private(set) var frostiness: CGFloat
+    @Published private(set) var chromeMaterial: AppSettings.ChromeMaterial
+    @Published private(set) var glassStyle: AppSettings.GlassStyle
+    @Published private(set) var liquidGlassIsClear: Bool
 
     // ─── Throughput probe (About page) ───────────────────────────────────────
     @Published private(set) var isProbing = false
@@ -63,6 +69,12 @@ final class SettingsStore: ObservableObject {
         showsPaneFocusRing = AppSettings.showsPaneFocusRing
         windowOpacity = AppSettings.windowOpacity
         backgroundBlur = AppSettings.backgroundBlur
+        blurRadius = AppSettings.blurRadius
+        railExtraTint = AppSettings.railExtraTint
+        frostiness = AppSettings.frostiness
+        chromeMaterial = AppSettings.chromeMaterial
+        glassStyle = AppSettings.glassStyle
+        liquidGlassIsClear = AppSettings.liquidGlassIsClear
     }
 
     // MARK: Font
@@ -167,6 +179,61 @@ final class SettingsStore: ObservableObject {
     }
 
     func resetWindowOpacity() { setWindowOpacity(AppSettings.defaultWindowOpacity) }
+
+    func setBlurRadius(_ radius: CGFloat) {
+        AppSettings.blurRadius = radius
+        blurRadius = AppSettings.blurRadius
+        AppSettings.notifyChanged()
+    }
+
+    func setRailExtraTint(_ tint: CGFloat) {
+        AppSettings.railExtraTint = tint
+        railExtraTint = AppSettings.railExtraTint
+        AppSettings.notifyChanged()
+    }
+
+    func setFrostiness(_ value: CGFloat) {
+        AppSettings.frostiness = value
+        frostiness = AppSettings.frostiness
+        AppSettings.notifyChanged()
+    }
+
+    func setGlassStyle(_ style: AppSettings.GlassStyle) {
+        AppSettings.glassStyle = style
+        glassStyle = style
+        AppSettings.notifyChanged()
+    }
+
+    func setLiquidGlassIsClear(_ clear: Bool) {
+        AppSettings.liquidGlassIsClear = clear
+        liquidGlassIsClear = clear
+        AppSettings.notifyChanged()
+    }
+
+    func setChromeMaterial(_ material: AppSettings.ChromeMaterial) {
+        AppSettings.chromeMaterial = material
+        chromeMaterial = material
+        AppSettings.notifyChanged()
+    }
+
+    /// Everything about the window's glass, back to how it ships.
+    func resetGlass() {
+        AppSettings.windowOpacity = AppSettings.defaultWindowOpacity
+        AppSettings.blurRadius = AppSettings.defaultBlurRadius
+        AppSettings.railExtraTint = AppSettings.defaultRailExtraTint
+        AppSettings.frostiness = AppSettings.defaultFrostiness
+        AppSettings.chromeMaterial = AppSettings.defaultChromeMaterial
+        AppSettings.glassStyle = AppSettings.defaultGlassStyle
+        AppSettings.liquidGlassIsClear = true
+        windowOpacity = AppSettings.windowOpacity
+        blurRadius = AppSettings.blurRadius
+        railExtraTint = AppSettings.railExtraTint
+        frostiness = AppSettings.frostiness
+        chromeMaterial = AppSettings.chromeMaterial
+        glassStyle = AppSettings.glassStyle
+        liquidGlassIsClear = AppSettings.liquidGlassIsClear
+        AppSettings.notifyChanged()
+    }
 
     func setBackgroundBlur(_ blurs: Bool) {
         AppSettings.backgroundBlur = blurs

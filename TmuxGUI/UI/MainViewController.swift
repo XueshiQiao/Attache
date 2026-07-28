@@ -66,6 +66,7 @@ final class MainViewController: NSSplitViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.wantsLayer = true
+        removeDividerLine()
         installSidebar()
 
         // The system flipping between light and dark is the input "follow
@@ -430,22 +431,32 @@ final class MainViewController: NSSplitViewController {
     // MARK: - Chrome
 
     private func installSidebar() {
-        // `sidebarWithViewController:`, because the inset rounded panel it
-        // draws on macOS 26 is the thing that was wanted, not a defect. An
-        // earlier reading of the report had this as a plain item filling the
-        // column edge to edge, which removed the panel entirely — the opposite
-        // of the ask. `allowsFullHeightLayout` is what puts the traffic lights
-        // *inside* that panel rather than in a band above it.
-        contentBackdrop.material = .underWindowBackground
-        contentBackdrop.blendingMode = AppSettings.backgroundBlur ? .behindWindow : .withinWindow
-        // `.followsWindowActiveState` is the default and is wrong here: it
-        // desaturates the material when the window is not key, which on a
-        // terminal reads as the panes greying out every time the user looks at
-        // another app.
-        contentBackdrop.state = .active
+        // A plain item, and the reasoning has *changed* — this is not the
+        // mistake CLAUDE.md records, it is the fix for what that mistake had
+        // been standing in front of.
+        //
+        // `sidebarWithViewController:` draws the rail as an inset rounded panel,
+        // and that panel was correctly the design: the traffic lights belong
+        // inside it, and deleting it twice to get them there was the error. But
+        // on macOS 26 the panel arrives with the system's Liquid Glass
+        // treatment — a bright refractive rim around the inset margin — and that
+        // rim is a *third* kind of glass beside the rail's tint and the panes'.
+        // It cannot be tinted, covered or switched off, because the margin it
+        // lives in belongs to AppKit and to no view this app owns. Confirmed by
+        // eye against a photo wallpaper: panes frosted, panel frosted and
+        // deeper, and the ring around the panel something else entirely.
+        //
+        // Edge to edge, the rail is a view this app draws, both halves carry the
+        // same material, and the whole difference between them is one tint. The
+        // window already has `.fullSizeContentView`, so the content still runs
+        // to the top of the window and the traffic lights float over the rail —
+        // which is where the panel used to put them, and where the terminal this
+        // was dialled in against puts them too.
+        applyBackdropSettings()
 
-        let sidebarItem = NSSplitViewItem(sidebarWithViewController: Hosting(view: sidebar))
-        sidebarItem.allowsFullHeightLayout = true
+        let sidebarItem = NSSplitViewItem(
+            viewController: Hosting(view: sidebar, backdrop: railBackdrop)
+        )
         // Not collapsible. Collapsing is standard sidebar behaviour and comes
         // free, but the only ways back are a toolbar button and a View menu
         // item, and this window has neither — a user who drags the divider
@@ -463,13 +474,78 @@ final class MainViewController: NSSplitViewController {
         splitView.setPosition(AppSettings.sidebarWidth, ofDividerAt: 0)
     }
 
+    /// Put both halves on the same material, or on none.
+    ///
+    /// Both, always, and that is the point: two halves on two different system
+    /// materials cannot be made to agree by tinting them, because each material
+    /// decides for itself how much of the desktop it lets past.
+    /// Take the line out from between the two halves.
+    ///
+    /// By re-classing the split view `NSSplitViewController` already built,
+    /// not by supplying one — see `SeamlessSplitView` for why that second route
+    /// leaves the window blank. Guarded on the class actually being a plain
+    /// `NSSplitView`: if a future AppKit hands over a private subclass,
+    /// re-classing would throw that subclass's behaviour away, and a visible
+    /// divider is a far better outcome than a broken one.
+    private func removeDividerLine() {
+        guard type(of: splitView) == NSSplitView.self else {
+            TmuxLog.lifecycle(
+                "leaving the split view divider alone — it is a"
+                    + " \(type(of: splitView)), not a plain NSSplitView"
+            )
+            return
+        }
+        object_setClass(splitView, SeamlessSplitView.self)
+        // Thin rather than the pane-splitter default: the colour is clear
+        // either way, but a wide clear divider leaves a band of untinted window
+        // between the halves, which is a third tone in a window whose whole
+        // point is that it has two.
+        splitView.dividerStyle = .thin
+    }
+
+    private func applyBackdropSettings() {
+        let glass = WindowGlass.resolved()
+        applyBackdropBlur(radius: glass.blurRadius)
+        railBackdrop.apply(glass.railEffect)
+        contentBackdrop.apply(glass.paneEffect)
+    }
+
+    /// Blur the desktop behind the whole window, at a radius this app chooses.
+    ///
+    /// On the split view controller's own view, which *is* the window's content
+    /// view — so the filter applies once, to the window's whole backdrop, and
+    /// the two halves cannot end up blurred by different amounts or show a seam
+    /// where they meet.
+    ///
+    /// `backgroundFilters` blurs what is behind the layer, not the layer, and
+    /// it needs a window that is not opaque to have anything behind it to blur.
+    /// Nil rather than an empty array when the radius is zero: an identity
+    /// filter is still a filter, and still costs a pass over the backdrop every
+    /// frame.
+    private func applyBackdropBlur(radius: CGFloat) {
+        view.wantsLayer = true
+        guard radius > 0,
+              let blur = CIFilter(name: "CIGaussianBlur", parameters: ["inputRadius": radius])
+        else {
+            view.layer?.backgroundFilters = nil
+            return
+        }
+        view.layer?.backgroundFilters = [blur]
+        // Without this the blur samples past the window's own bounds and the
+        // edges fade out, which reads as a soft halo around the window rather
+        // than as glass.
+        view.layer?.masksToBounds = true
+    }
+
     /// Wraps a view the app already builds and owns in the view controller a
     /// split view item requires.
     private final class Hosting: NSViewController {
         private let hosted: NSView
+        private let backdrop: GlassBackdropView
 
-        init(view: NSView) {
+        init(view: NSView, backdrop: GlassBackdropView) {
             hosted = view
+            self.backdrop = backdrop
             super.init(nibName: nil, bundle: nil)
         }
 
@@ -480,7 +556,22 @@ final class MainViewController: NSSplitViewController {
         /// to the sidebar split view item. Supplying a backdrop here was an
         /// attempt to fill the column edge to edge, which is exactly what the
         /// inset panel is not supposed to do.
-        override func loadView() { view = hosted }
+        override func loadView() {
+            let container = NSView()
+            backdrop.translatesAutoresizingMaskIntoConstraints = false
+            hosted.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(backdrop)
+            container.addSubview(hosted)
+            for child in [backdrop, hosted] {
+                NSLayoutConstraint.activate([
+                    child.topAnchor.constraint(equalTo: container.topAnchor),
+                    child.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                    child.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                    child.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                ])
+            }
+            view = container
+        }
     }
 
     /// The material the panes are drawn over.
@@ -497,7 +588,22 @@ final class MainViewController: NSSplitViewController {
     /// `AppSettings.railExtraTint` — and starting from the same material is
     /// what leaves that difference to the tint rather than to two system
     /// materials that shift independently across appearances.
-    private let contentBackdrop = NSVisualEffectView()
+    private let contentBackdrop = GlassBackdropView()
+    /// The rail's own material, over AppKit's.
+    ///
+    /// `NSSplitViewItem`'s sidebar behaviour installs an `NSVisualEffectView`
+    /// with the `.sidebar` material and there is no supported way to ask it not
+    /// to. So this one goes *inside* the rail, on top of it. That works because
+    /// `.behindWindow` blending samples what is behind the **window**, not what
+    /// is behind the view — so this one reaches the desktop directly and the
+    /// system's sheet underneath contributes nothing.
+    ///
+    /// Without it the two halves cannot match: the rail was stuck on
+    /// AppKit's material while the panes were on whatever this app chose, and
+    /// the visible result was a nearly opaque sidebar panel beside a nearly
+    /// opaque terminal, with only the inset margin between them — the window's
+    /// own background — actually letting anything through.
+    private let railBackdrop = GlassBackdropView()
 
     /// The right-hand half, and the parent of whichever session is on screen.
     ///
@@ -509,9 +615,9 @@ final class MainViewController: NSSplitViewController {
     /// of this instead, where `addChild` means what it says.
     private final class Content: NSViewController {
         /// Installed by `MainViewController`, behind every session's view.
-        let backdrop: NSVisualEffectView
+        let backdrop: GlassBackdropView
 
-        init(backdrop: NSVisualEffectView) {
+        init(backdrop: GlassBackdropView) {
             self.backdrop = backdrop
             super.init(nibName: nil, bundle: nil)
         }
@@ -580,10 +686,8 @@ final class MainViewController: NSSplitViewController {
             appliedSidebarWidth = AppSettings.sidebarWidth
             splitView.setPosition(AppSettings.sidebarWidth, ofDividerAt: 0)
         }
-        view.window?.backgroundColor = ChromeTheme.current.background
-            .withAlphaComponent(AppSettings.windowOpacity)
-        contentBackdrop.blendingMode = AppSettings.backgroundBlur
-            ? .behindWindow : .withinWindow
+        view.window?.backgroundColor = WindowGlass.resolved().paneFill
+        applyBackdropSettings()
         sidebar.applyChromeTheme()
         for controller in controllers.values { controller.applySettings() }
     }

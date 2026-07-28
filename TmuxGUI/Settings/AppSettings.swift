@@ -37,6 +37,12 @@ enum AppSettings {
         static let paneFocusRing        = "TmuxGUIPaneFocusRing"
         static let windowOpacity        = "TmuxGUIWindowOpacity"
         static let backgroundBlur       = "TmuxGUIBackgroundBlur"
+        static let chromeMaterial       = "TmuxGUIChromeMaterial"
+        static let frostiness           = "TmuxGUIFrostiness"
+        static let blurRadius           = "TmuxGUIBlurRadius"
+        static let railExtraTint        = "TmuxGUIRailExtraTint"
+        static let glassStyle           = "TmuxGUIGlassStyle"
+        static let liquidGlassClear     = "TmuxGUILiquidGlassClear"
     }
 
     /// Posted after any setting changes, with `ChromeTheme.current` already
@@ -97,12 +103,48 @@ enum AppSettings {
     /// reachable: a terminal that cannot be made solid is unusable over a busy
     /// desktop, and this is a preference, not a look the app imposes.
     ///
-    /// The floor is not 0. A fully transparent window is one whose text sits on
-    /// the wallpaper with nothing behind it — unreadable, and reachable by
-    /// accident from a slider. 0.3 still reads as glass and still has a
-    /// background.
-    static let windowOpacityRange: ClosedRange<CGFloat> = 0.3 ... 1.0
-    static let defaultWindowOpacity: CGFloat = 0.85
+    /// The floor is 0 now, and it took a wrong turn to get there. It was 0.3,
+    /// on the reasoning that a fully transparent window is text on a wallpaper.
+    /// That was only true while this was the *only* control: the material
+    /// underneath has an opacity of its own, and it turned out to be nearly all
+    /// of the opacity — dialled to 0.15, the window still barely showed the
+    /// desktop. With `frostiness` separated out, a tint of 0 over a frosted
+    /// sheet is a perfectly readable window, so the floor has nothing left to
+    /// protect.
+    static let windowOpacityRange: ClosedRange<CGFloat> = 0 ... 1.0
+    static let defaultWindowOpacity: CGFloat = 0.35
+
+    /// How much less of the desktop the rail lets through than the panes do.
+    ///
+    /// Added to the tint's alpha rather than applied as a darker colour, and
+    /// the difference is visible: over a material, more alpha reads as *deeper
+    /// glass* — darker and a little less frosted — where a darker colour at the
+    /// same alpha reads as a different paint on the same glass. The first is
+    /// what the mockup this was dialled in on does, and it is the one that was
+    /// picked.
+    ///
+    /// Small on purpose: it is now the *only* thing separating the two halves,
+    /// since the line between them is gone, but a rail that reads as a
+    /// different window rather than a deeper part of this one is worse than no
+    /// distinction at all.
+    static let railExtraTintRange: ClosedRange<CGFloat> = 0 ... 0.5
+    static let defaultRailExtraTint: CGFloat = 0.10
+
+    static var railExtraTint: CGFloat {
+        get {
+            clamp(
+                (store.object(forKey: Key.railExtraTint) as? Double).map { CGFloat($0) }
+                    ?? defaultRailExtraTint,
+                to: railExtraTintRange, fallback: defaultRailExtraTint
+            )
+        }
+        set {
+            store.set(
+                Double(clamp(newValue, to: railExtraTintRange, fallback: defaultRailExtraTint)),
+                forKey: Key.railExtraTint
+            )
+        }
+    }
 
 
 
@@ -189,6 +231,192 @@ enum AppSettings {
             store.set(
                 Double(clamp(newValue, to: windowOpacityRange, fallback: defaultWindowOpacity)),
                 forKey: Key.windowOpacity
+            )
+        }
+    }
+
+    /// Which of the three ways of showing the desktop the window uses.
+    ///
+    /// Three, and they are kept side by side on purpose: they are not settings
+    /// of one mechanism but three different mechanisms, and which one looks
+    /// right is not a question anyone can answer by reading. See `WindowGlass`
+    /// for what each does and which knobs belong to it.
+    enum GlassStyle: String, CaseIterable {
+        /// This app's own: a gaussian blur at any radius, plus a tint.
+        case blur
+        /// macOS 26's `NSGlassEffectView` — what Ghostty calls
+        /// `macos-glass-regular` and `macos-glass-clear`.
+        case liquidGlass
+        /// The classic `NSVisualEffectView` materials.
+        case material
+
+        var title: String {
+            switch self {
+            case .blur: "Blur"
+            case .liquidGlass: "Liquid Glass"
+            case .material: "System material"
+            }
+        }
+
+        /// Liquid Glass needs macOS 26. Offering it where it cannot be built
+        /// would be a picker entry that silently does nothing.
+        var isAvailable: Bool {
+            guard case .liquidGlass = self else { return true }
+            if #available(macOS 26.0, *) { return true }
+            return false
+        }
+    }
+
+    static let defaultGlassStyle: GlassStyle = .blur
+
+    static var glassStyle: GlassStyle {
+        get {
+            let stored = store.string(forKey: Key.glassStyle).flatMap(GlassStyle.init(rawValue:))
+            // A style stored by a newer OS and read back on an older one falls
+            // back rather than rendering nothing.
+            return (stored?.isAvailable == true ? stored : nil) ?? defaultGlassStyle
+        }
+        set { store.set(newValue.rawValue, forKey: Key.glassStyle) }
+    }
+
+    /// Which of `NSGlassEffectView`'s two styles. Clear is the more transparent
+    /// of the two; regular carries more of its own material.
+    static var liquidGlassIsClear: Bool {
+        get { store.object(forKey: Key.liquidGlassClear) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.liquidGlassClear) }
+    }
+
+    /// The system material the whole window is drawn over, or none at all.
+    ///
+    /// Exists because a macOS "material" is not a pane of glass. It is a mostly
+    /// opaque frosted sheet with a colour of its own, and which one is chosen
+    /// decides how much of the desktop survives it — far more than the tint
+    /// painted on top does. The first build of this had `.underWindowBackground`
+    /// on the content half and AppKit's `.sidebar` on the rail, and the result
+    /// was a window whose opacity slider visibly did almost nothing.
+    ///
+    /// `none` is the Ghostty answer: no material, so the fill is the only thing
+    /// between the text and the desktop. Sharpest, and the only one where the
+    /// opacity setting means exactly what it says.
+    enum ChromeMaterial: String, CaseIterable {
+        case none
+        case underWindowBackground
+        case windowBackground
+        case sidebar
+        case menu
+        case popover
+        case hudWindow
+        case fullScreenUI
+
+        var title: String {
+            switch self {
+            case .none: "No material — clearest"
+            case .underWindowBackground: "Under window"
+            case .windowBackground: "Window"
+            case .sidebar: "Sidebar"
+            case .menu: "Menu"
+            case .popover: "Popover"
+            case .hudWindow: "HUD"
+            case .fullScreenUI: "Full screen"
+            }
+        }
+    }
+
+    /// `.sidebar`, and not for its looks.
+    ///
+    /// While the rail is a real `NSSplitViewItem` sidebar, AppKit paints the
+    /// column it lives in — the inset margin around the panel — with this
+    /// material, and there is no supported way to ask it not to. Anything else
+    /// on the content half is therefore a *second* kind of frost next to the
+    /// first, which is exactly the "three sheets of glass" this setting exists
+    /// to end. Matching it is the only way both halves can look like one
+    /// window while that panel is there.
+    /// None, now that the blur is this app's own.
+    ///
+    /// A material was the only way to get any blur at all while the rail was a
+    /// system sidebar, and it brought its own opacity with it — most of the
+    /// window's, as it turned out. With `blurRadius` doing the blurring there
+    /// is nothing left for a material to contribute except that opacity, so the
+    /// default is to have none and let the two settings mean what they say.
+    /// The others stay reachable for anyone who wants the system's look.
+    static let defaultChromeMaterial: ChromeMaterial = .none
+
+    static var chromeMaterial: ChromeMaterial {
+        get {
+            (store.string(forKey: Key.chromeMaterial)).flatMap(ChromeMaterial.init(rawValue:))
+                ?? defaultChromeMaterial
+        }
+        set { store.set(newValue.rawValue, forKey: Key.chromeMaterial) }
+    }
+
+    /// The alpha the rail's tint goes on at. See `railExtraTint`.
+    static var railOpacity: CGFloat {
+        min(1.0, windowOpacity + railExtraTint)
+    }
+
+    /// How much of the frosted sheet is there at all, 0 to 1.
+    ///
+    /// The second of the two dimensions, and the one that was missing. A macOS
+    /// material is a thick sheet of frost with an opacity of its own that no
+    /// tint painted on top can reduce — so with only the tint to turn, the
+    /// window had a floor it could not go below, and that floor was most of the
+    /// way to opaque. This is the sheet's own alpha.
+    ///
+    /// The two together are what every other terminal calls "opacity" and
+    /// "blur", and they are genuinely independent: `frostiness` decides how
+    /// much the desktop is *blurred and lightened*, `windowOpacity` decides how
+    /// much of the terminal's own colour is laid over the result. Frost 0 is
+    /// clear glass — sharp desktop, no blur.
+    static let frostinessRange: ClosedRange<CGFloat> = 0 ... 1.0
+    static let defaultFrostiness: CGFloat = 0.7
+
+    static var frostiness: CGFloat {
+        get {
+            clamp(
+                (store.object(forKey: Key.frostiness) as? Double).map { CGFloat($0) }
+                    ?? defaultFrostiness,
+                to: frostinessRange, fallback: defaultFrostiness
+            )
+        }
+        set {
+            store.set(
+                Double(clamp(newValue, to: frostinessRange, fallback: defaultFrostiness)),
+                forKey: Key.frostiness
+            )
+        }
+    }
+
+    /// How far the desktop behind the window is blurred, in points.
+    ///
+    /// The dimension `NSVisualEffectView` does not have. A material's blur is
+    /// whatever Apple chose for that material and there is no way to ask for
+    /// more or less of it — which is why turning the other two knobs never
+    /// produced the frosted-but-see-through look this was after.
+    ///
+    /// Done with `CALayer.backgroundFilters` and `CIGaussianBlur`, which is
+    /// public on macOS (it is not on iOS) and blurs what is behind the layer
+    /// rather than the layer itself. That is the same thing a browser's
+    /// `backdrop-filter: blur()` does, and it is what the mockup this was
+    /// dialled in on used.
+    ///
+    /// 0 is clear glass — the desktop shows through sharp. It is a real
+    /// setting, not a disabled state, and it is also the cheap one: a gaussian
+    /// blur over a whole window is GPU work every frame it changes.
+    static let blurRadiusRange: ClosedRange<CGFloat> = 0 ... 80
+    static let defaultBlurRadius: CGFloat = 30
+
+    static var blurRadius: CGFloat {
+        get {
+            clamp(
+                (store.object(forKey: Key.blurRadius) as? Double).map { CGFloat($0) }
+                    ?? defaultBlurRadius,
+                to: blurRadiusRange, fallback: defaultBlurRadius
+            )
+        }
+        set {
+            store.set(
+                Double(clamp(newValue, to: blurRadiusRange, fallback: defaultBlurRadius)),
+                forKey: Key.blurRadius
             )
         }
     }
