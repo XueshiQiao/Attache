@@ -584,27 +584,15 @@ final class SessionViewController: NSViewController {
             for (paneID, outputBefore) in due.sorted(by: { $0.key < $1.key }) {
                 guard let surface = self.surfaces[paneID] else { continue }
 
-                // The first paint of a pane pulls history as well as the
-                // visible screen, so the wheel can scroll back into what
-                // happened before the app was even running. Later repaints —
-                // after a resize — take the visible screen only; the history
-                // is already in the surface's own buffer and replaying it
-                // would stack a second copy on top.
-                guard surface.hasPrimedHistory else {
-                    surface.hasPrimedHistory = true
-                    // Read at use rather than captured: tmux clamps to what the
-                    // pane actually has, so this is a ceiling, and a change
-                    // should apply to the next pane opened rather than waiting
-                    // for a relaunch.
-                    self.connection.captureScrollback(
-                        paneID: paneID,
-                        lines: AppSettings.scrollbackPrimeLines
-                    ) { lines in
-                        guard !lines.isEmpty else { return }
-                        surface.terminalSession.receive(Self.replayPayload(lines, clearingScreen: false))
-                    }
-                    continue
-                }
+                // A repaint takes the visible screen only. The history is
+                // already in the surface's buffer, put there by the first
+                // paint, and replaying it would stack a second copy on top.
+                //
+                // A pane whose first paint has not come back yet is having its
+                // whole screen fetched already — a second snapshot on top of
+                // that is a wasted round trip at best, and at worst it lands
+                // first. `primeSurface` releases the pane to this path.
+                guard surface.hasPrimedHistory else { continue }
 
                 self.repaintWhenQuiet(
                     paneID: paneID,
@@ -637,39 +625,55 @@ final class SessionViewController: NSViewController {
     /// snapshot is safe to paint; changed means the program is redrawing itself
     /// and painting a captured screen over it would be a stale screen landing
     /// on a live one — possibly in the middle of an escape sequence.
-    private func repaintWhenQuiet(paneID: String, since: UInt64, attemptsLeft: Int) {
+    private func repaintWhenQuiet(
+        paneID: String, since: UInt64, attemptsLeft: Int, isFirstPaint: Bool = false
+    ) {
         guard surfaces[paneID] != nil else { return }
         guard connection.router.deliveryCount(paneID: paneID) == since else {
-            retryRepaint(paneID: paneID, attemptsLeft: attemptsLeft, reason: "it is still writing")
+            retryRepaint(paneID: paneID, attemptsLeft: attemptsLeft, isFirstPaint: isFirstPaint,
+                         reason: "it is still writing")
             return
         }
 
-        connection.capturePane(paneID: paneID) { [weak self] lines, cursor in
-            guard let self, !lines.isEmpty else { return }
+        // Read at use rather than captured: tmux clamps to what the pane
+        // actually has, so this is a ceiling, and a change should apply to the
+        // next pane opened rather than waiting for a relaunch.
+        let history = isFirstPaint ? AppSettings.scrollbackPrimeLines : nil
+        connection.capturePane(paneID: paneID, historyLines: history) { [weak self] snapshot in
+            guard let self, !snapshot.screen.isEmpty else { return }
             // Through the router, not straight at the surface: the check and
             // the hand-off have to happen under the lock the reader queue
             // takes, or live output can be enqueued between them.
             let painted = self.connection.router.deliverSnapshot(
                 paneID: paneID,
-                data: Self.replayPayload(lines, clearingScreen: true, cursor: cursor),
+                data: TmuxScreenReplay.payload(for: snapshot, isFirstPaint: isFirstPaint),
                 ifDeliveryCountIs: since
             )
-            guard !painted else { return }
-            self.retryRepaint(paneID: paneID, attemptsLeft: attemptsLeft,
+            guard !painted else {
+                if isFirstPaint { self.surfaces[paneID]?.hasPrimedHistory = true }
+                return
+            }
+            self.retryRepaint(paneID: paneID, attemptsLeft: attemptsLeft, isFirstPaint: isFirstPaint,
                               reason: "it started writing while the capture was in flight")
         }
     }
 
-    private func retryRepaint(paneID: String, attemptsLeft: Int, reason: String) {
+    private func retryRepaint(
+        paneID: String, attemptsLeft: Int, isFirstPaint: Bool, reason: String
+    ) {
         repaintRetryItems[paneID]?.cancel()
         repaintRetryItems[paneID] = nil
 
         guard attemptsLeft > 0 else {
             TmuxLog.lifecycle(
-                "not repainting \(paneID) — \(reason), and it has not stopped;"
-                    + " a pane redrawing continuously does not need a snapshot",
+                "not \(isFirstPaint ? "priming" : "repainting") \(paneID) — \(reason), and it"
+                    + " has not stopped; a pane redrawing continuously does not need a snapshot",
                 session: connection.sessionName
             )
+            // Released to the ordinary repaint path either way. A pane that
+            // never got its first paint and was left out of that path too would
+            // never be snapshotted again for the life of the app.
+            if isFirstPaint { surfaces[paneID]?.hasPrimedHistory = true }
             return
         }
 
@@ -687,47 +691,12 @@ final class SessionViewController: NSViewController {
             self.repaintWhenQuiet(
                 paneID: paneID,
                 since: self.connection.router.deliveryCount(paneID: paneID),
-                attemptsLeft: attemptsLeft - 1
+                attemptsLeft: attemptsLeft - 1,
+                isFirstPaint: isFirstPaint
             )
         }
         repaintRetryItems[paneID] = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.repaintRetryDelay, execute: work)
-    }
-
-    /// Join reply lines into something a terminal surface can be fed.
-    ///
-    /// Assembled as bytes rather than as a `String`, because that is what
-    /// `capture-pane` returns and the point of taking it as bytes is that
-    /// nothing between tmux and libghostty's parser reinterprets it. CR LF
-    /// between rows, since the surface is a terminal and a bare LF would step
-    /// down a row without returning to column one.
-    private static func replayPayload(
-        _ lines: [Data], clearingScreen: Bool, cursor: TmuxSessionConnection.PaneCursor? = nil
-    ) -> Data {
-        var payload = Data()
-        // Home, then erase: a repaint is replacing the screen, not adding to
-        // it. Omitted for the first paint of a pane, which is appending
-        // history to an empty buffer and has nothing to erase.
-        if clearingScreen { payload.append(contentsOf: Array("\u{1b}[H\u{1b}[2J".utf8)) }
-        for (index, line) in lines.enumerated() {
-            if index > 0 { payload.append(contentsOf: [0x0d, 0x0a]) }
-            payload.append(line)
-        }
-
-        // Put the cursor back where tmux has it. Writing the rows leaves it
-        // after the last byte of the last one — the end of the bottom-most line
-        // with anything on it, which for a full-screen program is its status
-        // bar. It corrected itself the moment the program next drew anything,
-        // which is why it only ever looked wrong on arriving at a window.
-        //
-        // Only meaningful next to the erase above: that is what makes row one
-        // of the payload row one of the screen, so tmux's zero-based row maps
-        // onto it. The first paint of a pane replays scrollback that scrolled
-        // off the top, where no such correspondence exists — hence the default.
-        if clearingScreen, let cursor {
-            payload.append(contentsOf: Array("\u{1b}[\(cursor.row + 1);\(cursor.column + 1)H".utf8))
-        }
-        return payload
     }
 
     private func makeSurface(for paneID: String) {
@@ -753,11 +722,41 @@ final class SessionViewController: NSViewController {
         surface.onFocusRequested = { [weak self] pane in self?.focusPane(pane) }
         surfaces[paneID] = surface
 
-        // Live output starts flowing immediately and whatever tmux already
-        // sent gets replayed. The initial paint is left to the repaint pass in
-        // `syncWithModel`, which runs for every pane whose geometry it has not
-        // seen before — a brand new surface always qualifies.
+        primeSurface(paneID)
+    }
+
+    /// A pane's first paint: live output at once, then tmux's own picture of
+    /// the pane painted over it.
+    ///
+    /// Both, and in that order, because they answer different questions. The
+    /// router hands over whatever tmux sent before this surface existed, which
+    /// for a pane that has been streaming since the client attached is the only
+    /// account of it there is and has to appear now rather than after a round
+    /// trip. The snapshot then supplies what that buffer cannot: the pane's
+    /// scrollback from before the app was running, and a screen that is
+    /// certainly current rather than however far the buffer happened to get.
+    ///
+    /// They used to be *stacked* — the buffer, then a snapshot of the grid
+    /// those same bytes had been written into, appended below it — so a pane
+    /// mid-stream showed its recent output twice. `replayPayload` erases first
+    /// now, which is what makes the second one a replacement instead of an
+    /// addition.
+    ///
+    /// Gated on the pane being quiet, by the same machinery a resize repaint
+    /// uses: painting a captured screen over a live one is a stale screen
+    /// landing on top of a current one, and can land in the middle of an escape
+    /// sequence the pane is halfway through emitting. A pane that never falls
+    /// quiet keeps the buffer and its live output, and is a pane whose program
+    /// is drawing the screen anyway.
+    private func primeSurface(_ paneID: String) {
+        guard let surface = surfaces[paneID] else { return }
         connection.router.register(paneID: paneID, session: surface.terminalSession)
+        repaintWhenQuiet(
+            paneID: paneID,
+            since: connection.router.deliveryCount(paneID: paneID),
+            attemptsLeft: Self.repaintRetryLimit,
+            isFirstPaint: true
+        )
     }
 
     /// Tell tmux which pane the keyboard is in, and stop there.

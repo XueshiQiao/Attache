@@ -384,17 +384,26 @@ final class TmuxSessionConnection {
         client.send(command)
     }
 
-    /// Pull a pane's scrollback plus its visible screen.
+    /// Read a pane: its scrollback, its visible screen, and its cursor.
     ///
-    /// `-S -N` starts N lines above the top of the visible region and tmux
-    /// clamps to what actually exists, so asking for more than the pane has
-    /// is free. `-e` keeps colours. `-J` is deliberately not used: joining
-    /// wrapped lines would rewrap them at whatever width they are replayed
-    /// into, which is not where the user saw them break.
+    /// `-e` keeps colours. `-J` is deliberately not used: joining wrapped lines
+    /// would rewrap them at whatever width they are replayed into, which is not
+    /// where the user saw them break.
     ///
-    /// This is how the GUI gets scrollback at all — tmux owns the history and
-    /// never replays it to a joining client, so a surface that is only fed
-    /// live `%output` can scroll back exactly as far as the moment it opened.
+    /// **Two captures, not one.** `-S -N` on its own returns the history and
+    /// the visible screen run together, and a caller given that cannot tell
+    /// where one ends and the other begins — which is exactly what tmux's
+    /// cursor row is relative to. `-S -N -E -1` ends one row *above* the
+    /// visible screen: measured on tmux 3.6a, a 10-row pane with 52 rows of
+    /// history answers `-S -1000 -E -1` with 52 rows ending `L51`, and the
+    /// plain capture answers with 10 rows starting `L52`. No overlap, no gap.
+    /// That correspondence is what lets the cursor be restored on a pane's
+    /// first paint, which the comment this replaces called impossible.
+    ///
+    /// It is also what an alternate-screen pane needs. Measured on 3.6a with
+    /// `less` running: the history capture returns the *primary* screen's
+    /// scrollback and the plain capture returns the alternate screen. Asked for
+    /// as one range they come back as a single undifferentiated block.
     ///
     /// Bytes, not `String`. What comes back is a pane's screen with its colour
     /// sequences in it, headed for a terminal parser, and that is the same
@@ -403,55 +412,68 @@ final class TmuxSessionConnection {
     /// tmux 3.6a happens not to hand us such a byte here, because it replaces
     /// invalid input with U+FFFD in its own grid before we ever ask; that is
     /// tmux's guarantee to keep or break, not this app's.
-    func captureScrollback(paneID: String, lines: Int, completion: @escaping ([Data]) -> Void) {
-        client.runBytes("capture-pane -p -e -t \(paneID) -S -\(lines)") { output, failed in
-            completion(failed ? [] : Self.trimmingTrailingBlanks(output))
-        }
-    }
-
-    /// Where tmux says a pane's cursor is, zero-based from the top-left of the
-    /// visible screen.
-    struct PaneCursor {
-        let column: Int
-        let row: Int
-    }
-
-    /// A pane's visible screen, and the cursor position that goes with it.
     ///
-    /// Both, because a captured screen without one is a screen whose cursor
-    /// ends up wherever the last byte of the last line happened to leave it.
-    /// Replaying one over a pane therefore parked the cursor at the end of the
-    /// bottom-most line with anything on it — for a full-screen program that is
-    /// its status bar, which is nowhere near the prompt the user is looking at.
-    /// Nothing was actually broken underneath: the next keystroke made the
-    /// program redraw and the cursor jumped back, which is what made it look
-    /// like a rendering glitch rather than a missing instruction.
+    /// The commands go down one pipe back to back, so tmux runs them in order,
+    /// and the caller only asks once the pane has stopped writing — so they all
+    /// describe the same screen.
     ///
-    /// The two commands go down one pipe back to back, so tmux runs them in
-    /// order, and the caller only asks at all once the pane has stopped
-    /// writing — so they describe the same screen.
+    /// - Parameter historyLines: how far back to read, or nil for the visible
+    ///   screen alone. tmux clamps to what the pane actually has, so asking for
+    ///   more than it has is free.
     func capturePane(
         paneID: String,
-        completion: @escaping ([Data], PaneCursor?) -> Void
+        historyLines: Int?,
+        completion: @escaping (TmuxPaneSnapshot) -> Void
     ) {
-        client.runBytes("capture-pane -p -e -t \(paneID)") { [weak self] output, failed in
-            guard let self, !failed else {
-                completion([], nil)
+        captureHistory(paneID: paneID, lines: historyLines) { [weak self] history in
+            guard let self else {
+                completion(TmuxPaneSnapshot(history: [], screen: [], cursor: nil))
                 return
             }
-            let lines = Self.trimmingTrailingBlanks(output)
-            client.run("display-message -p -t \(paneID) '#{cursor_x},#{cursor_y}'") { reply, failed in
-                completion(lines, failed ? nil : Self.parseCursor(reply.first))
+            self.client.runBytes("capture-pane -p -e -t \(paneID)") { [weak self] output, failed in
+                guard let self, !failed else {
+                    completion(TmuxPaneSnapshot(history: history, screen: [], cursor: nil))
+                    return
+                }
+                self.client.run("display-message -p -t \(paneID) '#{cursor_x},#{cursor_y}'") { reply, failed in
+                    let cursor = failed ? nil : Self.parseCursor(reply.first)
+                    completion(TmuxPaneSnapshot(
+                        history: history,
+                        // Every row when the cursor is known, because the
+                        // replay places the cursor by row number and that only
+                        // means anything if the rows written are the rows tmux
+                        // has. Without a cursor, dropping the trailing blanks
+                        // is what stops the cursor parking on the bottom row of
+                        // an otherwise empty screen — the old behaviour, kept
+                        // for the one case that still needs it.
+                        screen: cursor == nil ? Self.trimmingTrailingBlanks(output) : output,
+                        cursor: cursor
+                    ))
+                }
             }
         }
     }
 
-    private static func parseCursor(_ reply: String?) -> PaneCursor? {
+    /// The rows above the visible screen, and nothing else. See `capturePane`
+    /// for why the boundary matters.
+    private func captureHistory(
+        paneID: String, lines: Int?, completion: @escaping ([Data]) -> Void
+    ) {
+        guard let lines, lines > 0 else {
+            completion([])
+            return
+        }
+        client.runBytes("capture-pane -p -e -t \(paneID) -S -\(lines) -E -1") { output, failed in
+            completion(failed ? [] : output)
+        }
+    }
+
+    private static func parseCursor(_ reply: String?) -> TmuxPaneCursor? {
         let parts = (reply ?? "").split(separator: ",")
         guard parts.count == 2, let column = Int(parts[0]), let row = Int(parts[1]),
               column >= 0, row >= 0
         else { return nil }
-        return PaneCursor(column: column, row: row)
+        return TmuxPaneCursor(column: column, row: row)
     }
 
     /// `capture-pane` returns one line per row of the pane, blanks included.
@@ -460,6 +482,9 @@ final class TmuxSessionConnection {
     /// lands at the bottom of an otherwise empty screen instead of following
     /// the text. Dropping the trailing blanks puts the cursor where the
     /// content actually ends.
+    ///
+    /// Only reached when tmux would not say where the cursor is. Placing it
+    /// explicitly is the better answer and is what normally happens.
     private static func trimmingTrailingBlanks(_ lines: [Data]) -> [Data] {
         var lines = lines
         while let last = lines.last, isBlank(last) { lines.removeLast() }

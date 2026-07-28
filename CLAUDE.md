@@ -160,6 +160,38 @@ swiftc -O -o /tmp/replycheck TmuxGUI/Tmux/TerminalReply.swift Tools/ReplyCheck/m
 The half that matters is `keystrokes`. A reply that leaks is a cosmetic
 nuisance; a key that vanishes is the failure the file exists to prevent.
 
+**`TmuxScreenReplay` has one, and it is the only part of a repaint that can be
+checked without a screen.** It turns a `capture-pane` reply into the bytes a
+surface is fed, so every defect in it is an off-by-one or a missing sequence —
+a cursor row counted from zero on one side and one on the other, an erase that
+should not have gone out, a separator that puts a blank line in the scrollback.
+Run it after touching `TmuxScreenReplay.swift`:
+
+```sh
+swiftc -O -o /tmp/screenreplaycheck TmuxGUI/Tmux/TmuxPaneSnapshot.swift \
+  TmuxGUI/Tmux/TmuxScreenReplay.swift Tools/ScreenReplayCheck/main.swift
+/tmp/screenreplaycheck
+```
+
+What it cannot tell you is what libghostty then *does* with those bytes. That
+needs the running app and someone looking at it.
+
+**Screenshots need an awake display, and there is no way to wake one from
+here.** `screencapture` answers `could not create image from display` and the
+inspector's `/shot` composites the window to plain white — both of which read
+as the app drawing nothing. Check before believing a blank capture:
+
+```sh
+system_profiler SPDisplaysDataType | grep -i 'display asleep'
+```
+
+`caffeinate -u` does not wake it, and neither `cliclick` nor
+`osascript … System Events` works unless the process running them has been
+granted Accessibility — an agent's shell usually has not, and the symptom is a
+`-1712` AppleEvent timeout or cliclick's "Accessibility privileges not enabled"
+warning followed by nothing happening. When that is the situation, say so and
+hand the pixel-level checks to a human rather than reporting them as passed.
+
 **tmux itself is the oracle for anything protocol-shaped.** Before writing code
 against a notification or a command, run it: `tmux -C attach -t '=name'` over a
 pipe prints the raw stream, and `tmux list-panes -F '...'` shows exactly what a

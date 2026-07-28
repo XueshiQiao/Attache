@@ -41,24 +41,28 @@ final class TmuxOutputRouter {
 
     /// Attach a surface to a pane and hand it whatever arrived first.
     ///
-    /// Returns true if there was buffered output. The caller uses that to
-    /// decide whether the pane also needs a `capture-pane` snapshot: a pane
-    /// that has been quiet since the client attached would otherwise render
-    /// blank, because tmux does not replay a pane's screen on attach. A pane
-    /// that was already streaming does not need one — and painting a snapshot
-    /// over live output would only rewind it.
-    @discardableResult
-    func register(paneID: String, session: InMemoryTerminalSession) -> Bool {
+    /// tmux does not replay a pane's screen on attach, so for a busy pane this
+    /// buffer is the only account of what it has been saying, and handing it
+    /// over is what stops a pane going blank while its first `capture-pane`
+    /// is in flight.
+    ///
+    /// It used to return whether there had been anything buffered, so the
+    /// caller could decide whether the pane also needed a snapshot, and the
+    /// caller dropped the value — which is how a pane that had streamed since
+    /// the attach got the buffer *and* a snapshot of the grid those same bytes
+    /// were written into, and printed its recent output twice. There is no
+    /// decision to hand back any more: the first paint erases before it paints
+    /// (see `SessionViewController.replayPayload`), so the two cannot stack.
+    func register(paneID: String, session: InMemoryTerminalSession) {
         lock.lock()
         defer { lock.unlock() }
         sessions[paneID] = session
-        guard let pending = backlog.removeValue(forKey: paneID), !pending.isEmpty else { return false }
+        guard let pending = backlog.removeValue(forKey: paneID), !pending.isEmpty else { return }
         // Handed over while the lock is still held. Releasing it first leaves a
         // window in which the reader queue delivers a live chunk to the session
         // that was just registered, and the backlog then arrives behind output
         // that came after it.
         session.receive(pending)
-        return true
     }
 
     func unregister(paneID: String) {
