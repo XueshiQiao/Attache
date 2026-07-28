@@ -780,6 +780,22 @@ final class SessionViewController: NSViewController {
         )
     }
 
+    /// Send the clipboard to the pane the keyboard is in, through tmux.
+    ///
+    /// False when there is nothing to do — no focused pane, an empty clipboard,
+    /// or tmux could not be asked — and the caller then lets the paste take its
+    /// ordinary route. Which pane is decided from `window?.firstResponder`
+    /// rather than from `focusedPaneID`, because a menu item fires against
+    /// whatever really has the keyboard and the app's own idea of that is a
+    /// mirror of tmux that can be a notification behind.
+    func pasteIntoFocusedPane() -> Bool {
+        guard let responder = view.window?.firstResponder as? NSView,
+              let paneID = surfaces.first(where: { $0.value.view === responder })?.key,
+              let text = NSPasteboard.general.string(forType: .string)
+        else { return false }
+        return connection.paste(text: text, into: paneID)
+    }
+
     /// Tell tmux which pane the keyboard is in, and stop there.
     ///
     /// It used to move the ring itself and then inform tmux, which is the one

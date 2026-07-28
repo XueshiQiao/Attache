@@ -153,7 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let editItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edit")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        entry(editMenu, "Paste", "v", [.command], #selector(pasteIntoPaneOrResponder))
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
@@ -225,6 +225,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         item.submenu = menu
         return item
+    }
+
+    /// ⌘V, intercepted here and nowhere else.
+    ///
+    /// A pane's paste has to go through tmux — see
+    /// `TmuxSessionConnection.paste(text:into:)` for why — and libghostty's
+    /// `TerminalView` declares `paste(_:)` `internal`, so the subclass this app
+    /// already has for exactly this kind of interception cannot override it.
+    /// The menu item is the remaining place.
+    ///
+    /// Everything that is not a pane keeps the ordinary behaviour by being
+    /// forwarded straight back down the responder chain. The rail's rename
+    /// field is a real `NSTextField` and its ⌘V is a text field's paste with
+    /// nothing to do with tmux; so is every field in the settings window.
+    @objc private func pasteIntoPaneOrResponder(_ sender: Any?) {
+        if main?.currentSession?.pasteIntoFocusedPane() == true { return }
+        NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: sender)
     }
 
     @objc private func newWindow() { main?.currentSession?.newWindow() }

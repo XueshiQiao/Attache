@@ -260,6 +260,62 @@ final class TmuxSessionConnection {
         )
     }
 
+    /// Paste through tmux, so tmux decides whether to bracket it.
+    ///
+    /// Returns false when it could not be attempted, and the caller falls back
+    /// to libghostty's own paste.
+    ///
+    /// **The text goes through a file, and that is the whole design.** tmux's
+    /// command parser expands `$VAR` inside a double-quoted argument — measured
+    /// on 3.6a, `set-buffer -b probe "…$HOME…"` stores `/Users/joey` — and a
+    /// single-quoted argument is literal but can carry neither a newline nor a
+    /// single quote. Clipboard text is arbitrary and often multi-line, so there
+    /// is no quoting of it that is both correct and safe. `load-buffer` takes a
+    /// path instead, and the only thing interpolated into the command line is a
+    /// path this app chose. That is the same reasoning as targeting tmux by id:
+    /// remove the category rather than escape around it.
+    ///
+    /// The file is written with owner-only permissions and deleted the moment
+    /// tmux answers, because a clipboard holds whatever the user last copied
+    /// and none of it belongs in a file that outlives the paste. `-d` on the
+    /// paste drops the buffer for the same reason, and keeps the user's own
+    /// paste buffers untouched.
+    ///
+    /// Verified end to end on tmux 3.6a over a control mode client: a file with
+    /// `$HOME`, double quotes and `#{format}` in it arrives at the program
+    /// character for character, wrapped in `ESC[200~`/`ESC[201~` when the
+    /// program has asked for bracketed paste and bare when it has not, and
+    /// `list-buffers` is empty afterwards.
+    @discardableResult
+    func paste(text: String, into paneID: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tmuxgui-paste-\(sessionID.dropFirst()).txt")
+        let path = url.path
+        // The path is this app's own, but the temporary directory comes from
+        // the system and a quote in it would end the argument early. Refusing
+        // is the only answer that cannot send half a command.
+        guard !path.contains("'"), !path.contains("\n") else { return false }
+
+        guard (try? Data(text.utf8).write(to: url, options: [.atomic, .completeFileProtection]))
+            != nil,
+            (try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: path
+            )) != nil
+        else { return false }
+
+        let buffer = "tmuxgui-paste"
+        client.run("load-buffer -b \(buffer) '\(path)'") { [weak self] _, failed in
+            // Deleted whatever happened. tmux has finished with the file by the
+            // time it answers, and a paste that failed is not a reason to leave
+            // the user's clipboard sitting in /var/folders.
+            try? FileManager.default.removeItem(at: url)
+            guard let self, !failed else { return }
+            self.client.send("paste-buffer -p -d -b \(buffer) -t \(paneID)")
+        }
+        return true
+    }
+
     func sendKeys(paneID: String, data: Data) {
         client.sendKeys(pane: paneID, data: data)
     }
