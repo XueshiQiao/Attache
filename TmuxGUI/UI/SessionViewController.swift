@@ -318,6 +318,11 @@ final class SessionViewController: NSViewController {
 
         gridView.applyChromeTheme()
         titleBand.applyChromeTheme()
+        // The half's own view paints the `gridLeftInset` strip, and it is the
+        // grid's *parent* — telling the children to redraw does not reach it,
+        // so a theme or opacity change would leave that band in the old colour
+        // while everything around it moved.
+        view.needsDisplay = true
     }
 
     // MARK: - Commands the menu and the rail drive
@@ -1004,6 +1009,36 @@ final class SessionViewController: NSViewController {
 /// the same accident.
 private final class ContentHalfView: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
+
+    /// Paint the strip `gridLeftInset` holds open, because otherwise nobody
+    /// does and it shows as a line down the whole window.
+    ///
+    /// Every fill in this window goes on **over** the window's own background
+    /// colour, which `PaneGridView` is required to match exactly — see the
+    /// comment on its `draw`, and the 66pt overhang it exists for. So a region
+    /// painted by a view reaches `1-(1-a)²` while a region painted by nobody
+    /// stays at `a`. At the default 0.35 that is 0.58 against 0.35: the same
+    /// colour, visibly more transparent, in a band the width of the inset.
+    /// Measured on the running app 2026-07-28: the rail ends at x=377.5 and
+    /// `PaneGridView` starts at 385.5, so the band is 8pt — 16 device pixels at
+    /// 2x, which is what a person sees as "an empty line between the halves".
+    ///
+    /// Painting only the inset, not the whole half: the grid paints the rest,
+    /// and a full-bleed fill here would be a *third* coat under it and make the
+    /// panes darker than `AppSettings.windowOpacity` asks for.
+    ///
+    /// The inset itself stays. Its comment justifies it by the rail being an
+    /// inset rounded panel with a margin of its own, and that panel is gone —
+    /// but "air between the rail and the first column of text" outlived the
+    /// panel, and air is not the same thing as a hole.
+    override func draw(_ dirtyRect: NSRect) {
+        var gutter = bounds
+        gutter.size.width = SessionViewController.gridLeftInset
+        let region = gutter.intersection(dirtyRect)
+        guard !region.isEmpty else { return }
+        WindowGlass.resolved().paneFill.setFill()
+        region.fill()
+    }
 }
 
 #if DEBUG

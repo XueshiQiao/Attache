@@ -511,11 +511,55 @@ final class MainViewController: NSSplitViewController {
             return
         }
         object_setClass(splitView, SeamlessSplitView.self)
-        // Thin rather than the pane-splitter default: the colour is clear
-        // either way, but a wide clear divider leaves a band of untinted window
-        // between the halves, which is a third tone in a window whose whole
-        // point is that it has two.
+        // Thin rather than the pane-splitter default. `SeamlessSplitView`
+        // overrides the thickness to zero regardless, so this no longer decides
+        // the width of anything; it is kept because the style is also what
+        // AppKit consults for the divider's other drawing, and asking for the
+        // heavy pane-splitter look while claiming zero width is a contradiction
+        // to leave lying around.
         splitView.dividerStyle = .thin
+    }
+
+    /// Give the zero-width divider a drag target.
+    ///
+    /// The strip is gone — that is what removes the two-pixel line between the
+    /// halves — and a divider with no width has no place to grab. This is the
+    /// documented way out: the rect AppKit *draws* stays empty while the rect it
+    /// *hit-tests and sets the resize cursor over* is widened around it.
+    ///
+    /// 6pt straddling the boundary, not more: the panes begin immediately to
+    /// the right of it, and every point claimed here is a point where a click
+    /// meant for the first column of a terminal starts a resize instead.
+    /// `super` is called on every path, and that is the point of the shape.
+    ///
+    /// `NSSplitViewController` marks this `NS_REQUIRES_SUPER`, and Swift checks
+    /// only that the body *mentions* `super` somewhere — so a call reachable
+    /// only from an orientation branch satisfies the compiler while never once
+    /// running. This split view is vertical (measured: that is
+    /// `NSSplitViewController`'s default and nothing here ever sets it), so
+    /// that branch would have been dead code guarding a contract it never
+    /// honoured. Found by review, not by running it.
+    ///
+    /// Measured 2026-07-28: `super` is a pass-through today — it returns the
+    /// proposed rect untouched, and `additionalEffectiveRectOfDividerAt` is
+    /// zero because this window's toolbar carries no items. Which is exactly
+    /// why calling it costs nothing now, and why not calling it would stay
+    /// invisible right up until a toolbar item or a tracking separator makes
+    /// AppKit want a say.
+    override func splitView(
+        _ splitView: NSSplitView,
+        effectiveRect proposedEffectiveRect: NSRect,
+        forDrawnRect drawnRect: NSRect,
+        ofDividerAt dividerIndex: Int
+    ) -> NSRect {
+        let base = super.splitView(
+            splitView, effectiveRect: proposedEffectiveRect,
+            forDrawnRect: drawnRect, ofDividerAt: dividerIndex
+        )
+        guard splitView.isVertical else { return base }
+        // Union rather than replace, so whatever `super` starts contributing
+        // later is added to the grab area instead of being quietly dropped.
+        return base.union(drawnRect.insetBy(dx: -3, dy: 0))
     }
 
     private func applyBackdropSettings() {

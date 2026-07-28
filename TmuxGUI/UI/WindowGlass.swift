@@ -186,9 +186,30 @@ final class GlassBackdropView: NSView {
 /// the instance really is a plain `NSSplitView` — checked at runtime before
 /// this was written, and checked again on every launch below.
 ///
-/// `dividerThickness` is deliberately left alone. The drag target has to stay
-/// where it was, or a rail that can no longer be resized is the price of a
-/// cosmetic change.
+/// A clear divider is not the same thing as no divider, and the difference is
+/// visible. `dividerColor` only stops AppKit painting the strip; the strip is
+/// still there, one point wide, and *nobody* paints it — so it shows the bare
+/// window backdrop between two halves that each carry a system material plus
+/// this app's tint. That is a third tone in a window whose whole point is that
+/// it has two, and on a 2x display it reads as exactly the two-pixel line it
+/// is. Measured on this machine, 2026-07-28: `.thin` is `dividerThickness ==
+/// 1.0`pt, `dividerColor` is gray 0 at alpha 0, backing scale 2.
+///
+/// So the thickness goes to zero and the halves become adjacent. This is a
+/// geometric fix rather than a colour one, which matters because no colour
+/// could have worked: the neighbours are `NSVisualEffectView`s sampling the
+/// desktop, and a flat fill over the strip would have been a third tone too,
+/// just a closer one.
+///
+/// `dividerThickness` was previously left alone on the grounds that shrinking
+/// it costs the drag target. It does — and `NSSplitViewDelegate`'s
+/// `splitView(_:effectiveRect:forDrawnRect:ofDividerAt:)` exists for precisely
+/// this case, which is where the drag comes back. `MainViewController`
+/// implements it. Verified headlessly before this was written: with the
+/// thickness at 0 the two arranged subviews meet at exactly the same x, and
+/// the delegate is still consulted with a zero-width drawn rect, so the widened
+/// hit area is live.
 final class SeamlessSplitView: NSSplitView {
     override var dividerColor: NSColor { .clear }
+    override var dividerThickness: CGFloat { 0 }
 }
