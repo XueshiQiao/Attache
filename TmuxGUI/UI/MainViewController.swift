@@ -95,6 +95,21 @@ final class MainViewController: NSSplitViewController {
         observeReturningToTheApp()
     }
 
+    /// The window's blur has to wait for the window.
+    ///
+    /// `applyBackdropSettings` runs from `viewDidLoad`, where `view.window` is
+    /// still nil — the blur is set on a window by number, so at that point
+    /// there is nothing to set it on. Every later route (a settings change, a
+    /// style switch) has a window by definition; this is the first paint.
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        applyBackdropBlur(radius: WindowGlass.resolved().blurRadius)
+        TmuxLog.lifecycle(
+            "window-server blur \(WindowServerBlur.isAvailable ? "available" : "UNAVAILABLE")"
+                + ", radius \(Int(WindowGlass.resolved().blurRadius))"
+        )
+    }
+
     deinit {
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
         for observer in returnObservers { NotificationCenter.default.removeObserver(observer) }
@@ -512,29 +527,16 @@ final class MainViewController: NSSplitViewController {
 
     /// Blur the desktop behind the whole window, at a radius this app chooses.
     ///
-    /// On the split view controller's own view, which *is* the window's content
-    /// view — so the filter applies once, to the window's whole backdrop, and
-    /// the two halves cannot end up blurred by different amounts or show a seam
-    /// where they meet.
+    /// Through the window server rather than through a layer filter — see
+    /// `WindowServerBlur` for why a `CALayer.backgroundFilters` blur cannot do
+    /// this at all once the panes are Metal.
     ///
-    /// `backgroundFilters` blurs what is behind the layer, not the layer, and
-    /// it needs a window that is not opaque to have anything behind it to blur.
-    /// Nil rather than an empty array when the radius is zero: an identity
-    /// filter is still a filter, and still costs a pass over the backdrop every
-    /// frame.
+    /// Sent even when the radius is 0, because the radius lives on the window
+    /// in the window server: a style switched away from would otherwise keep
+    /// blurring for the rest of the session.
     private func applyBackdropBlur(radius: CGFloat) {
-        view.wantsLayer = true
-        guard radius > 0,
-              let blur = CIFilter(name: "CIGaussianBlur", parameters: ["inputRadius": radius])
-        else {
-            view.layer?.backgroundFilters = nil
-            return
-        }
-        view.layer?.backgroundFilters = [blur]
-        // Without this the blur samples past the window's own bounds and the
-        // edges fade out, which reads as a soft halo around the window rather
-        // than as glass.
-        view.layer?.masksToBounds = true
+        guard let window = view.window else { return }
+        WindowServerBlur.apply(radius: radius, to: window)
     }
 
     /// Wraps a view the app already builds and owns in the view controller a
