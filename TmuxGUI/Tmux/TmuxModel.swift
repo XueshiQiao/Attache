@@ -30,14 +30,39 @@ struct TmuxWindow: Equatable, Identifiable {
     /// got to, which was usually the left-hand pane, while the keystrokes went
     /// to whichever surface the click had made first responder.
     var activePaneID: String
-    var layoutText: String
 
-    var layout: TmuxLayoutNode? {
-        try? TmuxLayout.parse(layoutText)
+    /// What tmux is displaying — `#{window_visible_layout}`. This is the one to
+    /// place panes from, and it is not the same thing as `savedLayoutText`.
+    ///
+    /// `prefix z` reflows the active pane to the whole window and leaves the
+    /// saved layout untouched, so a GUI drawing the saved layout goes on
+    /// drawing every pane at its unzoomed size while the program inside the
+    /// zoomed one redraws at the full width. Measured on tmux 3.6a: 40 columns
+    /// against 80, which is the wrapped-line corruption in its worst form.
+    var visibleLayoutText: String
+
+    /// The arrangement tmux would return to — `#{window_layout}`, which zoom
+    /// does not change.
+    ///
+    /// Kept for one thing: it is the only field that lists *every* pane the
+    /// window has. While a pane is zoomed the visible layout is a single-pane
+    /// tree, so a surface set derived from it would drop the other panes'
+    /// surfaces — and their scrollback with them — on every `prefix z`.
+    var savedLayoutText: String
+
+    /// The tree to draw.
+    var visibleLayout: TmuxLayoutNode? {
+        try? TmuxLayout.parse(visibleLayoutText)
     }
 
+    /// The tree that answers which panes exist, zoom-hidden ones included.
+    var savedLayout: TmuxLayoutNode? {
+        try? TmuxLayout.parse(savedLayoutText)
+    }
+
+    /// Every pane in the window, whether or not a zoom is currently hiding it.
     var paneIDs: [String] {
-        layout?.panes.map(\.id) ?? []
+        savedLayout?.panes.map(\.id) ?? []
     }
 }
 
@@ -55,7 +80,11 @@ extension TmuxWindow {
     /// anything a program can print, spaces and pipes included.
     static func parse(listLine: String) -> TmuxWindow? {
         let fields = listLine.components(separatedBy: "\u{01}")
-        guard fields.count >= 7, let index = Int(fields[1]) else { return nil }
+        guard fields.count >= 8, let index = Int(fields[1]) else { return nil }
+        // A tmux without `window_visible_layout` expands it to the empty string
+        // rather than failing — verified on 3.6a, an unknown variable yields
+        // nothing at all — so an empty field means "this server cannot tell the
+        // two apart" and the saved layout is the best answer available.
         return TmuxWindow(
             id: fields[0],
             index: index,
@@ -63,7 +92,8 @@ extension TmuxWindow {
             isActive: fields[3] == "1",
             hasActivity: fields[4] == "1",
             activePaneID: fields[5],
-            layoutText: fields[6]
+            visibleLayoutText: fields[7].isEmpty ? fields[6] : fields[7],
+            savedLayoutText: fields[6]
         )
     }
 
@@ -72,9 +102,16 @@ extension TmuxWindow {
     /// *active* pane. Verified on tmux 3.6a: with two panes and `%1` selected
     /// it reports `%1`, and after `select-pane` on the other it reports `%0`.
     /// That is the whole reason the active pane costs no extra round trip.
+    ///
+    /// Both layouts, because `%layout-change` is not the only way a window's
+    /// geometry reaches this app and the other way has to carry the same truth.
+    /// Selecting a window that was left zoomed emits no `%layout-change` at all
+    /// — measured on tmux 3.6a, only `%session-window-changed` — so the zoom
+    /// state of every window arrives here or not at all.
     static let listFormat = [
         "#{window_id}", "#{window_index}", "#{window_name}",
-        "#{window_active}", "#{window_activity_flag}", "#{pane_id}", "#{window_layout}",
+        "#{window_active}", "#{window_activity_flag}", "#{pane_id}",
+        "#{window_layout}", "#{window_visible_layout}",
     ].joined(separator: "\u{01}")
 }
 

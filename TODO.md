@@ -4,9 +4,10 @@ Ordered roughly by what unblocks the most. Read [CLAUDE.md](CLAUDE.md) before
 starting — several of these touch code with non-obvious constraints.
 
 **Start at [section 4b](#4b--state-the-gui-reconstructs-instead-of-asking-tmux),
-item 4b.1.** That section is the current work and its items are ordered; it is
+item 4b.2.** That section is the current work and its items are ordered; it is
 written to be picked up cold, with the tmux facts already measured. Nothing else
-in this file is in front of it.
+in this file is in front of it. (4b.1 is done — its entry is kept in place so the
+worst-first ordering still reads.)
 
 ---
 
@@ -131,36 +132,117 @@ Everything stated about tmux below was measured on **tmux 3.6a** against an
 isolated `-L` server. Everything about the app is from reading the code. When a
 fix is written, re-measure rather than trusting these notes.
 
-### 4b.1 A zoomed pane is invisible to the app
+### 4b.1 A zoomed pane is invisible to the app — done
 
-- [ ] **`prefix z` breaks the display completely and the app never notices.**
+tmux keeps two layouts per window and this app was reading the wrong one.
+`#{window_layout}` is the **saved** arrangement, which zoom does not touch;
+`#{window_visible_layout}` is what is on screen. `%layout-change` carries both —
+`<window-id> <saved> <visible> <flags>` — and `TmuxNotification` kept the second
+field and dropped the rest, so `TmuxSessionConnection.handle` compared a string
+zoom cannot change against the one it already had, found them identical, and
+returned before anything redrew.
 
-      What the user sees: zoom a pane in a split window — from inside the GUI,
-      since keystrokes go to tmux — and tmux reflows that pane to the whole
-      window. The program inside redraws at the full width. The GUI goes on
-      drawing both panes at their unzoomed sizes. Every wrapped line then breaks
-      in the wrong place, which is the failure CLAUDE.md calls the worst one
-      this project has, at forty columns of disagreement rather than one.
+`TmuxWindow` carries both now, and which one each caller wants turned out to
+matter more than the bullet said:
 
-      Why it is missed, and this is the whole trick: `window_layout` is the
-      **saved** layout, and zooming does not change it. Measured: after
-      `resize-pane -Z` on a two-pane 80x24 window, `window_layout` still reads
-      `...{40x24,0,0,0,39x24,41,0,1}` while `list-panes` puts the zoomed pane at
-      **80x24** and `window_visible_layout` reads `b25d,80x24,0,0,0`, with
-      `window_zoomed_flag=1`.
+- `visibleLayoutText` places the panes. That is the fix as written.
+- `savedLayoutText` answers *which panes the window has*, and `paneIDs` reads it.
+  This half was not in the plan and is not optional. A zoomed window's visible
+  layout is a single-pane tree, so
+  `SessionViewController.releaseSurfacesForDepartedPanes` — which gives up every
+  surface whose pane is not in the session's pane set — would have destroyed the
+  other panes' surfaces and their scrollback on every zoom, and rebuilt them from
+  a fresh `capture-pane` on the way back out. Swapping the format string alone
+  would have traded one defect for a quieter one.
 
-      tmux does announce it. `%layout-change` carries four fields — window id,
-      saved layout, **visible layout**, flags — and `TmuxNotification.swift`
-      keeps `parts[1]` and drops the rest. `TmuxSessionConnection.handle` then
-      compares that against what it already has, finds it identical, and returns
-      early. The truth was in `parts[2]`, and the `*Z` marker in `parts[3]`.
+Both update paths needed changing and only one was in the bullet: selecting a
+window that was left zoomed emits **no `%layout-change` at all** — measured on
+3.6a, only `%session-window-changed` — so `TmuxWindow.listFormat` asks for both
+variables as well. An empty visible field falls back to the saved one, since tmux
+expands a variable it does not have to nothing rather than failing.
 
-      Fix: parse `parts[2]`, and ask for `#{window_visible_layout}` in
-      `TmuxWindow.listFormat` instead of `#{window_layout}`. The zoomed visible
-      layout uses the same grammar and parses as a single-pane node, so
-      `TmuxLayout.parse` needs no change — but re-check that against
-      `Tools/LayoutCheck` after the swap. `#{window_zoomed_flag}` is there if
-      the rail should ever show the state.
+Reproduced before fixing and verified after, with the app pointed at a scratch
+server: `TMUX` unset, `TMUX_TMPDIR` set, and that server administered only
+through `-S <socket path>`, with the inspector's own session list checked first
+to prove the app was not attached to the user's. **Before:** tmux puts `%1` at
+126x42 filling the window while the app goes on drawing it at 62x42 in the right
+half — 64 columns of disagreement, with the shell's echo of a typed command
+visibly scrambled on screen. **After**, in four situations — zoom, unzoom,
+re-zoom onto a different pane, and attaching to a session that was *already*
+zoomed — every pane the app reports matches `list-panes` exactly, the zoomed
+surface resolves to a 126x42 grid, and the hidden panes' surfaces are still held,
+detached from the view tree with their grids intact.
+
+`Tools/LayoutCheck` had to be extended rather than left alone, because it was
+about to start failing: it compares parsed geometry against `list-panes`, and
+`list-panes` reports the zoomed size. It now checks the visible layout against
+every pane and the saved layout against every pane *except* the zoomed one, where
+disagreeing with `list-panes` is the correct answer; prints how many zoomed
+windows it actually saw, so a run that never exercised the case cannot read as
+though it had; and takes `-L`/`-S` arguments so that case can be reached without
+zooming a pane on the user's own server. The pre-fix logic — same file with the
+argument passthrough patched in, since it had none — reports exactly the two
+disagreements on a server with two zoomed windows and nothing else.
+
+It keeps empty fields when splitting the reply, which is not a detail: an older
+tmux expands `#{window_visible_layout}` to nothing, dropping empties would shift
+every field left, the field-count guard would skip that window, and the run would
+print ✓ having checked nothing at all. Such windows are counted and reported as
+skipped instead.
+
+`#{window_zoomed_flag}` is deliberately not in the model. The two layouts
+differing *is* the zoom, so the debug inspector derives `isZoomed` from them and
+cannot print a flag that contradicts the geometry printed beside it.
+
+Codex reviewed the diff and found no high-severity defect. Three of its four
+findings were real and are fixed; the fourth is recorded below. The one worth
+remembering is that `String.split` **drops empty subsequences by default**, which
+bit the same change twice: an empty visible field in a `%layout-change` would
+have slid the *flags* into `parts[2]`, so `*Z` would have been stored as a
+window's layout — unparseable, and the app would have gone on drawing the
+previous pane tree with nothing to show anything had gone wrong. The same
+mistake in `Tools/LayoutCheck` was caught while writing it and missed here.
+`TmuxNotification` now keeps empty fields and checks the leading two for
+emptiness, since dropping empties is what used to do that for free.
+`Tools/LayoutCheck` also stopped asking `list-windows` and then `list-panes` per
+window: those are two snapshots, and a pane zooming between them made the flag,
+the layouts and the geometry describe different moments — a false failure in the
+one tool that exists to be believed. Window-scoped variables resolve inside
+`list-panes` (verified on 3.6a), so a single `list-panes -a` now carries all of
+it. Seven parse cases covering both live forms, the pre-2.2 two-field form, the
+empty-field forms and the degenerate ones are in
+`scratchpad/notifcheck.swift`-shaped throwaway form only — if `%layout-change`
+parsing is touched again, that table is worth rebuilding first.
+
+A second review pass over those fixes found nothing wrong with the notification
+parsing and three things wrong with the checker, all of them the same shape: it
+could report success without having checked anything. `tmux()` threw away both
+the exit status and stderr, so pointing the tool at a socket that does not exist
+gave empty output, zero windows, an empty failure list and `✓ every pane agrees`
+on exit 0 — verified, and it is how an earlier run in this very session was
+briefly misread. A failed query is now fatal and prints tmux's own error. Rows
+the parser cannot read, windows skipped for want of `#{window_visible_layout}`,
+and a run that checked no window at all are all **failures** now rather than
+notes printed above a tick: a skip line followed by ✓ is a contradiction the
+reader resolves in favour of the ✓, and this file is only worth having if its ✓
+can be believed.
+
+**Not fixed, and pre-existing:** a layout that is non-empty but unparseable makes
+`syncWithModel` return before `gridView.setContent`, so the old window's panes
+stay on screen while the title band moves on. That was equally true of the single
+layout string this change replaced, no path in the fixed code can now reach it,
+and deciding what to show instead — a blank content half? — is a different
+question from this one.
+
+**Found while verifying, and left for section 5: nothing in the GUI can zoom a
+pane.** The audit assumed `prefix z` typed into the app reaches tmux. It does
+not. Keys are forwarded with `send-keys -t %id`, which writes bytes to the pane's
+pty, and tmux applies its prefix only to keys read from an attached client.
+Measured both directions on 3.6a: `send-keys -H 02 7a` (C-b, then z) leaves a
+zoomed window zoomed and an unzoomed one unzoomed. Zoom therefore only ever
+arrives from outside — `tmux resize-pane -Z` run inside a pane, another terminal
+on the same session, or a session that was already zoomed when the app attached.
+All three are handled; none of them is the one the bullet described.
 
 ### 4b.2 A session rename tears down a healthy session
 
@@ -491,6 +573,12 @@ snapshot to land on top of it.
       would need to be shared rather than owned.
 - [ ] **Pane splitting from the GUI.** `split-window` is trivial to send; the
       question is where the affordance lives.
+- [ ] **Zooming from the GUI**, same question and the same answer for the
+      command — `resize-pane -Z -t %id`. Worth listing separately because the
+      gap is easy to miss: `prefix z` typed into the app does *not* do it, since
+      keys go out as `send-keys` to the pane's pty and tmux reads its prefix only
+      from an attached client. Measured on 3.6a; see 4b.1. The app renders zoom
+      correctly, it just cannot start one.
 - [ ] **ssh / remote tmux.** The control client spawns a local `tmux`. Running
       it as `ssh host tmux -C attach` should mostly work, but throughput over a
       network has not been measured and the probe exists to answer exactly that.

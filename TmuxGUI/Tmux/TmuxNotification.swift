@@ -21,7 +21,9 @@ enum TmuxNotification {
     case windowAdd(window: String)
     case windowClose(window: String)
     case windowRenamed(window: String, name: String)
-    case layoutChange(window: String, layout: String)
+    /// `saved` is the arrangement tmux would return to; `visible` is what it is
+    /// showing right now. They differ exactly while a pane is zoomed.
+    case layoutChange(window: String, saved: String, visible: String)
     case paused(pane: String)
     case resumed(pane: String)
     case exited(reason: String?)
@@ -85,10 +87,48 @@ enum TmuxNotification {
             guard let id = parts.first else { return nil }
             return .windowRenamed(window: String(id), name: parts.count > 1 ? String(parts[1]) : "")
         case "%layout-change":
+            // `%layout-change <window-id> <saved> <visible> <flags>`, and the
+            // third field is the one to draw. `prefix z` reflows the active
+            // pane to the whole window without touching the *saved* layout, so
+            // a client reading the second field is told nothing at all about a
+            // zoom: measured on tmux 3.6a, zooming a pane in an 80x24 window
+            // leaves the saved layout at `...{40x24,0,0,0,39x24,41,0,1}` while
+            // the visible one reads `b25e,80x24,0,0,1` and `list-panes` puts
+            // the pane at 80x24. Drawing the saved one is forty columns of
+            // disagreement with the program inside the pane, which is the
+            // wrapped-line corruption this codebase is built to avoid.
+            //
+            // The saved layout is kept because it is the only free answer to
+            // "which panes does this window have" — the visible one lists just
+            // the zoomed pane, and a surface set built from that would be torn
+            // down and rebuilt on every `prefix z`.
+            //
+            // Two fields is accepted as well: that is what tmux sent before
+            // 2.2, and half an update beats dropping the line.
+            //
+            // Empty fields are kept when splitting, and that is not a detail.
+            // `split` drops them by default, so an empty visible field would
+            // slide the *flags* into `parts[2]` and `*Z` would be stored as this
+            // window's layout — unparseable, and the app would go on drawing the
+            // previous pane tree with no sign anything had gone wrong. It costs
+            // one argument to make the field a field, and `TmuxWindow.parse`
+            // already had to defend against the same emptiness coming back from
+            // `list-windows`; defending on one path and not the other is worse
+            // than not defending at all.
             let text = String(decoding: rest, as: UTF8.self)
-            let parts = text.split(separator: " ")
-            guard parts.count >= 2 else { return nil }
-            return .layoutChange(window: String(parts[0]), layout: String(parts[1]))
+            //
+            // Which also means the leading fields have to be checked for
+            // emptiness rather than assumed non-empty, since that is exactly
+            // what dropping empties used to do for free.
+            let parts = text.split(separator: " ", omittingEmptySubsequences: false)
+            guard parts.count >= 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+            let saved = String(parts[1])
+            let visible = parts.count >= 3 ? String(parts[2]) : ""
+            return .layoutChange(
+                window: String(parts[0]),
+                saved: saved,
+                visible: visible.isEmpty ? saved : visible
+            )
         case "%pause":
             return .paused(pane: String(decoding: rest, as: UTF8.self))
         case "%continue":

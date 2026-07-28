@@ -437,7 +437,7 @@ final class SessionViewController: NSViewController {
         // exactly one session.
         if isViewLoaded, view.window != nil { connection.reclaimWindowSizeIfTaken() }
 
-        guard let window = connection.activeWindow, let layout = window.layout else { return }
+        guard let window = connection.activeWindow, let layout = window.visibleLayout else { return }
 
         for paneID in layout.panes.map(\.id) where surfaces[paneID] == nil {
             makeSurface(for: paneID)
@@ -484,8 +484,14 @@ final class SessionViewController: NSViewController {
         // empty list, or a window whose layout has not arrived or did not
         // parse, reports *no* panes — and read as evidence that would condemn
         // every surface in the session on a half-delivered refresh.
+        //
+        // The saved layout, which is what `paneIDs` reads. The visible one
+        // lists a single pane while a window is zoomed, so asking it "which
+        // panes does this session have" would release the surfaces of every
+        // other pane in that window — scrollback and all — on `prefix z`, and
+        // rebuild them from a fresh `capture-pane` on the way back out.
         guard !connection.windows.isEmpty,
-              connection.windows.allSatisfy({ $0.layout != nil }) else { return }
+              connection.windows.allSatisfy({ $0.savedLayout != nil }) else { return }
 
         let live = Set(connection.windows.flatMap(\.paneIDs))
         let departed = surfaces.keys.filter { !live.contains($0) }

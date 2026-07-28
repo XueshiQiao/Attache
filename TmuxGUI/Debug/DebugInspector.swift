@@ -758,7 +758,16 @@
             let isActive: Bool
             let hasActivity: Bool
             let isHiddenFromSidebar: Bool
+            /// What tmux is showing. `panes` is parsed from this one, because
+            /// this is the one `list-panes` agrees with.
             let layoutText: String
+            /// What tmux would return to. Differs from `layoutText` exactly
+            /// while a pane is zoomed, which is what `isZoomed` reports.
+            let savedLayoutText: String
+            /// Whether a pane is zoomed, derived rather than asked for: the two
+            /// layouts differing *is* the zoom, and deriving it means the flag
+            /// cannot disagree with the geometry printed next to it.
+            let isZoomed: Bool
             let panes: [PaneReport]
             let layoutError: String?
 
@@ -769,9 +778,11 @@
                 isActive = window.isActive
                 hasActivity = window.hasActivity
                 self.isHiddenFromSidebar = isHiddenFromSidebar
-                layoutText = window.layoutText
+                layoutText = window.visibleLayoutText
+                savedLayoutText = window.savedLayoutText
+                isZoomed = window.visibleLayoutText != window.savedLayoutText
                 do {
-                    let node = try TmuxLayout.parse(window.layoutText)
+                    let node = try TmuxLayout.parse(window.visibleLayoutText)
                     panes = node.panes.map { PaneReport(id: $0.id, frame: $0.frame) }
                     layoutError = nil
                 } catch {

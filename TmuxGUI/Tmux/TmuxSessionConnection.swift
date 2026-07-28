@@ -171,7 +171,7 @@ final class TmuxSessionConnection {
     /// should not — costs two commands rather than two per notification.
     func reclaimWindowSizeIfTaken() {
         guard let want = lastReportedGrid, let target = sessionTarget,
-              let size = activeWindow?.layout?.frame,
+              let size = activeWindow?.visibleLayout?.frame,
               size.columns != want.columns || size.rows != want.rows
         else {
             reclaimedAt = nil
@@ -464,13 +464,19 @@ final class TmuxSessionConnection {
             sessionID = id
             refreshWindows()
 
-        case .layoutChange(let windowID, let layout):
+        case .layoutChange(let windowID, let saved, let visible):
             guard let index = windows.firstIndex(where: { $0.id == windowID }) else {
                 refreshWindows()
                 return
             }
-            guard windows[index].layoutText != layout else { return }
-            windows[index].layoutText = layout
+            // Both, and the early return has to test both. A zoom changes only
+            // the visible layout and an unzoom changes only it back, so a
+            // comparison against the saved one alone reads every `prefix z` as
+            // "nothing changed" and returns before anything redraws.
+            guard windows[index].visibleLayoutText != visible
+                || windows[index].savedLayoutText != saved else { return }
+            windows[index].visibleLayoutText = visible
+            windows[index].savedLayoutText = saved
             notifyModelChanged()
 
         case .windowAdd, .windowClose:

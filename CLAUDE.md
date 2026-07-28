@@ -260,6 +260,18 @@ one of them presents as "the code is obviously correct and yet".
 - **`move-window -t $10 4` is silently wrong.** The target must be
   `session:index`; without the colon tmux reads it as the single token `$104`
   and does nothing at all — no error.
+- **`window_layout` is not the layout on screen.** It is the *saved* one, and
+  zoom does not change it: after `resize-pane -Z` on a two-pane 80x24 window it
+  still reads `...{40x24,0,0,0,39x24,41,0,1}` while `list-panes` puts the zoomed
+  pane at 80x24. `window_visible_layout` is what is being displayed, and
+  `%layout-change` carries both — `<window-id> <saved> <visible> <flags>`.
+  Reading the saved one is the column-count disagreement this codebase exists to
+  avoid, at forty columns rather than one. Both are needed and for different
+  questions: draw from the visible layout, but take the *pane set* from the saved
+  one, because the visible layout of a zoomed window lists a single pane and
+  anything that reads "which panes does this window have" from it will tear down
+  the others. Selecting a window that was left zoomed sends no `%layout-change`
+  at all, so `list-windows` has to ask for both too.
 - **Selecting on mouse down destroys the gesture.** Selection sends a tmux
   command, tmux replies, the rail rebuilds, and the view being dragged is gone.
   Select on mouse up. The same applies to a reorder drag: the rail draws an
