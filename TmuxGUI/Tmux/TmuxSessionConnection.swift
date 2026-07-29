@@ -637,11 +637,23 @@ final class TmuxSessionConnection {
         client.sendKeys(pane: paneID, data: data)
     }
 
+    /// Ask tmux to move the active pane, then re-read what it actually is.
+    ///
+    /// **The refresh is not belt-and-braces; it is the only thing that can
+    /// repair a stale window list.** tmux announces `%window-pane-changed` when
+    /// the active pane *changes*, so a `select-pane` naming the pane tmux has
+    /// already selected is answered by silence — and if this app's mirror was
+    /// wrong, silence leaves it wrong for ever. Reading the reply costs one
+    /// `list-windows` per pane click and closes that hole: every command whose
+    /// point is to move the active pane now ends with tmux being asked what the
+    /// active pane is.
     func focus(paneID: String) {
         measuredPaneLock.lock()
         measuredPane = paneID
         measuredPaneLock.unlock()
-        client.send("select-pane -t \(paneID)")
+        client.run("select-pane -t \(paneID)") { [weak self] _, _ in
+            self?.refreshWindows()
+        }
     }
 
     func selectWindow(id: String) {
@@ -674,10 +686,10 @@ final class TmuxSessionConnection {
 
     /// Split a pane in two. `-h` puts the new pane beside it, `-v` below it.
     ///
-    /// tmux's own letters, which is why the menu items say "Horizontally" and
-    /// "Vertically" — and worth knowing that iTerm uses those two words for the
-    /// opposite pair of directions. Here `-h` is a *horizontal arrangement*:
-    /// two panes side by side, divided by a vertical line.
+    /// tmux's own letters, and worth knowing that iTerm uses "Split
+    /// Vertically" for the exact arrangement tmux calls `-h` — which is why
+    /// the menu items name the *result* ("Split Right" / "Split Down") and
+    /// neither of those words. See `SessionViewController.PaneSplit`.
     ///
     /// `-c '#{pane_current_path}'` is what makes the new pane open in the
     /// directory the user is already in, which is the whole point of splitting
@@ -1213,8 +1225,12 @@ final class TmuxSessionConnection {
     /// A `list-windows` round trip is cheap and it cannot drift; incremental
     /// updates from six notification types eventually can.
     private func refreshWindows() {
+        let label = sessionName
         client.run("list-windows -t \(sessionTarget) -F '\(TmuxWindow.listFormat)'") { [weak self] lines, failed in
-            guard let self, !failed else { return }
+            guard let self, !failed else {
+                if failed { TmuxLog.lifecycle("list-windows failed — window list not refreshed", session: label) }
+                return
+            }
             let parsed = lines.compactMap(TmuxWindow.parse(listLine:)).map { window -> TmuxWindow in
                 var window = window
                 // Window names come from `automatic-rename`, which copies
@@ -1222,7 +1238,20 @@ final class TmuxSessionConnection {
                 window.name = TmuxText.plain(window.name)
                 return window
             }
-            guard !parsed.isEmpty else { return }
+            // An empty answer to `list-windows` is not a session with no
+            // windows — a session cannot have none — so it is a reply that did
+            // not belong to this command. Dropping it is right; dropping it
+            // *silently* is what made a mispaired reply present as the keyboard
+            // moving on its own, with the model frozen on a pane tmux had
+            // already left. See `TmuxControlClient`'s `%end` handling.
+            guard !parsed.isEmpty else {
+                TmuxLog.lifecycle(
+                    "list-windows answered \(lines.count) line(s) that parsed as no windows —"
+                        + " keeping the previous list",
+                    session: label
+                )
+                return
+            }
 
             let previousActive = self.activeWindowID
             self.windows = parsed.sorted { $0.index < $1.index }

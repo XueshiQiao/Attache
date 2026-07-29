@@ -10,10 +10,13 @@ import Foundation
 /// Only the notifications this spike acts on get their own case; the rest keep
 /// their raw text so the log stays useful while the protocol coverage grows.
 enum TmuxNotification {
-    /// Start of a command reply block. `number` is tmux's command counter.
-    case begin(number: Int)
-    /// End of a command reply block; `failed` is true for `%error`.
-    case end(number: Int, failed: Bool)
+    /// Start of a reply block. `number` is tmux's command counter.
+    ///
+    /// `isCommandReply` is the difference between a block this client asked for
+    /// and one tmux produced on its own — see the flags note in `parse`.
+    case begin(number: Int, isCommandReply: Bool)
+    /// End of a reply block; `failed` is true for `%error`.
+    case end(number: Int, failed: Bool, isCommandReply: Bool)
 
     case output(pane: String, data: Data)
     /// Sent once the attach handshake finishes — see `TmuxControlClient`.
@@ -73,11 +76,31 @@ enum TmuxNotification {
 
         case "%begin", "%end", "%error":
             // `%begin <time> <number> <flags>`
+            //
+            // **The flags field is not decoration and reading it is what keeps
+            // replies paired with commands.** tmux answers a control client
+            // with a block for things the client never sent: the attach
+            // handshake, and — the expensive one — every command tmux runs on
+            // its own behalf, which on a machine with `set-hook -g
+            // after-select-pane 'run-shell …'` installed means *one extra block
+            // per `select-pane`*. A queue that pops one completion per block
+            // then hands each reply to the wrong caller from there on.
+            //
+            // Measured on tmux 3.6a against an isolated `-L` server, four
+            // cases: the handshake block carries 0, `select-pane`,
+            // `list-windows` and `set-option` carry 1, an `after-select-pane`
+            // hook's `run-shell` carries 0, and a command that fails carries 1
+            // on its `%error` — so a failed command still owns its reply.
+            //
+            // Non-zero rather than `& 1`, because only 0 and 1 were observed
+            // and a future flag bit set alongside it should keep the block
+            // attributed to the command rather than silently unpair it.
             let fields = String(decoding: rest, as: UTF8.self).split(separator: " ")
             guard fields.count >= 2, let number = Int(fields[1]) else { return nil }
+            let isCommandReply = fields.count >= 3 ? (Int(fields[2]) ?? 0) != 0 : true
             return verb == "%begin"
-                ? .begin(number: number)
-                : .end(number: number, failed: verb == "%error")
+                ? .begin(number: number, isCommandReply: isCommandReply)
+                : .end(number: number, failed: verb == "%error", isCommandReply: isCommandReply)
 
         case "%session-changed":
             // `%session-changed <session-id> <name>` — sent to this client

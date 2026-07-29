@@ -282,11 +282,30 @@ final class TmuxControlClient {
         stateLock.unlock()
     }
 
+    /// Put a command on the wire, and say so when it does not go.
+    ///
+    /// **Every path out of here that is not a write has to be recorded.** The
+    /// command's completion is already in `completions` by the time this runs —
+    /// `enqueue` appends it under the lock — so a command that silently fails
+    /// to leave leaves an entry nothing will ever pop, and from then on every
+    /// reply on this connection goes to the wrong caller. That is the same
+    /// corruption the `%end` handler guards against from the other side, and it
+    /// used to be spelled `try?`, which is indistinguishable from success.
     private func write(command: String) {
-        guard let data = (command + "\n").data(using: .utf8) else { return }
+        guard let data = (command + "\n").data(using: .utf8) else {
+            TmuxLog.lifecycle("command was not encodable and never went out: \(command)", session: sessionLabel)
+            return
+        }
         // A dead child turns the write into SIGPIPE, which would kill the app.
-        guard process.isRunning else { return }
-        try? stdinPipe.fileHandleForWriting.write(contentsOf: data)
+        guard process.isRunning else {
+            TmuxLog.lifecycle("tmux is gone; command never went out: \(command)", session: sessionLabel)
+            return
+        }
+        do {
+            try stdinPipe.fileHandleForWriting.write(contentsOf: data)
+        } catch {
+            TmuxLog.lifecycle("write to tmux failed (\(error)); command never went out: \(command)", session: sessionLabel)
+        }
     }
 
     // MARK: - Reading
@@ -333,23 +352,53 @@ final class TmuxControlClient {
         case .output(let pane, let data):
             onPaneOutput?(pane, data)
 
-        case .begin(let number):
+        case .begin(let number, _):
             stateLock.lock()
             replyLines = []
             openBlockNumber = number
             stateLock.unlock()
 
-        case .end(_, let failed):
+        case .end(_, let failed, let isCommandReply):
             stateLock.lock()
             let lines = replyLines ?? []
             replyLines = nil
             openBlockNumber = nil
+            // **Only a block tmux attributes to a command of ours takes a
+            // completion.** tmux answers this client with blocks nobody here
+            // asked for — the attach handshake, and every command it runs on
+            // its own behalf. A `set-hook -g after-select-pane 'run-shell …'`
+            // in the user's config makes that one extra block for every
+            // `select-pane` the app sends, and popping a completion for it
+            // hands the *next* command its predecessor's reply from then on.
+            //
+            // Observed 2026-07-29 in the user's own log, with that hook
+            // installed by an unrelated tool: one `select-pane -t %606` out,
+            // two blocks back. The victim was the `list-windows` that follows
+            // `%window-pane-changed`, which received an empty block, returned
+            // early on `parsed.isEmpty`, and left the model naming a pane tmux
+            // had already moved off — after which every sync pulled the
+            // keyboard back to the stale pane. See `TmuxNotification.parse`
+            // for the flags this reads and what was measured.
+            //
             // Typed rather than inferred: the element is already optional, and
             // letting the ternary work it out yields a double optional whose
             // `if let` unwraps one layer and silently never fires.
+            // Read before the pop, or removing the last entry would report
+            // itself as a starved queue.
+            let starved = isCommandReply && completions.isEmpty
             let completion: (([Data], Bool) -> Void)? =
-                completions.isEmpty ? nil : completions.removeFirst()
+                starved ? nil : (isCommandReply ? completions.removeFirst() : nil)
             stateLock.unlock()
+            // The other direction of the same fault, and it has no local fix:
+            // a reply arriving for a command nothing is waiting on means the
+            // queue is already short. Silence is what made this class of bug
+            // cost a day, so it is recorded rather than tolerated.
+            if starved {
+                TmuxLog.lifecycle(
+                    "command reply arrived with no command waiting — reply queue is out of step",
+                    session: sessionLabel
+                )
+            }
             if let completion {
                 callbackQueue.async { completion(lines, failed) }
             }
@@ -391,7 +440,7 @@ final class TmuxControlClient {
             return false
         }
         guard let openBlock,
-              case .end(let number, _)? = TmuxNotification.parse(line: line)
+              case .end(let number, _, _)? = TmuxNotification.parse(line: line)
         else { return false }
         guard number == openBlock else {
             // Either a pane is displaying a transcript — the case above, now

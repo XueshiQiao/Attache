@@ -330,6 +330,22 @@ one of them presents as "the code is obviously correct and yet".
 - **libghostty claims ⌘ keys.** Its terminal view treats them as candidates for
   its own keybinds before the main menu is consulted. `TmuxTerminalView`
   overrides `performKeyEquivalent` to give the menu first refusal.
+- **tmux answers a control client with reply blocks it never asked for, and the
+  `%begin` flags field is the only thing that says so.** `%begin <time> <number>
+  <flags>`: flags is 1 when the block is the reply to a command *this* client
+  sent — including when it fails, so `%error` carries 1 too — and 0 when it is
+  not. Two things produce a 0: the attach handshake, and **every command tmux
+  runs on its own behalf, which means one extra block per `select-pane` on a
+  machine with `set-hook -g after-select-pane 'run-shell …'` installed.** Popping
+  one completion per block therefore hands the next command its predecessor's
+  reply, permanently, and the first casualty is the `list-windows` that follows
+  `%window-pane-changed`: it receives an empty block, returns early on "no
+  windows", and the model is left naming a pane tmux has already moved off. That
+  presents as **the keyboard moving out of the pane the user just clicked**,
+  about half a second later, with no undo and nothing in the log. Measured on
+  tmux 3.6a against an isolated `-L` server, and a hook fired by *another*
+  client sends no block here — only the connection that issued the command gets
+  the extra one, which is why it looked like clicking was the trigger.
 - **`%client-session-changed` starts with a client name**, not a session id, and
   it is broadcast to every client on the server. Parsing it like
   `%session-changed` points every connection at whichever client moved last.

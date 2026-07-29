@@ -77,6 +77,12 @@ final class SessionViewController: NSViewController {
     private var appliedFontDescription = SessionViewController.fontDescription
     private var focusedPaneID: String?
 
+    /// True only while `syncWithModel` is handing the keyboard to the surface
+    /// tmux says is active. `focusPane` reads it to tell that move apart from a
+    /// click, which is the one distinction it needs and the only one it can
+    /// make locally without consulting a mirror that may be stale.
+    private var movingKeyboardToMatchTmux = false
+
     /// Windows the user hid from the rail.
     ///
     /// Hiding must never kill anything — an AI agent mid-run is the expensive
@@ -553,7 +559,14 @@ final class SessionViewController: NSViewController {
         if let focusedPaneID, let surface = surfaces[focusedPaneID],
            view.window?.firstResponder !== surface.view
         {
+            // Bracketed, because `makeFirstResponder` runs `becomeFirstResponder`
+            // synchronously and that is the same callback a real click arrives
+            // on. Without the latch this move — which exists only to catch up
+            // with tmux — would be answered by a `select-pane` telling tmux what
+            // it just told us. See `focusPane`.
+            movingKeyboardToMatchTmux = true
             view.window?.makeFirstResponder(surface.view)
+            movingKeyboardToMatchTmux = false
         }
 
         scheduleRepaint(of: layout.panes.filter { paintedFrames[$0.id] != $0.frame })
@@ -965,11 +978,21 @@ final class SessionViewController: NSViewController {
     /// up. Now the command goes out and the ring moves when tmux says so, by
     /// exactly the path `prefix + o` in another terminal takes.
     ///
-    /// Gated on tmux's current answer rather than on a local memory, so the
-    /// `makeFirstResponder` that `syncWithModel` does after every refresh
-    /// cannot bounce a redundant `select-pane` back out.
+    /// **Gated on what this app is doing, never on what it believes tmux's
+    /// active pane to be.** It used to compare against
+    /// `connection.activeWindow?.activePaneID` — a mirror refreshed only when a
+    /// notification arrives — and that turned one lost refresh into a state the
+    /// app could not leave: the mirror named a pane tmux had moved off, so
+    /// every click sent `select-pane` for a pane tmux had *already* selected,
+    /// which is a no-op, which tmux does not announce, so the mirror was never
+    /// corrected and the next click did the same thing. Measured on the user's
+    /// machine 2026-07-29: the same `select-pane` sent thirty times in three
+    /// minutes, and the keyboard pulled back to the stale pane after every one.
+    ///
+    /// The only thing that must not send a command is this controller moving
+    /// the keyboard *to match* tmux, and that it can know for itself.
     private func focusPane(_ paneID: String) {
-        guard connection.activeWindow?.activePaneID != paneID else { return }
+        guard !movingKeyboardToMatchTmux else { return }
         connection.focus(paneID: paneID)
     }
 
