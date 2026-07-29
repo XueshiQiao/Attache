@@ -56,6 +56,13 @@ final class MainViewController: NSSplitViewController {
     private var appliedSidebarWidth: CGFloat?
     private var settingsObserver: NSObjectProtocol?
     private var occlusionObserver: NSObjectProtocol?
+    /// Fires when the oldest `done` badge on screen stops being recent.
+    ///
+    /// A finished agent's green dot expires after a few minutes, and expiry is
+    /// the one state change nothing else announces: tmux has nothing to say
+    /// about it and no repository changed. Without this the dot would sit there
+    /// until some unrelated notification happened to rebuild the rail.
+    private var agentExpiryTimer: Timer?
     private var appearanceObservation: NSKeyValueObservation?
 
     var onStatusChange: ((String) -> Void)?
@@ -837,6 +844,7 @@ final class MainViewController: NSSplitViewController {
             )
         }
         gitStatus.setVisiblePaths(visiblePaths)
+        scheduleAgentExpiry(for: entries)
 
         // Whatever the app was showing may have been killed elsewhere; fall
         // back to the first session rather than a blank pane. A rename no
@@ -847,6 +855,35 @@ final class MainViewController: NSSplitViewController {
         }
 
         sidebar.update(entries: entries, selected: currentSessionID)
+    }
+
+    /// Wake up once, when the soonest `done` badge goes stale.
+    ///
+    /// One timer for the earliest of them rather than one per row: they all
+    /// resolve to the same rebuild, and a rail full of finished agents should
+    /// not mean a rail full of timers.
+    private func scheduleAgentExpiry(for entries: [SessionSidebarView.Entry]) {
+        agentExpiryTimer?.invalidate()
+        agentExpiryTimer = nil
+
+        let deadlines = entries.flatMap { entry in
+            entry.decorations.values.compactMap { decoration -> Date? in
+                guard decoration.agent?.state == .done,
+                      let since = decoration.agent?.since else { return nil }
+                return since.addingTimeInterval(SidebarWindowRow.doneShowsFor)
+            }
+        }
+        guard let soonest = deadlines.filter({ $0 > Date() }).min() else { return }
+
+        // A second past it, so the row is rebuilt on the far side of the
+        // comparison rather than exactly on it.
+        let timer = Timer(
+            fire: soonest.addingTimeInterval(1), interval: 0, repeats: false
+        ) { _ in
+            Task { @MainActor [weak self] in self?.refreshSidebar() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        agentExpiryTimer = timer
     }
 
     /// Give up the controller of a session the server no longer has.

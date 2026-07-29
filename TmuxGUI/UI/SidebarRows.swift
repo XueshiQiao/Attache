@@ -53,6 +53,13 @@ final class SidebarSessionRow: NSView {
     static let topGap: CGFloat = 9
 
     private let isCurrent: Bool
+    /// The most urgent thing any agent in this session is doing, or nil.
+    ///
+    /// It matters most when the session is *collapsed*, which is exactly when
+    /// its window rows are not on screen to say it. A heading that only ever
+    /// reported "some output happened" would hide the one state worth
+    /// interrupting someone for behind a disclosure triangle.
+    private let agent: AgentState?
     private let label = NSTextField(labelWithString: "")
     private let countLabel = NSTextField(labelWithString: "")
     private let plusButton = NSButton()
@@ -63,11 +70,12 @@ final class SidebarSessionRow: NSView {
     private var pressed = false
 
     init(id: String, name: String, windowCount: Int, hasActivity: Bool,
-         isCurrent: Bool, isExpanded: Bool)
+         isCurrent: Bool, isExpanded: Bool, agent: AgentState? = nil)
     {
         sessionID = id
         sessionName = name
         self.isCurrent = isCurrent
+        self.agent = agent
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -117,10 +125,17 @@ final class SidebarSessionRow: NSView {
 
         activityDot.wantsLayer = true
         activityDot.layer?.cornerRadius = 3
-        // System orange on purpose, under every scheme: "something happened
-        // where you are not looking" has to mean one thing.
-        activityDot.layer?.backgroundColor = NSColor.systemOrange.cgColor
-        activityDot.isHidden = !(hasActivity && !isCurrent)
+        // Same rule as a window row: a colour means an agent, neutral means
+        // tmux noticed output. An agent outranks activity, and it is shown even
+        // for the session being looked at — "waiting for you" does not stop
+        // being true because you are in that session but another window.
+        switch agent {
+        case .needsInput: activityDot.layer?.backgroundColor = NSColor.systemOrange.cgColor
+        case .working: activityDot.layer?.backgroundColor = NSColor.systemBlue.cgColor
+        case .done: activityDot.layer?.backgroundColor = NSColor.systemGreen.cgColor
+        case nil: activityDot.layer?.backgroundColor = ChromeTheme.current.faintText.cgColor
+        }
+        activityDot.isHidden = agent == nil && !(hasActivity && !isCurrent)
         addSubview(activityDot)
 
         toolTip = "\(name) · \(windowCount) window\(windowCount == 1 ? "" : "s")"
@@ -297,6 +312,13 @@ final class SidebarWindowRow: NSView {
     /// that changes.
     private let statsLabel = NSTextField(labelWithString: "")
     private let activityDot = NSView()
+    /// The state in words, beside the dot.
+    ///
+    /// A colour means nothing until it has been learned, and there is no legend
+    /// on screen to learn it from — the first question this feature was asked
+    /// was what the colours meant. The word answers it without a tooltip, and
+    /// can be switched off once it stops being needed.
+    private let agentLabel = NSTextField(labelWithString: "")
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
     private var dragOrigin: NSPoint?
@@ -349,8 +371,12 @@ final class SidebarWindowRow: NSView {
         branchLabel.lineBreakMode = .byTruncatingHead
 
         activityDot.wantsLayer = true
-        activityDot.layer?.cornerRadius = 3.5
         addSubview(activityDot)
+
+        agentLabel.font = .systemFont(ofSize: 9.5, weight: .semibold)
+        agentLabel.alignment = .right
+        agentLabel.lineBreakMode = .byClipping
+        addSubview(agentLabel)
 
         applyStatus(window: window)
         applyColors()
@@ -364,18 +390,40 @@ final class SidebarWindowRow: NSView {
     private func applyStatus(window: TmuxWindow) {
         var tips = ["\(window.index): \(window.name)"]
 
-        if let agent = decoration.agent {
+        // Switched on `shown`, so every case that has an agent takes the same
+        // branch. **An agent's dot is drawn whether or not the row is
+        // selected.** Only the last case — no agent at all — defers to tmux's
+        // activity flag, which is the one mark that genuinely has nothing to
+        // say about the row you are already looking at.
+        switch shown {
+        case .state(let state):
             activityDot.isHidden = false
-            let name = agent.kind.map { $0 == "claude" ? "Claude Code" : $0 } ?? "An agent"
-            switch agent.state {
-            case .needsInput: tips.append("\(name) · waiting for you\(Self.age(agent.since))")
-            case .working: tips.append("\(name) · working\(Self.age(agent.since))")
-            case .done: tips.append("\(name) · finished\(Self.age(agent.since))")
-            case nil: tips.append("\(name) is running — install the hook to see what it is doing")
+            let name = agentName
+            switch state {
+            case .needsInput: tips.append("\(name) · waiting for you\(Self.age(decoration.agent?.since))")
+            case .working: tips.append("\(name) · working\(Self.age(decoration.agent?.since))")
+            case .done: tips.append("\(name) · finished\(Self.age(decoration.agent?.since))")
             }
-        } else {
+
+        case .settled:
+            activityDot.isHidden = false
+            tips.append("\(agentName) · idle, finished\(Self.age(decoration.agent?.since))")
+
+        case .silent:
+            activityDot.isHidden = false
+            tips.append(
+                AgentHookInstaller.isInstalled()
+                    ? "\(agentName) is running. It started before the hook was installed —"
+                        + " restart it to see what it is doing."
+                    : "\(agentName) is running. Install the hook in Settings to see"
+                        + " what it is doing."
+            )
+
+        case .none:
             // tmux's own flag, unchanged in meaning: it is what the `#` in a
-            // plain `tmux attach` status line means.
+            // plain `tmux attach` status line means. Hidden on the selected row
+            // because "output arrived where you are not looking" is not true of
+            // the row you are looking at.
             activityDot.isHidden = !(window.hasActivity && !isActive)
         }
 
@@ -398,6 +446,7 @@ final class SidebarWindowRow: NSView {
             }
         }
 
+        agentLabel.stringValue = agentWord ?? ""
         toolTip = tips.joined(separator: "\n")
     }
 
@@ -477,24 +526,114 @@ final class SidebarWindowRow: NSView {
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
 
-    /// The dot's colour, which is the only thing on the row that has to mean
-    /// the same thing under every terminal scheme.
+    /// How long a finished agent stays *fresh* before it reads as merely idle.
     ///
-    /// System colours rather than theme-derived ones, for the reason the
-    /// activity dot already used `systemOrange`: "this one is waiting for you"
-    /// has to be one colour, and a hue blended out of whatever scheme is
-    /// loaded would be a different one in every theme.
-    private var dotColor: NSColor {
-        switch decoration.agent?.state {
-        case .needsInput: .systemOrange
-        case .working: .systemBlue
-        case .done: .systemGreen
-        // An agent with no hook installed. Deliberately colourless: the app
-        // knows something is running and does not know what, and a coloured
-        // dot would be claiming otherwise.
-        case nil where decoration.agent != nil: ChromeTheme.current.faintText
-        // No agent — tmux's own activity flag, unchanged.
-        default: .systemOrange
+    /// 30 minutes, matching `partner0/tmux-agent-status`, whose hook-driven
+    /// model this row now follows: its `working`/`waiting`/`idle` are this
+    /// file's `working`/`needs-input`/`done`, and its `paused` is what an
+    /// untouched `done` becomes here.
+    ///
+    /// The first attempt made `done` expire to *nothing* after 5 minutes, which
+    /// was wrong twice over. A finished agent does not stop being finished, and
+    /// falling back to no-state made the row say "unknown" about a window whose
+    /// state is perfectly well known — the app had simply decided to stop
+    /// believing it.
+    static let doneShowsFor: TimeInterval = 30 * 60
+
+    /// What the row should draw, which is not always the word tmux is holding.
+    ///
+    /// `none` and `silent` were one case and had to be separated: "there is no
+    /// agent in this window" and "there is one and it has never reported" want
+    /// different marks, and collapsing them made the visibility rule below fall
+    /// through to tmux's activity flag — which hides the dot on the selected
+    /// row. An agent's mark disappearing because you clicked its row is the
+    /// kind of thing that has to mean something, and it meant nothing.
+    private enum Shown {
+        case state(AgentState)
+        /// Finished, and long enough ago that it is no longer news.
+        case settled
+        /// An agent is here and has never said anything — its session started
+        /// before the hook did. Genuinely unknown, unlike `settled`.
+        case silent
+        /// No agent in this window at all.
+        case none
+    }
+
+    private var shown: Shown {
+        guard let agent = decoration.agent else { return .none }
+        guard let state = agent.state else { return .silent }
+        guard state == .done, let since = agent.since else { return .state(state) }
+        return Date().timeIntervalSince(since) < Self.doneShowsFor ? .state(state) : .settled
+    }
+
+    /// Kept for the places that only care about the live state.
+    private var shownAgentState: AgentState? {
+        if case .state(let state) = shown { return state }
+        return nil
+    }
+
+    private var agentName: String {
+        decoration.agent?.kind.map { $0 == "claude" ? "Claude Code" : $0 } ?? "An agent"
+    }
+
+    /// The state in words. Nil when there is nothing to say, or when the
+    /// setting is off.
+    ///
+    /// Deliberately not the tooltip's wording: this has to fit beside a window
+    /// name in a rail that is 168pt wide by default, so it is the shortest
+    /// phrase that is still unambiguous. "waiting" alone would not be —
+    /// waiting for what.
+    private var agentWord: String? {
+        guard AppSettings.sidebarShowsAgentText, decoration.agent != nil else { return nil }
+        switch shown {
+        case .state(.working): return "working"
+        case .state(.needsInput): return "needs you"
+        case .state(.done): return "done"
+        // Finished a while ago. Not "unknown" — the app knows exactly what
+        // happened, it just happened long enough ago to stop being news.
+        case .settled: return "idle"
+        // Never said anything. This is the one case that really is unknown.
+        case .silent: return "unknown"
+        // No agent — the guard above already returned, so this is unreachable.
+        // Spelled out rather than defaulted so that adding a state to `Shown`
+        // is a compile error here, which is how the last one got missed.
+        case .none: return nil
+        }
+    }
+
+    /// The dot, as colour plus whether it is filled.
+    ///
+    /// **One rule, and it is the whole design: a colour means an agent.** Blue,
+    /// amber and green are things a coding agent is doing and are worth
+    /// crossing the room for. Anything neutral is not about an agent.
+    ///
+    /// tmux's own activity flag used to be `systemOrange` — the same amber that
+    /// now means "an agent is waiting for you". Two very different messages in
+    /// one colour, told apart only by whether an agent happens to be in that
+    /// window, which the dot does not show. It is neutral now.
+    ///
+    /// System colours rather than theme-derived ones: "this one is waiting for
+    /// you" has to be the same colour under every terminal scheme, and a hue
+    /// blended out of whatever is loaded would be a different one each time.
+    private var dotStyle: (color: NSColor, filled: Bool, size: CGFloat) {
+        let theme = ChromeTheme.current
+        switch shown {
+        case .state(.needsInput): return (.systemOrange, true, 7)
+        case .state(.working): return (.systemBlue, true, 7)
+        case .state(.done): return (.systemGreen, true, 7)
+        // Settled: still an agent, no longer an event. Neutral and filled —
+        // filled because this *is* known, unlike the hollow ring below.
+        case .settled: return (theme.mutedText, true, 6)
+        case .silent:
+            // An agent that has never reported. Hollow on purpose: the app
+            // knows something is running and does not know what, and a filled
+            // dot in any colour would be claiming more than that.
+            return (theme.mutedText, false, 8)
+        default:
+            // tmux's `#`: output arrived in a window you are not looking at.
+            // Neutral and smaller, because it is ambient rather than addressed
+            // to you.
+            return (theme.faintText, true, 5)
         }
     }
 
@@ -511,7 +650,18 @@ final class SidebarWindowRow: NSView {
         indexLabel.textColor = isActive
             ? theme.onAccent.withAlphaComponent(0.7)
             : theme.faintText
-        activityDot.layer?.backgroundColor = dotColor.cgColor
+        // The word and the dot are one mark and must agree, including on the
+        // selected row. They did not: the word switched to `onAccent` over the
+        // accent fill while the dot kept its own colour, so a neutral one — the
+        // hollow "state unknown" ring, and tmux's activity dot — vanished into
+        // the fill the moment its row was selected. Reported as "sometimes the
+        // circle is there and sometimes it is not".
+        let dot = dotStyle
+        let mark = isActive ? theme.onAccent.withAlphaComponent(0.9) : dot.color
+        activityDot.layer?.backgroundColor = dot.filled ? mark.cgColor : NSColor.clear.cgColor
+        activityDot.layer?.borderColor = mark.cgColor
+        activityDot.layer?.borderWidth = dot.filled ? 0 : 1.5
+        agentLabel.textColor = mark
 
         // On the filled row every colour is a tint of `onAccent`, because a
         // semantic hue over the accent fill is a second colour fighting the
@@ -539,7 +689,8 @@ final class SidebarWindowRow: NSView {
 
     override func layout() {
         super.layout()
-        let dotSize: CGFloat = 7
+        let dotSize = dotStyle.size
+        activityDot.layer?.cornerRadius = dotSize / 2
 
         guard showsSecondLine else {
             // The single-line row exactly as it was, so turning the setting off
@@ -570,7 +721,22 @@ final class SidebarWindowRow: NSView {
         var right = bounds.maxX - 8
         if !activityDot.isHidden {
             activityDot.frame = CGRect(x: right - dotSize, y: 5, width: dotSize, height: dotSize)
-            right -= dotSize + 6
+            right -= dotSize + 5
+        }
+        // The word sits to the *left* of the dot and is measured rather than
+        // guessed: it is the one element here whose width depends on which
+        // state is showing, and a fixed reservation would either clip
+        // "needs you" or waste the space "done" does not need.
+        if !agentLabel.stringValue.isEmpty {
+            let width = min(
+                ceil(agentLabel.attributedStringValue.size().width) + 1,
+                max(0, right - left - 40)
+            )
+            agentLabel.frame = CGRect(x: right - width, y: 4, width: max(0, width), height: 13)
+            agentLabel.isHidden = width <= 0
+            right -= width + 6
+        } else {
+            agentLabel.isHidden = true
         }
         label.frame = CGRect(x: left, y: 3, width: max(0, right - left), height: 15)
 

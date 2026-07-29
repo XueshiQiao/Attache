@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TmuxGUI — what the sidebar knows, and how it knows it</title>
+<style>
+  :root {
+    --bg: #faf9f5;
+    --surface: #ffffff;
+    --ink: #1f1e1c;
+    --ink-soft: #5a5751;
+    --ink-faint: #8a857c;
+    --rule: #e6e2d4;
+    --rule-soft: #efece1;
+    --code-bg: #f3f0e6;
+    --accent: #d97757;
+    --accent-soft: #f4e2d6;
+    --good: #4f8a5c;
+    --warn: #b6711c;
+    --bad: #b14338;
+    --serif: "Tiempos", "Source Serif Pro", "Iowan Old Style", Georgia, serif;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Monaco, "Cascadia Code", monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .container {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 80px 40px 120px;
+  }
+
+  header.hero { margin-bottom: 56px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin-bottom: 18px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 48px;
+    line-height: 1.1;
+    margin: 0 0 20px;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+  }
+  .lede {
+    font-family: var(--serif);
+    font-size: 22px;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: 640px;
+  }
+
+  h2 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 30px;
+    line-height: 1.2;
+    margin: 64px 0 16px;
+    letter-spacing: -0.01em;
+  }
+  h3 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 17px;
+    margin: 36px 0 10px;
+    letter-spacing: -0.005em;
+  }
+  p { margin: 0 0 16px; }
+  p, li { color: var(--ink); }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+  a:hover { border-bottom-color: var(--accent); }
+
+  ul, ol { padding-left: 24px; margin: 0 0 16px; }
+  li { margin-bottom: 8px; }
+  li code { font-size: 0.92em; }
+
+  code {
+    font-family: var(--mono);
+    background: var(--code-bg);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+  pre {
+    background: #1f1e1c;
+    color: #f6f3eb;
+    padding: 20px 24px;
+    border-radius: 8px;
+    overflow-x: auto;
+    line-height: 1.55;
+    font-size: 13.5px;
+    margin: 20px 0 28px;
+  }
+  pre code {
+    background: transparent;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+  }
+  .tok-comment  { color: #9b9081; font-style: italic; }
+  .tok-keyword  { color: #e89b6f; }
+  .tok-fn       { color: #f0d68a; }
+  .tok-string   { color: #b8d49d; }
+  .tok-num      { color: #d8b9e3; }
+
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px 32px;
+    margin: 32px 0 48px;
+    padding: 18px 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-soft);
+  }
+  .meta-row b { color: var(--ink); font-weight: 500; margin-right: 8px; }
+
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 18px 22px;
+    margin: 28px 0;
+    border-radius: 0 6px 6px 0;
+    color: var(--ink);
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 6px;
+    display: block;
+  }
+
+  .figure {
+    margin: 36px 0;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 28px 24px 18px;
+  }
+  .figure svg { display: block; width: 100%; height: auto; }
+  .figure .caption {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--rule);
+  }
+  .figure .caption b { color: var(--ink-soft); font-weight: 600; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 24px 0 32px;
+    font-size: 14.5px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-weight: 600;
+    color: var(--ink-soft);
+    background: var(--rule-soft);
+    font-size: 13px;
+    letter-spacing: 0.01em;
+  }
+  td code { font-size: 0.88em; }
+
+  .pill {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .pill.good    { background: #e3f0e2; color: var(--good); }
+  .pill.warn    { background: #f5e7d0; color: var(--warn); }
+  .pill.bad     { background: #f5dad6; color: var(--bad); }
+  .pill.neutral { background: var(--rule-soft); color: var(--ink-soft); }
+
+  .footer {
+    margin-top: 96px;
+    padding-top: 24px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  /* SVG defaults */
+  svg text { font-family: var(--sans); font-size: 12.5px; fill: var(--ink); }
+  svg .label-mono  { font-family: var(--mono); font-size: 11.5px; fill: var(--ink-soft); }
+  svg .label-soft  { fill: var(--ink-soft); }
+  svg .label-faint { fill: var(--ink-faint); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- ╔══ HERO ══════════════════════════════════════════════════════════╗ -->
+<header class="hero">
+  <div class="eyebrow">TmuxGUI · sidebar status</div>
+  <h1>What the sidebar knows,<br>and how it knows it</h1>
+  <p class="lede">Each window row carries a branch, a change count, and a coloured dot for the
+  coding agent running in it. Three different sources feed those, only one of them is tmux, and
+  the one that caused the most trouble was the one that looked simplest.</p>
+</header>
+
+<div class="meta-row">
+  <span><b>Code</b> TmuxGUI/Status/ · SidebarRows.swift</span>
+  <span><b>Checks</b> 23 + 35 + 13 cases</span>
+  <span><b>Hook</b><span class="pill good">INSTALLED</span></span>
+  <span><b>State source</b><span class="pill good">HOOKS ONLY</span></span>
+</div>
+
+<!-- ══ 1 ══════════════════════════════════════════════════════════════ -->
+<h2>1 · Three sources, one row</h2>
+
+<p>A row draws three things and no two of them arrive the same way. Keeping that straight is
+most of the design, because the app's central rule is that <b>tmux owns everything and the GUI
+owns nothing</b> — and two of these three are not tmux's to own.</p>
+
+<div class="figure">
+<svg viewBox="0 0 820 300" role="img" aria-label="Data flow from three sources into one sidebar row">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a857c"/>
+    </marker>
+  </defs>
+
+  <!-- source lane 1: agent -->
+  <rect x="8" y="14" width="196" height="66" rx="8" fill="#fff" stroke="#e6e2d4"/>
+  <text x="20" y="38" font-weight="600">Claude Code</text>
+  <text x="20" y="58" class="label-mono">hook fires on 8 events</text>
+  <text x="20" y="72" class="label-faint">→ writes a tmux pane option</text>
+
+  <!-- source lane 2: tmux -->
+  <rect x="8" y="102" width="196" height="66" rx="8" fill="#fff" stroke="#e6e2d4"/>
+  <text x="20" y="126" font-weight="600">tmux</text>
+  <text x="20" y="146" class="label-mono">pane_current_path</text>
+  <text x="20" y="160" class="label-faint">the active pane's directory</text>
+
+  <!-- source lane 3: filesystem -->
+  <rect x="8" y="190" width="196" height="66" rx="8" fill="#fff" stroke="#e6e2d4"/>
+  <text x="20" y="214" font-weight="600">the filesystem</text>
+  <text x="20" y="234" class="label-mono">git status --porcelain=v2</text>
+  <text x="20" y="248" class="label-faint">branch, counts, ahead/behind</text>
+
+  <!-- middle: tmux control mode -->
+  <rect x="262" y="52" width="204" height="118" rx="8" fill="#f3f0e6" stroke="#d97757"/>
+  <text x="274" y="76" font-weight="600" fill="#d97757">tmux control mode</text>
+  <text x="274" y="98" class="label-mono">refresh-client -B</text>
+  <text x="274" y="116" class="label-mono">%subscription-changed</text>
+  <text x="274" y="140" class="label-soft" font-size="11.5">pushed, never polled;</text>
+  <text x="274" y="155" class="label-soft" font-size="11.5">at most once a second</text>
+
+  <!-- git service -->
+  <rect x="262" y="190" width="204" height="66" rx="8" fill="#fff" stroke="#e6e2d4"/>
+  <text x="274" y="214" font-weight="600">GitStatusService</text>
+  <text x="274" y="234" class="label-mono">4 concurrent, cached</text>
+  <text x="274" y="248" class="label-faint">paused when not visible</text>
+
+  <!-- the row -->
+  <rect x="530" y="86" width="282" height="120" rx="10" fill="#1f1e1c"/>
+  <text x="552" y="118" fill="#f6f3eb" font-weight="600">9  tmux-gui</text>
+  <text x="700" y="118" fill="#e89b6f" font-size="11.5" class="label-mono">needs you</text>
+  <circle cx="790" cy="114" r="4.5" fill="#e89b6f"/>
+  <text x="552" y="146" fill="#9b9081" class="label-mono">main  +3 ~1  ↑2</text>
+  <line x1="546" y1="162" x2="796" y2="162" stroke="#3a3833"/>
+  <text x="552" y="186" fill="#9b9081" font-size="11" class="label-mono">one row · three sources</text>
+
+  <!-- arrows -->
+  <path d="M204,47 C232,47 236,80 260,92" fill="none" stroke="#8a857c" marker-end="url(#arr)"/>
+  <path d="M204,135 C230,135 234,124 260,120" fill="none" stroke="#8a857c" marker-end="url(#arr)"/>
+  <path d="M204,223 C226,223 232,223 260,223" fill="none" stroke="#8a857c" marker-end="url(#arr)"/>
+  <path d="M466,111 C496,111 500,120 528,126" fill="none" stroke="#d97757" marker-end="url(#arr)"/>
+  <path d="M466,223 C496,223 504,180 528,166" fill="none" stroke="#8a857c" marker-end="url(#arr)"/>
+</svg>
+<div class="caption"><b>Figure 1.</b> The agent's state is the only one of the three that is
+stored <i>in tmux</i>, as a pane option. That is deliberate: it means a plain
+<code>tmux attach</code> from any terminal reads the same value, so the GUI is displaying tmux
+state rather than authoring its own. Git is genuinely external and stays out of
+<code>TmuxWindow</code> entirely.</div>
+</div>
+
+<div class="callout">
+  <span class="label">The mechanism that made this cheap</span>
+  <p><code>refresh-client -B name:what:format</code> subscribes a control-mode client to a format
+  string, and tmux <b>pushes</b> <code>%subscription-changed</code> whenever the value moves.
+  Verified on tmux 3.6a: subscribing emits the current value immediately, several fields can be
+  packed into one subscription, and the rate is capped at once per second. Nothing is polled.</p>
+</div>
+
+<!-- ══ 2 ══════════════════════════════════════════════════════════════ -->
+<h2>2 · Every mapping, in one place</h2>
+
+<h3>Claude Code event → state</h3>
+
+<p>The hook writes one of four words into <code>@agent_state</code> on the pane it is running in.
+It finds its own pane through <code>$TMUX_PANE</code>, which tmux exports into every pane and any
+child process inherits.</p>
+
+<table>
+  <tr><th style="width:38%">Event (and matcher)</th><th style="width:18%">State</th><th>Why</th></tr>
+  <tr><td><code>SessionStart</code></td><td><span class="pill neutral">working</span></td>
+      <td>The session exists because something is starting. A fresh pane reading "finished" would
+      be a claim about a turn that never happened.</td></tr>
+  <tr><td><code>UserPromptSubmit</code></td><td><span class="pill neutral">working</span></td><td>You just gave it something to do.</td></tr>
+  <tr><td><code>PreToolUse</code> · <code>PostToolUse</code></td><td><span class="pill neutral">working</span></td><td>Tool calls are the visible part of computing.</td></tr>
+  <tr><td><code>Notification</code><br><span class="label-mono" style="font-size:12px">matcher: permission_prompt | elicitation_dialog | agent_needs_input</span></td>
+      <td><span class="pill warn">needs-input</span></td>
+      <td>Genuinely blocked: it cannot proceed until you answer.</td></tr>
+  <tr><td><code>Notification</code><br><span class="label-mono" style="font-size:12px">matcher: idle_prompt</span></td>
+      <td><span class="pill good">done</span></td>
+      <td><b>The one that was wrong.</b> <code>idle_prompt</code> fires merely because nobody has
+      typed for a while. Its own documentation calls it "Claude is done and waiting for your next
+      prompt" — a <i>done</i> signal, not a blocked one.</td></tr>
+  <tr><td><code>PermissionRequest</code></td><td><span class="pill warn">needs-input</span></td><td>Blocked on an explicit approval.</td></tr>
+  <tr><td><code>Stop</code></td><td><span class="pill good">done</span></td><td>"When Claude finishes responding."</td></tr>
+  <tr><td><code>SessionEnd</code></td><td><span class="pill neutral">clear</span></td><td>Remove the options; the pane has no agent any more.</td></tr>
+</table>
+
+<p>Two guards live in the script rather than in the mapping. Events carrying an
+<code>agent_id</code> were fired by a <b>subagent</b> and are dropped, and so is
+<code>SubagentStop</code> — a subagent completing is not the turn ending, and letting it through
+revives a pane that has finished.</p>
+
+<h3>State → what you see</h3>
+
+<p>One rule underneath all of it: <b>a colour means an agent</b>. Anything neutral is not about an
+agent and does not want you.</p>
+
+<table>
+  <tr><th style="width:20%">Mark</th><th style="width:22%">Word</th><th>Meaning</th></tr>
+  <tr><td>● blue, filled</td><td><code>working</code></td><td>Computing. Nothing for you to do.</td></tr>
+  <tr><td>● amber, filled</td><td><code>needs you</code></td><td>Blocked — a permission prompt, a question, an MCP elicitation.</td></tr>
+  <tr><td>● green, filled</td><td><code>done</code></td><td>Finished its turn — your move.</td></tr>
+  <tr><td>● grey, filled, small</td><td><code>idle</code></td><td>Finished, and long enough ago (30 min) to stop being news. <b>Filled</b>, because this is known.</td></tr>
+  <tr><td>○ grey, hollow</td><td><code>unknown</code></td><td>An agent is running and has never reported — its session started before the hook did. Hollow on purpose: a filled dot would claim more than is known.</td></tr>
+  <tr><td>▪ grey, small</td><td>—</td><td>tmux's own activity flag: output arrived in a window you are not looking at. <b>Used to be amber</b>, which is the colour that now means "an agent is waiting for you" — two very different messages in one colour.</td></tr>
+</table>
+
+<p>A session heading shows the most urgent state among its windows, which matters most when the
+session is <i>collapsed</i> — otherwise the one thing worth interrupting someone for is hidden
+behind a disclosure triangle.</p>
+
+<p><b>An agent's mark is drawn whether or not its row is selected.</b> Only the last line of that
+table — tmux's activity flag — is hidden on the selected row, and it is hidden because its meaning
+is "output arrived where you are not looking", which is not true of the row you are looking at.
+Everything else stays put: a mark that comes and goes as you click around is telling you something,
+and if it is not, it should not move.</p>
+
+<h3>The second line</h3>
+
+<table>
+  <tr><th style="width:26%">Shown</th><th>Meaning</th></tr>
+  <tr><td><code>main ✓</code> <span class="pill good">green</span></td><td>Clean and in sync.</td></tr>
+  <tr><td><code>main +3 ~1</code> <span class="pill warn">yellow</span></td><td>3 staged or added, 1 modified and unstaged.</td></tr>
+  <tr><td><code>main ?2</code> <span class="pill neutral">grey</span></td><td>Only untracked files. They are kept out of <code>+</code> and <code>~</code> deliberately — an unignored <code>node_modules</code> would read <code>+4000</code> forever.</td></tr>
+  <tr><td><code>main ↑2 ↓1</code> <span class="pill neutral">blue</span></td><td>2 to push, 1 to pull.</td></tr>
+  <tr><td><code>!1</code> <span class="pill bad">red</span></td><td>A conflicted merge or rebase.</td></tr>
+  <tr><td><code>~/Downloads</code> <span class="pill neutral">faint</span></td><td>Not a repository — the directory the pane is in.</td></tr>
+</table>
+
+<div class="callout">
+  <span class="label">Why ↓ is usually a lie, and what is done about it</span>
+  <p><code>git</code> compares against the <b>last fetch</b>, not against the remote. Without one,
+  <code>↓0</code> means "nothing known to pull", which reads as "nothing to pull" and is a
+  different claim. Background fetching is <b>off by default</b>; with it off the tooltip says
+  <code>↓ unknown — last fetch 47m ago</code>. With it on, the wording follows whether
+  <i>that repository</i> is actually being fetched — one whose fetch is refused for credentials is
+  exactly as stale as one with the setting off.</p>
+</div>
+
+<!-- ══ 3 ══════════════════════════════════════════════════════════════ -->
+<h2>3 · Three defects, and what each one taught</h2>
+
+<h3>The rail rebuilt 577 times in 30 idle seconds</h3>
+
+<p>Hovering flickered and clicks landed on nothing. Two causes, both mine.
+<code>GitSummary</code>'s synthesised <code>==</code> included <code>readAt</code>, a fresh
+<code>Date</code> per read, so every identical re-read reported a change. And watching
+<code>.git</code> while running <code>git status</code> inside it is a feedback loop — measured, 5
+plain runs produce 14 filesystem events.</p>
+
+<p>Equality is over the drawn fields now, <code>--no-optional-locks</code> reduces the events, and
+a quiet window after each read closes the rest. <b>577 → 0</b>, with the repositories still read.</p>
+
+<p>That storm exposed something older: a rebuild destroys every row, so the row under the pointer
+is replaced by one that does not know it is hovered, and a press on it is orphaned before the
+release. The rail now skips a rebuild that would draw the identical thing, holds one back while
+any mouse button is down, and a new row adopts the hover from where the pointer actually is —
+AppKit reports <i>crossings</i>, and nothing crosses when a row is rebuilt under a still pointer.</p>
+
+<h3>Every idle session turned amber</h3>
+
+<div class="figure">
+<svg viewBox="0 0 820 232" role="img" aria-label="Before and after the Notification split">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a857c"/>
+    </marker>
+  </defs>
+
+  <text x="8" y="20" font-weight="600" fill="#b14338">Before — one event, one meaning</text>
+  <rect x="8" y="32" width="150" height="30" rx="5" fill="#fff" stroke="#e6e2d4"/>
+  <text x="20" y="52" class="label-mono">Notification</text>
+  <text x="176" y="52" class="label-faint" font-size="11">all 8 subtypes</text>
+
+  <rect x="300" y="32" width="132" height="30" rx="5" fill="#f5e7d0" stroke="#b6711c"/>
+  <text x="316" y="52" class="label-mono" fill="#b6711c">needs-input</text>
+  <path d="M158,47 L296,47" stroke="#8a857c" marker-end="url(#arr2)"/>
+
+  <rect x="470" y="26" width="342" height="42" rx="6" fill="#f5dad6"/>
+  <text x="486" y="43" font-size="12" fill="#b14338">idle_prompt fires from mere inactivity —</text>
+  <text x="486" y="59" font-size="12" fill="#b14338">so a finished, idle session reads "waiting for you".</text>
+
+  <line x1="8" y1="90" x2="812" y2="90" stroke="#e6e2d4" stroke-dasharray="4 4"/>
+
+  <text x="8" y="118" font-weight="600" fill="#4f8a5c">After — the matcher splits it</text>
+
+  <rect x="8" y="130" width="150" height="30" rx="5" fill="#fff" stroke="#e6e2d4"/>
+  <text x="20" y="150" class="label-mono">Notification</text>
+  <text x="8" y="180" class="label-faint" font-size="11">matcher =</text>
+
+  <rect x="176" y="122" width="252" height="30" rx="5" fill="#fff" stroke="#e6e2d4"/>
+  <text x="186" y="141" class="label-mono" font-size="10.5">permission_prompt | elicitation_dialog</text>
+  <text x="186" y="152" class="label-mono" font-size="10.5">| agent_needs_input</text>
+
+  <rect x="176" y="168" width="252" height="26" rx="5" fill="#fff" stroke="#e6e2d4"/>
+  <text x="186" y="186" class="label-mono">idle_prompt</text>
+
+  <rect x="470" y="122" width="132" height="30" rx="5" fill="#f5e7d0" stroke="#b6711c"/>
+  <text x="486" y="142" class="label-mono" fill="#b6711c">needs-input</text>
+  <rect x="470" y="166" width="132" height="30" rx="5" fill="#e3f0e2" stroke="#4f8a5c"/>
+  <text x="486" y="186" class="label-mono" fill="#4f8a5c">done</text>
+
+  <path d="M428,137 L466,137" stroke="#8a857c" marker-end="url(#arr2)"/>
+  <path d="M428,181 L466,181" stroke="#8a857c" marker-end="url(#arr2)"/>
+  <path d="M158,145 L172,140" stroke="#8a857c" marker-end="url(#arr2)"/>
+  <path d="M158,150 L172,178" stroke="#8a857c" marker-end="url(#arr2)"/>
+
+  <text x="624" y="142" font-size="12" fill="#5a5751">blocked — cannot proceed</text>
+  <text x="624" y="186" font-size="12" fill="#5a5751">"your turn" — already finished</text>
+</svg>
+<div class="caption"><b>Figure 2.</b> The bug was not in the implementation but in treating one
+event as one meaning. Three panes were reading <code>needs-input</code> at once, including a
+session that had just answered normally and was sitting at an empty prompt. The
+<code>matcher</code> field is the documented way to tell the subtypes apart; the script also
+checks the payload directly, so sessions already running pick the fix up without restarting.</div>
+</div>
+
+<h3>Upgrading the hook left the broken version behind</h3>
+
+<p>The installer appended. When the event list changed — one <code>Notification</code> entry
+becoming two with matchers — an upgrade would add the new pair and leave the old catch-all entry
+firing beside them. The stale entry is precisely the one that was wrong, so the upgrade would have
+been worse than not upgrading. Installing now <b>removes our own entries and rebuilds them</b>: a
+sync, not an append. Only entries naming our script are touched, so it is still an append as far
+as every other tool in the file is concerned.</p>
+
+<div class="callout">
+  <span class="label">A file four other tools write to</span>
+  <p><code>~/.claude/settings.json</code> here carries hooks for Otty, ccpet,
+  <code>code-rules-check</code> and <code>banned-word-reminder</code>, plus
+  <code>statusLine</code>, <code>permissions</code>, <code>enabledPlugins</code> and more. Every
+  write takes a timestamped backup first, preserves every key it does not recognise, refuses a
+  shape it does not understand rather than overwriting it, and is atomic. It resolves symlinks
+  before writing — an atomic write to a symlinked config <i>replaces the symlink with a regular
+  file</i>, and <code>copyItem</code> on one produces a second pointer rather than a snapshot.
+  Both were demonstrated, then fixed.</p>
+</div>
+
+<!-- ══ 4 ══════════════════════════════════════════════════════════════ -->
+<h2>4 · What everyone else does</h2>
+
+<p>The mapping above is a judgement call, not a standard — Anthropic documents the <i>events</i>
+and leaves the state machine to whoever wants one. So it is worth knowing what the alternatives
+concluded.</p>
+
+<table>
+  <tr><th style="width:24%">Project</th><th style="width:20%">Mechanism</th><th>How it decides "waiting for you"</th></tr>
+  <tr><td><b>herdr</b><br><span class="label-faint" style="font-size:12px">Rust, ~15k ★</span></td>
+      <td>reads the <b>terminal output</b></td>
+      <td>Priority-ordered pattern rules. Highest of all (950) is <code>live_prompt_box</code> —
+      the input box being ready — which beats everything. Its hook is registered on
+      <code>SessionStart</code> only and reports identity, not state.</td></tr>
+  <tr><td><b>partner0/tmux-agent-status</b><br><span class="pill good">FOLLOWED</span></td><td>hooks only</td>
+      <td>The only one that gets it right, with two guards: skip a <code>Notification</code> whose
+      message contains "waiting for your input", and skip a <code>SessionStart</code> whose
+      <code>source == "compact"</code> — compaction fires it mid-turn. <b>This app now follows its
+      model:</b> its <code>working</code>/<code>waiting</code>/<code>idle</code>/<code>paused</code>
+      are this app's <code>working</code>/<code>needs you</code>/<code>done</code>/<code>idle</code>,
+      and both of its guards are implemented.</td></tr>
+  <tr><td><b>samleeney/tmux-agent-status</b><br><span class="label-faint" style="font-size:12px">249 ★</span></td>
+      <td>hooks only</td><td>Has no waiting state at all. Maps <code>Notification</code> straight to <i>done</i>.</td></tr>
+  <tr><td><b>agent-island</b><br><span class="label-faint" style="font-size:12px">85 ★</span></td>
+      <td>tails the transcript</td>
+      <td>Does not try. Treats <code>end_turn</code> as "your turn" and adds a separate
+      <b>stalled</b> state after 300s of no writes.</td></tr>
+</table>
+
+<div class="figure">
+<svg viewBox="0 0 820 250" role="img" aria-label="herdr's priority ladder against an event mapping">
+  <text x="8" y="20" font-weight="600">herdr — priority ladder over terminal output</text>
+
+  <rect x="8" y="34" width="390" height="34" rx="6" fill="#e3f0e2" stroke="#4f8a5c"/>
+  <text x="22" y="49" class="label-mono" fill="#4f8a5c">950  live_prompt_box</text>
+  <text x="22" y="63" font-size="11" fill="#5a5751">the input box is ready → idle · beats everything</text>
+
+  <rect x="8" y="76" width="390" height="34" rx="6" fill="#f5e7d0" stroke="#b6711c"/>
+  <text x="22" y="91" class="label-mono" fill="#b6711c">300  approval_prompt</text>
+  <text x="22" y="105" font-size="11" fill="#5a5751">"do you want to proceed?" → blocked</text>
+
+  <rect x="8" y="118" width="390" height="34" rx="6" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="22" y="133" class="label-mono">250  osc_title / osc_progress</text>
+  <text x="22" y="147" font-size="11" fill="#5a5751">terminal title sequences → idle</text>
+
+  <rect x="8" y="160" width="390" height="46" rx="6" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="22" y="176" class="label-mono">90-100  spinner rules</text>
+  <text x="22" y="190" font-size="10.5" class="label-mono">^\s*[⠀-⣿]+\s+\p{Alphabetic}+\w*ing\b</text>
+  <text x="22" y="202" font-size="11" fill="#5a5751">a braille spinner and an -ing word → working</text>
+
+  <text x="22" y="228" font-size="11.5" class="label-faint">rules ship as remotely updatable manifests, because agent UIs change</text>
+
+  <line x1="418" y1="24" x2="418" y2="236" stroke="#e6e2d4" stroke-dasharray="4 4"/>
+
+  <text x="438" y="20" font-weight="600">this app — events into a state machine</text>
+  <rect x="438" y="34" width="374" height="118" rx="6" fill="#fff" stroke="#e6e2d4"/>
+  <text x="452" y="54" class="label-mono">8 events  →  4 words  →  a dot</text>
+  <text x="452" y="78" font-size="12" fill="#5a5751">Documented, works when the pane is off screen,</text>
+  <text x="452" y="94" font-size="12" fill="#5a5751">and the state lives in tmux where any client</text>
+  <text x="452" y="110" font-size="12" fill="#5a5751">can read it.</text>
+  <text x="452" y="134" font-size="12" fill="#b14338">But the state has to be reconstructed, and</text>
+  <text x="452" y="148" font-size="12" fill="#b14338">reconstructing it was wrong three times.</text>
+
+  <rect x="438" y="162" width="374" height="44" rx="6" fill="#f5dad6"/>
+  <text x="452" y="180" font-size="12" fill="#b14338">Nobody has solved "finished" vs "blocked on a</text>
+  <text x="452" y="196" font-size="12" fill="#b14338">question" from hooks. The signal does not exist.</text>
+</svg>
+<div class="caption"><b>Figure 3.</b> The two approaches fail differently. Reading the screen is
+zero-configuration and gets "your turn" right, but has to be maintained against a UI that changes
+— which is why herdr ships its rules as updatable manifests. Reading events is stable and works
+off screen, but Claude Code exposes no way to tell a finished turn from one waiting on an answer,
+so that distinction has to be inferred and can be inferred wrongly.</div>
+</div>
+
+<!-- ══ 5 ══════════════════════════════════════════════════════════════ -->
+<h2>5 · The undocumented file that already has the answer</h2>
+
+<p>Claude Code writes <code>~/.claude/sessions/&lt;pid&gt;.json</code> for every live session. It
+is undocumented, and it contains the state already computed.</p>
+
+<pre><code>{
+  <span class="tok-string">"pid"</span>: 65435,
+  <span class="tok-string">"sessionId"</span>: <span class="tok-string">"3d94bec4-…"</span>,
+  <span class="tok-string">"cwd"</span>: <span class="tok-string">"/Users/joey/Code/tmux-gui"</span>,
+  <span class="tok-string">"version"</span>: <span class="tok-string">"2.1.220"</span>,
+  <span class="tok-string">"kind"</span>: <span class="tok-string">"interactive"</span>,      <span class="tok-comment">// or "bg" — filters background agents in one field</span>
+  <span class="tok-string">"status"</span>: <span class="tok-string">"busy"</span>,            <span class="tok-comment">// busy | idle | shell | (waiting — reported, not yet observed)</span>
+  <span class="tok-string">"statusUpdatedAt"</span>: 1785209457477
+}</code></pre>
+
+<p>Every Claude Code pane maps to one of these cleanly — the pane's shell pid has the agent as a
+child, and the file's <code>cwd</code> matches the pane's project. Measured against the exact case
+that started this: the row the sidebar was painting amber reads <code>status: idle</code> in the
+file. Claude Code had the right answer the whole time.</p>
+
+<div class="figure">
+<svg viewBox="0 0 820 210" role="img" aria-label="Decision between reading events and reading the status file">
+  <defs>
+    <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a857c"/>
+    </marker>
+  </defs>
+
+  <rect x="270" y="10" width="280" height="36" rx="18" fill="#f3f0e6" stroke="#d97757"/>
+  <text x="298" y="33" fill="#d97757" font-weight="600">where does the state come from?</text>
+
+  <path d="M340,46 L200,74" stroke="#8a857c" marker-end="url(#arr3)"/>
+  <path d="M410,46 L410,74" stroke="#8a857c" marker-end="url(#arr3)"/>
+  <path d="M480,46 L620,74" stroke="#8a857c" marker-end="url(#arr3)"/>
+
+  <rect x="20" y="78" width="242" height="110" rx="8" fill="#fff" stroke="#e6e2d4"/>
+  <text x="34" y="100" font-weight="600">A · read the status file</text>
+  <text x="34" y="122" font-size="12" fill="#4f8a5c">zero configuration</text>
+  <text x="34" y="140" font-size="12" fill="#4f8a5c">right on the failing case</text>
+  <text x="34" y="158" font-size="12" fill="#b14338">undocumented format</text>
+  <text x="34" y="176" font-size="12" fill="#b14338">not visible to other tmux clients</text>
+
+  <rect x="290" y="78" width="242" height="110" rx="8" fill="#fff" stroke="#e6e2d4"/>
+  <text x="304" y="100" font-weight="600">B · keep the hook</text>
+  <text x="304" y="122" font-size="12" fill="#4f8a5c">documented mechanism</text>
+  <text x="304" y="140" font-size="12" fill="#4f8a5c">state lives in tmux</text>
+  <text x="304" y="158" font-size="12" fill="#b14338">needs installing</text>
+  <text x="304" y="176" font-size="12" fill="#b14338">state must be reconstructed</text>
+
+  <rect x="560" y="78" width="242" height="110" rx="8" fill="#e3f0e2" stroke="#4f8a5c"/>
+  <text x="574" y="100" font-weight="600" fill="#4f8a5c">C · both  ← recommended</text>
+  <text x="574" y="122" font-size="12" fill="#5a5751">file first: accurate, no setup</text>
+  <text x="574" y="140" font-size="12" fill="#5a5751">hook as the fallback</text>
+  <text x="574" y="158" font-size="12" fill="#5a5751">survives the format changing</text>
+  <text x="574" y="176" font-size="12" fill="#b6711c">two code paths to maintain</text>
+</svg>
+<div class="caption"><b>Figure 4. Decided: B.</b> A single source of truth, because two sources
+that disagree leave no principled way to pick between them — and the file carries only three
+states, which is fewer than the row needs. The figure is kept as the record of why.
+Originally the caption read: The undocumented file is the more accurate
+source and needs no setup; the hook is the documented one and puts the state somewhere every tmux
+client can see. Running both means the feature degrades rather than disappears when either goes
+away.</div>
+</div>
+
+<!-- ══ 6 ══════════════════════════════════════════════════════════════ -->
+<h2>6 · What is verified, and what is not</h2>
+
+<table>
+  <tr><th style="width:56%">Claim</th><th style="width:14%">Standing</th><th>How</th></tr>
+  <tr><td>tmux pushes format changes; subscribing emits the current value immediately</td><td><span class="pill good">VERIFIED</span></td><td>isolated <code>-L</code> server, raw control stream</td></tr>
+  <tr><td>A hook inside a pane can address that pane via <code>$TMUX_PANE</code></td><td><span class="pill good">VERIFIED</span></td><td>end to end, stand-in hook → subscription push</td></tr>
+  <tr><td>A real Claude Code session drives the hook through its states</td><td><span class="pill good">VERIFIED</span></td><td>real session on an isolated server</td></tr>
+  <tr><td>The subagent-still-running guard downgrades <code>done</code> correctly</td><td><span class="pill good">VERIFIED</span></td><td>payload driven by hand, all five states</td></tr>
+  <tr><td>Installing preserves every other tool's hooks and every unknown key</td><td><span class="pill good">VERIFIED</span></td><td>23 cases, three of them against the real file</td></tr>
+  <tr><td>An atomic write severs a symlinked config; <code>copyItem</code> backs up the link</td><td><span class="pill good">VERIFIED</span></td><td>reproduced both, then fixed</td></tr>
+  <tr><td>A hostile <code>.git/config</code> runs arbitrary commands on <code>git status</code></td><td><span class="pill good">VERIFIED</span></td><td>reproduced, and neutralised with <code>-c core.fsmonitor=</code></td></tr>
+  <tr><td>Rail rebuilds: 577 in 30s → 0</td><td><span class="pill good">VERIFIED</span></td><td>instrumented, measured both sides</td></tr>
+  <tr><td><code>status: "waiting"</code> exists in the session file</td><td><span class="pill warn">UNVERIFIED</span></td><td>reported by research; never observed here — an induced permission prompt was auto-approved</td></tr>
+  <tr><td>The dot colours read correctly on screen</td><td><span class="pill warn">NEEDS EYES</span></td><td>this shell has no Screen Recording consent</td></tr>
+</table>
+
+<!-- ══ 7 ══════════════════════════════════════════════════════════════ -->
+<h2>7 · What breaks if you remove each piece</h2>
+
+<table>
+  <tr><th style="width:30%">Remove</th><th style="width:12%">Severity</th><th>What happens</th></tr>
+  <tr><td>The <code>Notification</code> matcher split</td><td><span class="pill bad">HIGH</span></td>
+      <td>Every session that has been idle for a minute turns amber. The colour stops meaning "act on this".</td></tr>
+  <tr><td>Equality over drawn fields only</td><td><span class="pill bad">HIGH</span></td>
+      <td>The rail rebuilds on every re-read; hovering flickers and clicks are dropped.</td></tr>
+  <tr><td>The quiet window after a git read</td><td><span class="pill bad">HIGH</span></td>
+      <td><code>git status</code> wakes the watcher that scheduled it. Twenty reads a second, forever.</td></tr>
+  <tr><td><code>-c core.fsmonitor=</code></td><td><span class="pill bad">HIGH</span></td>
+      <td><code>cd</code> into an unpacked archive and its <code>.git/config</code> runs commands. No user action needed.</td></tr>
+  <tr><td>Resolving the symlink before writing</td><td><span class="pill bad">HIGH</span></td>
+      <td>A dotfiles-managed config is silently detached from its repository, and the backup is not a snapshot.</td></tr>
+  <tr><td>Sync-instead-of-append on install</td><td><span class="pill warn">MEDIUM</span></td>
+      <td>Upgrades leave the previous version's entry firing next to the new one.</td></tr>
+  <tr><td>Concurrent draining of both pipes</td><td><span class="pill warn">MEDIUM</span></td>
+      <td>A large repository with noisy stderr hangs one of four queue slots permanently, silently.</td></tr>
+  <tr><td>Pausing while the window is occluded</td><td><span class="pill warn">MEDIUM</span></td>
+      <td>A laptop runs <code>git</code> all day to draw something nobody is looking at.</td></tr>
+  <tr><td>The <code>idle</code> state (settled)</td><td><span class="pill warn">MEDIUM</span></td>
+      <td>A finished agent eventually reads <code>unknown</code> — the app claiming not to know
+      something it knows perfectly well. This was the first design and it was wrong.</td></tr>
+  <tr><td>Drawing an agent's dot regardless of selection</td><td><span class="pill warn">MEDIUM</span></td>
+      <td>The mark appears and disappears as you click around. Twice, from two different causes: a
+      neutral dot vanishing into the accent fill, and a visibility rule that fell through to tmux's
+      activity flag — which hides on the selected row. Hiding has to <i>mean</i> something; neither
+      of these meant anything.</td></tr>
+  <tr><td>Separating "no agent" from "agent that never reported"</td><td><span class="pill warn">MEDIUM</span></td>
+      <td>They were one case. Collapsing them is what let an agent row take the no-agent branch and
+      lose its dot. Four cases now, matched exhaustively, so adding a fifth is a compile error
+      rather than a silent omission.</td></tr>
+  <tr><td>The word beside the dot</td><td><span class="pill neutral">LOW</span></td>
+      <td>The colours have to be learned, and there is no legend on screen to learn them from.</td></tr>
+</table>
+
+<div class="footer">
+  <span>TmuxGUI · sidebar status · 2026-07-29</span>
+  <span>tmux 3.6a · Claude Code 2.1.220 · macOS 26</span>
+</div>
+
+</div>
+</body>
+</html>

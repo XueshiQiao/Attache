@@ -45,6 +45,7 @@ enum AppSettings {
         static let glassStyle           = "TmuxGUIGlassStyle"
         static let sidebarShowsGit      = "TmuxGUISidebarShowsGit"
         static let sidebarShowsAgent    = "TmuxGUISidebarShowsAgent"
+        static let sidebarShowsAgentText = "TmuxGUISidebarShowsAgentText"
         static let gitAutoFetch         = "TmuxGUIGitAutoFetch"
         static let gitAutoFetchMinutes  = "TmuxGUIGitAutoFetchMinutes"
         static let liquidGlassClear     = "TmuxGUILiquidGlassClear"
@@ -470,6 +471,17 @@ enum AppSettings {
     static var sidebarShowsAgent: Bool {
         get { store.object(forKey: Key.sidebarShowsAgent) as? Bool ?? true }
         set { store.set(newValue, forKey: Key.sidebarShowsAgent) }
+    }
+
+    /// Whether the agent's state is spelled out in words beside its dot.
+    ///
+    /// On by default. A colour has to be learned before it means anything, and
+    /// there is no legend on screen to learn it from — the first question asked
+    /// about the dots was what the colours meant. The word costs width, which
+    /// is why it can be turned off once it has been learned.
+    static var sidebarShowsAgentText: Bool {
+        get { store.object(forKey: Key.sidebarShowsAgentText) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.sidebarShowsAgentText) }
     }
 
     /// Whether to run `git fetch` in the background so `↓` means something.

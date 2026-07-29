@@ -384,7 +384,13 @@ final class SessionSidebarView: NSView {
     private var drawnSignature: String {
         var parts = [selectedID ?? "-"]
         for entry in entries {
-            parts.append("\(entry.id)|\(entry.name)|\(entry.hasActivity ? 1 : 0)")
+            let sessionAgent = entry.visibleWindows
+                .compactMap { entry.decorations[$0.id]?.agent }
+                .reduce(nil) { AgentBadge.moreUrgent($0, $1) }?.state
+            parts.append(
+                "\(entry.id)|\(entry.name)|\(entry.hasActivity ? 1 : 0)"
+                    + "|\(sessionAgent?.rawValue ?? "-")"
+            )
             parts.append(isExpanded(entry.id) ? "+" : "-")
             guard isExpanded(entry.id) else { continue }
             for window in entry.visibleWindows {
@@ -394,7 +400,7 @@ final class SessionSidebarView: NSView {
                         + "|\(window.id == entry.activeWindowID ? 1 : 0)"
                         + "|\(window.hasActivity ? 1 : 0)"
                         + "|\(decoration?.git.map { "\($0.displayRef)/\($0.staged)/\($0.modified)/\($0.untracked)/\($0.conflicted)/\($0.ahead)/\($0.behind)/\($0.hasUpstream)" } ?? "-")"
-                        + "|\(decoration?.agent.map { "\($0.kind ?? "?")/\($0.state?.rawValue ?? "-")" } ?? "-")"
+                        + "|\(decoration?.agent.map { "\($0.kind ?? "?")/\($0.state?.rawValue ?? "-")/\($0.since?.timeIntervalSince1970 ?? 0)" } ?? "-")"
                         + "|\(decoration?.isNotARepository == true ? "!" : "")"
                         + "|\(decoration?.path ?? "")"
                 )
@@ -443,13 +449,20 @@ final class SessionSidebarView: NSView {
             let isCurrent = session == selectedID
             let expanded = isExpanded(session)
 
+            // The most urgent agent anywhere in this session, so a collapsed
+            // heading still reports one that is waiting for input.
+            let sessionAgent = entry.visibleWindows
+                .compactMap { entry.decorations[$0.id]?.agent }
+                .reduce(nil) { AgentBadge.moreUrgent($0, $1) }?.state
+
             let header = SidebarSessionRow(
                 id: session,
                 name: entry.name,
                 windowCount: entry.windowCount,
                 hasActivity: entry.hasActivity,
                 isCurrent: isCurrent,
-                isExpanded: expanded
+                isExpanded: expanded,
+                agent: sessionAgent
             )
             header.onClick = { [weak self] in
                 self?.onSelect?(session)

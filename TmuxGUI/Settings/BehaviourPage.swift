@@ -88,6 +88,19 @@ struct BehaviourPage: View {
                     )
                 }
 
+                if store.sidebarShowsAgent {
+                    Toggle(isOn: Binding(
+                        get: { store.sidebarShowsAgentText },
+                        set: { store.setSidebarShowsAgentText($0) }
+                    )) {
+                        iconLabel(
+                            "textformat",
+                            store.sidebarShowsAgentText ? .blue : .gray,
+                            "Spell the agent's state out beside the dot"
+                        )
+                    }
+                }
+
                 Toggle(isOn: Binding(
                     get: { store.gitAutoFetch },
                     set: { store.setGitAutoFetch($0) }
@@ -134,6 +147,70 @@ struct BehaviourPage: View {
                         + "sidebar has no way to know. With it off, the row's tooltip says how "
                         + "long ago the last fetch was rather than showing a ↓0 that would read "
                         + "as \"nothing to pull\"."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
+                // Deliberately not a toggle. A switch reads as a preference,
+                // and this writes a file belonging to another program that
+                // several other tools have written into — the button says what
+                // it does and shows the change first.
+                HStack {
+                    iconLabel(
+                        store.agentHookInstalled ? "checkmark.seal.fill" : "seal",
+                        store.agentHookInstalled ? .green : .gray,
+                        store.agentHookInstalled
+                            ? "Claude Code reports its state"
+                            : "Claude Code is detected, but not what it is doing"
+                    )
+                    Spacer()
+                    if store.agentHookInstalled {
+                        Button("Remove") { store.uninstallAgentHook() }
+                            .disabled(store.agentHookBusy)
+                    } else {
+                        Button("Install…") { store.installAgentHook() }
+                            .disabled(store.agentHookBusy)
+                    }
+                }
+
+                if !store.agentHookInstalled, !store.agentHookPlan.isEmpty {
+                    DisclosureGroup("Show exactly what will be added") {
+                        Text(store.agentHookPlan)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .font(.caption)
+                }
+
+                if let message = store.agentHookMessage {
+                    Label(
+                        message,
+                        systemImage: store.agentHookFailed
+                            ? "exclamationmark.triangle.fill"
+                            : "checkmark.circle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(store.agentHookFailed ? .red : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text("Agent status")
+            } footer: {
+                Text(
+                    "Without this, the sidebar can tell that Claude Code is running in a window "
+                        + "but not whether it is working, waiting for you, or finished.\n\n"
+                        + "Installing adds one line per event to ~/.claude/settings.json and writes "
+                        + "a short readable script to ~/.claude/hooks/. Your existing hooks are kept "
+                        + "— nothing is replaced, only appended — and the file is copied to a "
+                        + "timestamped backup first. The state is stored in tmux itself, so "
+                        + "`tmux attach` from any terminal sees the same thing.\n\n"
+                        + "One thing it cannot preserve: the file comes back sorted and "
+                        + "re-indented, because there is no way to keep the original key order. "
+                        + "Nothing is lost, and the backup has the original."
                 )
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

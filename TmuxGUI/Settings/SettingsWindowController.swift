@@ -42,8 +42,64 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var copyOnSelect: Bool
     @Published private(set) var sidebarShowsGit: Bool
     @Published private(set) var sidebarShowsAgent: Bool
+    @Published private(set) var sidebarShowsAgentText: Bool
     @Published private(set) var gitAutoFetch: Bool
     @Published private(set) var gitAutoFetchMinutes: Int
+
+    // ─── Agent hook (Behaviour page) ─────────────────────────────────────────
+    @Published private(set) var agentHookInstalled = AgentHookInstaller.isInstalled()
+    /// The exact JSON an install would add, shown before anything is written.
+    @Published private(set) var agentHookPlan = (try? AgentHookInstaller.plannedAdditions()) ?? ""
+    /// What happened last, including where the backup went. Kept on screen
+    /// rather than flashed: the backup path is the thing someone will want an
+    /// hour later, and a toast would have taken it away.
+    @Published private(set) var agentHookMessage: String?
+    @Published private(set) var agentHookFailed = false
+    /// True while an install or uninstall is running, so the button can be
+    /// disabled. A SwiftUI button fires once per completed click, so a fast
+    /// double-click delivers two synchronous runs back to back — which is the
+    /// realistic way two backups land in the same wall-clock second.
+    @Published private(set) var agentHookBusy = false
+
+    func refreshAgentHookState() {
+        agentHookInstalled = AgentHookInstaller.isInstalled()
+        agentHookPlan = (try? AgentHookInstaller.plannedAdditions()) ?? ""
+    }
+
+    func installAgentHook() {
+        guard !agentHookBusy else { return }
+        agentHookBusy = true
+        defer { agentHookBusy = false }
+        do {
+            let backup = try AgentHookInstaller.install()
+            agentHookFailed = false
+            agentHookMessage = "Installed. Your previous settings were copied to "
+                + backup.lastPathComponent
+                + ". Claude Code picks the hook up on its next session — restart any agent "
+                + "that is already running to see its state."
+        } catch {
+            agentHookFailed = true
+            agentHookMessage = error.localizedDescription
+        }
+        refreshAgentHookState()
+    }
+
+    func uninstallAgentHook() {
+        guard !agentHookBusy else { return }
+        agentHookBusy = true
+        defer { agentHookBusy = false }
+        do {
+            let backup = try AgentHookInstaller.uninstall()
+            agentHookFailed = false
+            agentHookMessage = "Removed. Your previous settings were copied to "
+                + backup.lastPathComponent
+                + ". The script is left in ~/.claude/hooks/ and does nothing on its own."
+        } catch {
+            agentHookFailed = true
+            agentHookMessage = error.localizedDescription
+        }
+        refreshAgentHookState()
+    }
     @Published private(set) var windowOpacity: CGFloat
     @Published private(set) var backgroundBlur: Bool
     @Published private(set) var blurRadius: CGFloat
@@ -75,6 +131,7 @@ final class SettingsStore: ObservableObject {
         copyOnSelect = AppSettings.copyOnSelect
         sidebarShowsGit = AppSettings.sidebarShowsGit
         sidebarShowsAgent = AppSettings.sidebarShowsAgent
+        sidebarShowsAgentText = AppSettings.sidebarShowsAgentText
         gitAutoFetch = AppSettings.gitAutoFetch
         gitAutoFetchMinutes = AppSettings.gitAutoFetchMinutes
         windowOpacity = AppSettings.windowOpacity
@@ -197,6 +254,12 @@ final class SettingsStore: ObservableObject {
     func setSidebarShowsAgent(_ shows: Bool) {
         AppSettings.sidebarShowsAgent = shows
         sidebarShowsAgent = shows
+        AppSettings.notifyChanged()
+    }
+
+    func setSidebarShowsAgentText(_ shows: Bool) {
+        AppSettings.sidebarShowsAgentText = shows
+        sidebarShowsAgentText = shows
         AppSettings.notifyChanged()
     }
 
