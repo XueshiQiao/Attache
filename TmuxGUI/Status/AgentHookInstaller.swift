@@ -125,8 +125,8 @@ enum AgentHookInstaller {
     # keeps making tool calls, each one fires PreToolUse/PostToolUse in the same
     # pane, and every one of them was being reported as the main agent working.
     # The payload carries `agent_id` exactly when the hook was fired by a
-    # subagent, so those are dropped. Cross-checked against herdr's Claude
-    # integration, which does the same thing for the same reason.
+    # subagent, so those are dropped. Another agent-aware multiplexer's Claude
+    # integration does the same thing for the same reason.
     case "$compact" in
         *'"agent_id":"'*) exit 0 ;;
     esac
@@ -142,17 +142,27 @@ enum AgentHookInstaller {
     fi
 
     # A `SessionStart` fired by context compaction happens **mid-turn**, not at
-    # the start of a session. Verified in partner0/tmux-agent-status, which
-    # skips it for the same reason: `.source == "compact"`. Harmless here today
-    # because SessionStart maps to `working` and a compaction only happens while
-    # working — but that is an accident of the current mapping, not a guarantee.
-    case "$compact" in
-        *'"source":"compact"'*) exit 0 ;;
-    esac
+    # the start of a session, so it must not be read as one.
+    #
+    # Gated on the state this app maps `SessionStart` to, and on the event name,
+    # rather than applied to every payload. Unconditionally, the same bytes
+    # appearing anywhere in anything — a tool argument, a file being read, a
+    # display-mode flag — would drop that event; on a `Stop` that swallows the
+    # "done" transition and the pane keeps whatever it last showed.
+    if [ "$state" = working ]; then
+        case "$compact" in
+            *'"hook_event_name":"SessionStart"'*)
+                case "$compact" in
+                    *'"source":"compact"'*) exit 0 ;;
+                esac ;;
+        esac
+    fi
 
     # `SubagentStop` is a completion event for a subagent, not for the turn.
-    # It can arrive after the main turn has already stopped, and letting it
-    # through would revive a pane that is finished.
+    # **Not reachable today**: no `SubagentStop` hook is registered, and a
+    # payload's `hook_event_name` is always the key its command was registered
+    # under. Kept rather than deleted so that registering it later cannot
+    # silently start reporting a subagent's completion as the turn's.
     case "$compact" in
         *'"hook_event_name":"SubagentStop"'*) exit 0 ;;
     esac
@@ -161,12 +171,27 @@ enum AgentHookInstaller {
         tmux set-option -pu -t "$TMUX_PANE" @agent_state 2>/dev/null
         tmux set-option -pu -t "$TMUX_PANE" @agent_kind  2>/dev/null
         tmux set-option -pu -t "$TMUX_PANE" @agent_at    2>/dev/null
+        tmux set-option -pu -t "$TMUX_PANE" @agent_why   2>/dev/null
         exit 0
     fi
+
+    # Which event produced this state, so a transition log can say *why* rather
+    # than only *what*. The app cannot work this out on its own — it sees a pane
+    # option change and nothing about the event behind it — and a log of states
+    # with no causes cannot be checked against an intended state machine, which
+    # is the only reason to keep one.
+    #
+    # Extracted with `sed` rather than a JSON parser because this runs on every
+    # hook event of every session and must stay a few milliseconds. A payload
+    # that does not match leaves `why` empty, which is honest.
+    why=$(printf '%s' "$input" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+    kind=$(printf '%s' "$input" | sed -n 's/.*"notification_type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+    [ -n "$kind" ] && why="$why:$kind"
 
     tmux set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null
     tmux set-option -p -t "$TMUX_PANE" @agent_kind  claude   2>/dev/null
     tmux set-option -p -t "$TMUX_PANE" @agent_at    "$(date +%s)" 2>/dev/null
+    tmux set-option -p -t "$TMUX_PANE" @agent_why   "$why"    2>/dev/null
 
     # Always 0, and every tmux call silenced: a reporting hook that fails must
     # never be able to break the Claude Code session it is reporting on.
@@ -181,24 +206,81 @@ enum AgentHookInstaller {
         return !ourCommands(in: settings).isEmpty
     }
 
+    /// Whether what is installed matches *this* version's definition.
+    ///
+    /// Distinct from `isInstalled`, and the distinction has a UI consequence:
+    /// the button showed "Remove" the moment any of our entries existed, so
+    /// somebody carrying a previous version's shape had no way to reach the
+    /// upgrade at all — they would have had to guess that Remove-then-Install
+    /// was the fix. The event list changes between versions; this is what makes
+    /// that visible.
+    static func isUpToDate() -> Bool {
+        guard let settings = try? loadSettings() else { return false }
+        return same(merge(intoSettings: settings), settings)
+    }
+
+    /// Order-independent structural comparison. `JSONSerialization` hands back
+    /// dictionaries, so `==` is unavailable and comparing encoded bytes would
+    /// fail on key order alone.
+    private nonisolated static func same(_ a: Any?, _ b: Any?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): true
+        case let (x as [String: Any], y as [String: Any]):
+            Set(x.keys) == Set(y.keys) && x.keys.allSatisfy { same(x[$0], y[$0]) }
+        case let (x as [Any], y as [Any]):
+            x.count == y.count && zip(x, y).allSatisfy { same($0, $1) }
+        case let (x as String, y as String): x == y
+        case let (x as NSNumber, y as NSNumber): x == y
+        default: false
+        }
+    }
+
     /// The exact JSON that would be added, for showing before anything is
     /// written. Not a summary — the thing itself.
+    ///
+    /// On an upgrade it also names what will be **removed** first, because
+    /// installing is a sync: our previous entries go before the new ones
+    /// arrive. A preview that showed only additions would be describing half
+    /// of what the button does, which is the half that cannot lose anything.
     static func plannedAdditions() throws -> String {
         let settings = try loadSettings()
+
+        var removals = [String]()
+        if let hooks = settings["hooks"] as? [String: Any] {
+            for (event, value) in hooks.sorted(by: { $0.key < $1.key }) {
+                guard let groups = value as? [[String: Any]] else { continue }
+                for group in groups {
+                    guard let entries = group["hooks"] as? [[String: Any]] else { continue }
+                    for entry in entries where isOurs(entry) {
+                        let matcher = (group["matcher"] as? String).map { " [\($0)]" } ?? ""
+                        removals.append("  \(event)\(matcher)")
+                    }
+                }
+            }
+        }
+
         var additions = [String: Any]()
+        let pristine = unmerge(fromSettings: settings)
         for (event, matcher, state) in events
-            where !hasOurHook(for: event, matcher: matcher, in: settings)
+            where !hasOurHook(for: event, matcher: matcher, in: pristine)
         {
             var groups = (additions[event] as? [[String: Any]]) ?? []
             groups.append(hookGroup(state: state, matcher: matcher))
             additions[event] = groups
         }
-        guard !additions.isEmpty else { return "" }
+        guard !additions.isEmpty || !removals.isEmpty else { return "" }
+
+        var text = ""
+        if !removals.isEmpty {
+            text += "Removed first (this app's own entries, from a previous version):\n"
+            text += removals.joined(separator: "\n")
+            text += "\n\nThen added:\n"
+        }
         let data = try JSONSerialization.data(
             withJSONObject: ["hooks": additions],
             options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         )
-        return String(decoding: data, as: UTF8.self)
+        return text + String(decoding: data, as: UTF8.self)
     }
 
     // MARK: - Install and uninstall
@@ -232,25 +314,9 @@ enum AgentHookInstaller {
         let readAt = settingsModified()
         let backup = try backUpSettings()
 
-        var hooks = (settings["hooks"] as? [String: Any]) ?? [:]
-        for (event, _, _) in events {
-            guard var groups = hooks[event] as? [[String: Any]] else { continue }
-            groups = groups.compactMap { group -> [String: Any]? in
-                guard var entries = group["hooks"] as? [[String: Any]] else { return group }
-                entries.removeAll { isOurs($0) }
-                // A group emptied of our entries is one we added; one that still
-                // has entries belongs to somebody and keeps its other keys —
-                // `matcher` among them, which we never set and must not drop.
-                guard !entries.isEmpty else { return nil }
-                var kept = group
-                kept["hooks"] = entries
-                return kept
-            }
-            // Removing the key entirely rather than leaving `[]`, so an
-            // uninstall returns the file to a shape it could have had before.
-            if groups.isEmpty { hooks.removeValue(forKey: event) } else { hooks[event] = groups }
-        }
-        if hooks.isEmpty { settings.removeValue(forKey: "hooks") } else { settings["hooks"] = hooks }
+        // Through `unmerge` rather than a second copy of the same loop. Two
+        // copies of "which entries are ours" is the pair that drifts.
+        settings = unmerge(fromSettings: settings)
 
         try writeSettings(settings, readAt: readAt)
         // The script is left on disk on purpose. It is inert without the
@@ -274,7 +340,7 @@ enum AgentHookInstaller {
         return group
     }
 
-    private static func isOurs(_ entry: [String: Any]) -> Bool {
+    private nonisolated static func isOurs(_ entry: [String: Any]) -> Bool {
         (entry["command"] as? String)?.contains(scriptURL.path) == true
     }
 
@@ -322,8 +388,9 @@ enum AgentHookInstaller {
     static func merge(intoSettings settings: [String: Any]) -> [String: Any] {
         var settings = unmerge(fromSettings: settings)
         var hooks = (settings["hooks"] as? [String: Any]) ?? [:]
+        // No `hasOurHook` check: `unmerge` above removed every one of ours, so
+        // there is nothing left for it to find.
         for (event, matcher, state) in events {
-            guard !hasOurHook(for: event, matcher: matcher, in: settings) else { continue }
             var groups = (hooks[event] as? [[String: Any]]) ?? []
             groups.append(hookGroup(state: state, matcher: matcher))
             hooks[event] = groups
@@ -379,7 +446,12 @@ enum AgentHookInstaller {
         }
     }
 
-    private static func loadSettings() throws -> [String: Any] {
+    // The four below are `static` rather than `private static` because
+    // `AgentStatusLineInstaller` edits the same file and must not grow its own
+    // copy of any of this. A second implementation of "back up first, resolve
+    // the symlink, write atomically, refuse if somebody else wrote meanwhile"
+    // is how one of them quietly stops taking a backup.
+    static func loadSettings() throws -> [String: Any] {
         // An absent file is not an error: Claude Code creates it on demand and
         // installing into a machine that has never had one is legitimate.
         guard FileManager.default.fileExists(atPath: settingsURL.path) else { return [:] }
@@ -420,7 +492,7 @@ enum AgentHookInstaller {
         settingsURL.resolvingSymlinksInPath()
     }
 
-    private static func backUpSettings() throws -> URL {
+    static func backUpSettings() throws -> URL {
         let source = resolvedSettingsURL()
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withYear, .withMonth, .withDay, .withTime]
@@ -459,13 +531,13 @@ enum AgentHookInstaller {
 
     /// The settings file's modification date, for noticing a write that landed
     /// between our read and our write.
-    private static func settingsModified() -> Date? {
+    static func settingsModified() -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: resolvedSettingsURL().path))?[
             .modificationDate
         ] as? Date
     }
 
-    private static func writeSettings(_ settings: [String: Any], readAt: Date?) throws {
+    static func writeSettings(_ settings: [String: Any], readAt: Date?) throws {
         // Somebody else wrote the file while we were working on it. Last write
         // wins would silently discard their change, and this is a file four
         // other tools have entries in — refusing costs a retry and clobbering

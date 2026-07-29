@@ -245,7 +245,7 @@
   <span><b>Code</b> TmuxGUI/Status/ · SidebarRows.swift</span>
   <span><b>Checks</b> 23 + 35 + 13 cases</span>
   <span><b>Hook</b><span class="pill good">INSTALLED</span></span>
-  <span><b>State source</b><span class="pill good">HOOKS ONLY</span></span>
+  <span><b>State source</b><span class="pill good">SELECTABLE</span></span>
 </div>
 
 <!-- ══ 1 ══════════════════════════════════════════════════════════════ -->
@@ -369,8 +369,8 @@ agent and does not want you.</p>
   <tr><th style="width:20%">Mark</th><th style="width:22%">Word</th><th>Meaning</th></tr>
   <tr><td>● blue, filled</td><td><code>working</code></td><td>Computing. Nothing for you to do.</td></tr>
   <tr><td>● amber, filled</td><td><code>needs you</code></td><td>Blocked — a permission prompt, a question, an MCP elicitation.</td></tr>
-  <tr><td>● green, filled</td><td><code>done</code></td><td>Finished its turn — your move.</td></tr>
-  <tr><td>● grey, filled, small</td><td><code>idle</code></td><td>Finished, and long enough ago (30 min) to stop being news. <b>Filled</b>, because this is known.</td></tr>
+  <tr><td>● green, filled</td><td><code>done</code></td><td>Finished its turn — your move. Stays green until you click the row.</td></tr>
+  <tr><td>● grey, filled, small</td><td><code>idle</code></td><td>Finished, and <b>you have looked at it since</b>. Not a timer — clicking the row is what retires the mark, so an agent that finished while you were away is still green when you come back.</td></tr>
   <tr><td>○ grey, hollow</td><td><code>unknown</code></td><td>An agent is running and has never reported — its session started before the hook did. Hollow on purpose: a filled dot would claim more than is known.</td></tr>
   <tr><td>▪ grey, small</td><td>—</td><td>tmux's own activity flag: output arrived in a window you are not looking at. <b>Used to be amber</b>, which is the colour that now means "an agent is waiting for you" — two very different messages in one colour.</td></tr>
 </table>
@@ -515,7 +515,7 @@ concluded.</p>
 
 <table>
   <tr><th style="width:24%">Project</th><th style="width:20%">Mechanism</th><th>How it decides "waiting for you"</th></tr>
-  <tr><td><b>herdr</b><br><span class="label-faint" style="font-size:12px">Rust, ~15k ★</span></td>
+  <tr><td><b>An agent-aware multiplexer</b><br><span class="label-faint" style="font-size:12px">Rust, widely used</span></td>
       <td>reads the <b>terminal output</b></td>
       <td>Priority-ordered pattern rules. Highest of all (950) is <code>live_prompt_box</code> —
       the input box being ready — which beats everything. Its hook is registered on
@@ -536,8 +536,8 @@ concluded.</p>
 </table>
 
 <div class="figure">
-<svg viewBox="0 0 820 250" role="img" aria-label="herdr's priority ladder against an event mapping">
-  <text x="8" y="20" font-weight="600">herdr — priority ladder over terminal output</text>
+<svg viewBox="0 0 820 250" role="img" aria-label="a priority ladder over terminal output against an event mapping">
+  <text x="8" y="20" font-weight="600">Reading the screen — a priority ladder</text>
 
   <rect x="8" y="34" width="390" height="34" rx="6" fill="#e3f0e2" stroke="#4f8a5c"/>
   <text x="22" y="49" class="label-mono" fill="#4f8a5c">950  live_prompt_box</text>
@@ -575,7 +575,7 @@ concluded.</p>
 </svg>
 <div class="caption"><b>Figure 3.</b> The two approaches fail differently. Reading the screen is
 zero-configuration and gets "your turn" right, but has to be maintained against a UI that changes
-— which is why herdr ships its rules as updatable manifests. Reading events is stable and works
+— which is why the tools that do it ship their rules as updatable data. Reading events is stable and works
 off screen, but Claude Code exposes no way to tell a finished turn from one waiting on an answer,
 so that distinction has to be inferred and can be inferred wrongly.</div>
 </div>
@@ -647,7 +647,197 @@ away.</div>
 </div>
 
 <!-- ══ 6 ══════════════════════════════════════════════════════════════ -->
-<h2>6 · What is verified, and what is not</h2>
+<!-- ══ STATE MACHINES ═══════════════════════════════════════════════════ -->
+<h2>6 · The two state machines, side by side</h2>
+
+<p>They produce the same five marks and they are not the same shape. One is
+<b>event-driven and sticky</b> — it sits in a state until something moves it.
+The other is <b>re-derived from scratch every two seconds</b> and has no memory
+at all. Almost every difference in how they behave follows from that.</p>
+
+<div class="figure">
+<svg viewBox="0 0 820 400" role="img" aria-label="The hook strategy's state machine">
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a857c"/>
+    </marker>
+    <marker id="a1o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97757"/>
+    </marker>
+  </defs>
+
+  <text x="8" y="18" font-weight="600">A · Hooks — the agent reports, the app remembers</text>
+
+  <!-- entry -->
+  <rect x="8" y="40" width="150" height="44" rx="8" fill="#fff" stroke="#e6e2d4" stroke-dasharray="4 3"/>
+  <text x="22" y="60" class="label-mono">no agent</text>
+  <text x="22" y="76" class="label-faint" font-size="11">no mark drawn</text>
+
+  <!-- unknown -->
+  <rect x="8" y="128" width="150" height="52" rx="8" fill="#fff" stroke="#e6e2d4"/>
+  <text x="22" y="149" font-weight="600">unknown</text>
+  <text x="22" y="167" class="label-faint" font-size="11">○ hollow · never reported</text>
+
+  <!-- working -->
+  <rect x="248" y="40" width="168" height="52" rx="8" fill="#e8f0f8" stroke="#4a7fb5"/>
+  <text x="264" y="61" font-weight="600" fill="#31658f">working</text>
+  <text x="264" y="79" class="label-faint" font-size="11">● blue</text>
+
+  <!-- needs -->
+  <rect x="248" y="128" width="168" height="52" rx="8" fill="#f8ecd8" stroke="#b6711c"/>
+  <text x="264" y="149" font-weight="600" fill="#8d5713">needs you</text>
+  <text x="264" y="167" class="label-faint" font-size="11">● amber</text>
+
+  <!-- done -->
+  <rect x="248" y="216" width="168" height="52" rx="8" fill="#e3f0e2" stroke="#4f8a5c"/>
+  <text x="264" y="237" font-weight="600" fill="#3a6b45">done</text>
+  <text x="264" y="255" class="label-faint" font-size="11">● green</text>
+
+  <!-- idle -->
+  <rect x="248" y="304" width="168" height="52" rx="8" fill="#f0eee6" stroke="#b3ada0"/>
+  <text x="264" y="325" font-weight="600" fill="#6b665c">idle</text>
+  <text x="264" y="343" class="label-faint" font-size="11">● small grey · seen</text>
+
+  <!-- event labels column -->
+  <text x="470" y="46" class="label-mono" font-size="11">SessionStart</text>
+  <text x="470" y="61" class="label-mono" font-size="11">UserPromptSubmit</text>
+  <text x="470" y="76" class="label-mono" font-size="11">PreToolUse · PostToolUse</text>
+
+  <text x="470" y="134" class="label-mono" font-size="11">PermissionRequest</text>
+  <text x="470" y="149" class="label-mono" font-size="11">Notification[permission_prompt</text>
+  <text x="470" y="163" class="label-mono" font-size="11">  |elicitation_dialog</text>
+  <text x="470" y="177" class="label-mono" font-size="11">  |agent_needs_input]</text>
+
+  <text x="470" y="230" class="label-mono" font-size="11">Stop</text>
+  <text x="470" y="245" class="label-mono" font-size="11">Notification[idle_prompt]</text>
+
+  <text x="470" y="326" class="label-mono" font-size="11" fill="#d97757">the user clicks the row</text>
+  <text x="470" y="341" class="label-faint" font-size="10.5">writes @agent_seen into tmux</text>
+
+  <!-- arrows into states -->
+  <path d="M462,60 L420,64" fill="none" stroke="#8a857c" marker-end="url(#a1)"/>
+  <path d="M462,152 L420,152" fill="none" stroke="#8a857c" marker-end="url(#a1)"/>
+  <path d="M462,238 L420,240" fill="none" stroke="#8a857c" marker-end="url(#a1)"/>
+  <path d="M462,330 L420,330" fill="none" stroke="#d97757" marker-end="url(#a1o)"/>
+
+  <!-- entry arrows -->
+  <path d="M83,84 L83,124" fill="none" stroke="#8a857c" marker-end="url(#a1)"/>
+  <text x="90" y="110" class="label-faint" font-size="10.5">an agent appears</text>
+  <path d="M158,146 C200,146 210,80 244,68" fill="none" stroke="#8a857c" marker-end="url(#a1)"/>
+  <text x="168" y="126" class="label-faint" font-size="10.5">first report</text>
+
+  <!-- done -> idle -->
+  <path d="M332,268 L332,300" fill="none" stroke="#d97757" marker-end="url(#a1o)"/>
+
+  <!-- any new event returns -->
+  <path d="M248,330 C200,330 196,80 244,66" fill="none" stroke="#8a857c" stroke-dasharray="4 3" marker-end="url(#a1)"/>
+  <text x="150" y="212" class="label-faint" font-size="10.5" transform="rotate(-90 150 212)">any later event</text>
+
+  <!-- exit -->
+  <path d="M416,242 C440,242 448,96 460,90" fill="none" stroke="#e6e2d4"/>
+  <rect x="600" y="292" width="212" height="76" rx="8" fill="#fff" stroke="#e6e2d4" stroke-dasharray="4 3"/>
+  <text x="614" y="313" class="label-mono" font-size="11">SessionEnd → clear</text>
+  <text x="614" y="331" class="label-faint" font-size="11">the options are removed;</text>
+  <text x="614" y="347" class="label-faint" font-size="11">back to "no agent"</text>
+  <text x="614" y="363" class="label-faint" font-size="11">— and so does the pane</text>
+  <text x="614" y="377" class="label-faint" font-size="11">   dropping to a shell</text>
+</svg>
+<div class="caption"><b>Figure 5.</b> Sticky. A state persists until an event
+replaces it, so it survives the pane being invisible, the app restarting, and
+the agent going quiet for an hour. Three guards drop events before any of this:
+anything carrying an <code>agent_id</code> (a subagent's, not the turn's),
+<code>SubagentStop</code>, and a <code>SessionStart</code> whose
+<code>source</code> is <code>compact</code> — that one fires mid-turn.</div>
+</div>
+
+<div class="figure">
+<svg viewBox="0 0 820 330" role="img" aria-label="The screen strategy's state machine">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a857c"/>
+    </marker>
+    <marker id="a2o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97757"/>
+    </marker>
+  </defs>
+
+  <text x="8" y="18" font-weight="600">B · Read the pane — no memory, re-decided every 2 s</text>
+
+  <rect x="8" y="42" width="150" height="52" rx="8" fill="#fff" stroke="#e6e2d4" stroke-dasharray="4 3"/>
+  <text x="22" y="63" class="label-mono">capture-pane</text>
+  <text x="22" y="81" class="label-faint" font-size="11">every 2 s, agent panes</text>
+
+  <!-- ladder -->
+  <rect x="200" y="36" width="330" height="34" rx="6" fill="#f8ecd8" stroke="#b6711c"/>
+  <text x="214" y="57" class="label-mono" font-size="11" fill="#8d5713">1 · a cursor on a numbered option, within 24 lines</text>
+
+  <rect x="200" y="80" width="330" height="34" rx="6" fill="#e8f0f8" stroke="#4a7fb5"/>
+  <text x="214" y="101" class="label-mono" font-size="11" fill="#31658f">2 · an elapsed counter, within 10 lines</text>
+
+  <rect x="200" y="124" width="330" height="34" rx="6" fill="#e8f0f8" stroke="#4a7fb5"/>
+  <text x="214" y="145" class="label-mono" font-size="11" fill="#31658f">3 · the picture changed since last time</text>
+
+  <rect x="200" y="168" width="330" height="34" rx="6" fill="#e3f0e2" stroke="#4f8a5c"/>
+  <text x="214" y="189" class="label-mono" font-size="11" fill="#3a6b45">4 · none of the above</text>
+
+  <path d="M158,68 L196,53" fill="none" stroke="#8a857c" marker-end="url(#a2)"/>
+
+  <rect x="580" y="36" width="150" height="34" rx="8" fill="#f8ecd8" stroke="#b6711c"/>
+  <text x="596" y="58" font-weight="600" fill="#8d5713">needs you</text>
+  <rect x="580" y="90" width="150" height="34" rx="8" fill="#e8f0f8" stroke="#4a7fb5"/>
+  <text x="596" y="112" font-weight="600" fill="#31658f">working</text>
+  <rect x="580" y="168" width="150" height="34" rx="8" fill="#e3f0e2" stroke="#4f8a5c"/>
+  <text x="596" y="190" font-weight="600" fill="#3a6b45">done</text>
+  <rect x="580" y="244" width="150" height="34" rx="8" fill="#f0eee6" stroke="#b3ada0"/>
+  <text x="596" y="266" font-weight="600" fill="#6b665c">idle</text>
+
+  <path d="M530,53 L576,53" fill="none" stroke="#8a857c" marker-end="url(#a2)"/>
+  <path d="M530,97 L576,105" fill="none" stroke="#8a857c" marker-end="url(#a2)"/>
+  <path d="M530,141 L576,113" fill="none" stroke="#8a857c" marker-end="url(#a2)"/>
+  <path d="M530,185 L576,185" fill="none" stroke="#8a857c" marker-end="url(#a2)"/>
+  <path d="M655,202 L655,240" fill="none" stroke="#d97757" marker-end="url(#a2o)"/>
+  <text x="500" y="230" class="label-mono" font-size="11" fill="#d97757">the user clicks the row</text>
+
+  <rect x="8" y="248" width="480" height="66" rx="8" fill="#f5dad6"/>
+  <text x="24" y="270" font-size="12" fill="#b14338" font-weight="600">The consequence of having no memory</text>
+  <text x="24" y="290" font-size="12" fill="#b14338">Every tick re-decides from the picture, so a pane that is scrolled,</text>
+  <text x="24" y="306" font-size="12" fill="#b14338">covered by a pager, or simply not drawing can only read as "done".</text>
+</svg>
+<div class="caption"><b>Figure 6.</b> Stateless. The four tests are tried in
+order and the first that matches wins — which is why "blocked" is checked before
+"working": a question can be drawn with a spinner still above it. Each test
+declares how far up the screen it may look, because a spinner sits six lines
+from the bottom and a question's cursor sits above its own option list, and one
+number for both was wrong in both directions.</div>
+</div>
+
+<h3>What the two shapes cost each other</h3>
+
+<table>
+  <tr><th style="width:30%">Question</th><th style="width:35%">Hooks</th><th>Read the pane</th></tr>
+  <tr><td>Setup</td><td>Install a hook</td><td class="pill-cell"><b>None</b></td></tr>
+  <tr><td>An agent started before the hook</td><td><code>unknown</code> until it restarts</td><td><b>Classified immediately</b></td></tr>
+  <tr><td>The pane is not being drawn</td><td><b>Still correct</b> — the state is stored</td><td>Reads as <code>done</code></td></tr>
+  <tr><td>Claude Code changes its interface</td><td><b>Unaffected</b></td><td>Rules go stale silently</td></tr>
+  <tr><td>Claude Code changes its hook events</td><td>Goes stale</td><td><b>Unaffected</b></td></tr>
+  <tr><td>Cost while running</td><td><b>Nothing</b> — tmux pushes</td><td>One <code>capture-pane</code> per agent pane per 2 s</td></tr>
+  <tr><td>Visible to other tmux clients</td><td><b>Yes</b> — it is a pane option</td><td>No</td></tr>
+</table>
+
+<div class="callout">
+  <span class="label">What drawing this caught</span>
+  <p>The screen strategy has no clock, so every badge it makes carries no "when
+  did this begin". <code>isSettled</code> compares the seen-timestamp against
+  that, and against nothing it compares against <code>distantPast</code> — so
+  <b>clicking a window once would have settled its mark permanently</b>, however
+  many turns the agent finished afterwards. Under the strategy whose whole
+  selling point is needing no setup, the "unread" model was broken. The
+  transition is stamped in the connection now, where the previous badge is
+  known, so both machines have the timestamp the model needs.</p>
+</div>
+
+
+<h2>7 · What is verified, and what is not</h2>
 
 <table>
   <tr><th style="width:56%">Claim</th><th style="width:14%">Standing</th><th>How</th></tr>
@@ -664,7 +854,7 @@ away.</div>
 </table>
 
 <!-- ══ 7 ══════════════════════════════════════════════════════════════ -->
-<h2>7 · What breaks if you remove each piece</h2>
+<h2>8 · What breaks if you remove each piece</h2>
 
 <table>
   <tr><th style="width:30%">Remove</th><th style="width:12%">Severity</th><th>What happens</th></tr>

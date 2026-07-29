@@ -262,8 +262,177 @@ final class TmuxSessionConnection {
     /// arrives on a different channel, so keeping it separate stops the two
     /// from having to be refreshed together.
     private(set) var pathByWindow = [String: String]()
+    /// When the user last looked at each window, from `@agent_seen`.
+    ///
+    /// Written by this app when a window is selected and read back through the
+    /// same subscription as everything else, so it is tmux's value rather than
+    /// the GUI's memory of it — which is what keeps "have I seen this" from
+    /// becoming a third piece of locally authored state, and what lets a plain
+    /// `tmux attach` elsewhere agree about it.
+    private(set) var seenByWindow = [String: TimeInterval]()
     /// The agent badge for each pane that has one, keyed by pane id.
     private(set) var agentByPane = [String: AgentBadge]()
+
+    /// What each pane has told us, before any strategy has had an opinion.
+    ///
+    /// Kept raw so switching `AppSettings.agentStateSource` re-decides
+    /// immediately instead of waiting for tmux to repeat itself — the whole
+    /// point of the setting is to be able to compare the two, and a switch that
+    /// showed nothing until the next notification would make that impossible.
+    private var evidenceByPane = [String: AgentEvidence]()
+    /// What each pane's Claude Code session says about itself, parsed from
+    /// `@agent_stat`. Only panes whose status line wrapper is installed appear
+    /// here, so it is usually smaller than `evidenceByPane` and often empty.
+    private var statsByPane = [String: AgentStats]()
+    /// The previous capture, so "is this pane repainting" can be answered.
+    private var lastScreenByPane = [String: [String]]()
+    private var screenPollTimer: Timer?
+    /// Suspended while nobody can see the rail.
+    ///
+    /// The Git service has had this from the start and this did not, which is
+    /// the whole argument for it: capturing every agent pane every two seconds
+    /// to draw a sidebar that is behind another window is the same waste, on
+    /// the same laptop, for the same nobody.
+    private var isPaused = false
+
+    /// Forget panes tmux no longer has.
+    ///
+    /// Without this the map only ever grows, and the capture loop keeps sending
+    /// `capture-pane` at panes that closed — one failing round trip per dead
+    /// pane per tick, forever, for a row that no longer exists. The pane set
+    /// comes from the *saved* layout for the reason it always does here: a
+    /// zoomed window's visible layout lists one pane, and pruning against that
+    /// would forget the others every time somebody pressed `prefix z`.
+    private func pruneVanishedPanes() {
+        let live = Set(windows.flatMap(\.paneIDs))
+        guard !live.isEmpty else { return }
+        let gone = evidenceByPane.keys.filter { !live.contains($0) }
+        guard !gone.isEmpty else { return }
+        for pane in gone {
+            AgentTransitionLog.recordPaneClosed(
+                paneID: pane, session: sessionID, window: "@?", windowName: "closed"
+            )
+            evidenceByPane.removeValue(forKey: pane)
+            lastScreenByPane.removeValue(forKey: pane)
+            agentByPane.removeValue(forKey: pane)
+            statsByPane.removeValue(forKey: pane)
+        }
+        notifyModelChanged()
+    }
+
+    /// Re-decide every pane's badge from the evidence on hand.
+    ///
+    /// Cheap and called often: the strategies are pure functions over a value
+    /// that is already in memory, and the notification only goes out when the
+    /// result actually moved.
+    private func recomputeAgentBadges() {
+        let source = AppSettings.agentStateSource
+        var next = [String: AgentBadge]()
+        for (pane, evidence) in evidenceByPane {
+            guard var badge = source.badge(from: evidence) else { continue }
+            // **When did this state begin?**
+            //
+            // Only the hook strategy can answer that on its own — the agent
+            // stamps `@agent_at` as it reports. The screen strategy has no
+            // clock at all, it has a picture, so every badge it makes carries a
+            // nil `since`. Left that way, `AgentBadge.isSettled` compares
+            // against `.distantPast` and *any* seen-timestamp settles it: click
+            // a window once and its green mark never returns, however many
+            // turns the agent finishes afterwards. The "unread" model is
+            // exactly what that breaks.
+            //
+            // So the transition is stamped here, where the previous badge is
+            // known, and carried forward while the state does not change —
+            // carried rather than re-stamped, or every recompute would produce
+            // a different value and notify forever.
+            if badge.since == nil {
+                let previous = agentByPane[pane]
+                badge.since = previous?.state == badge.state ? previous?.since : Date()
+            }
+            next[pane] = badge
+        }
+
+        // Logged before the equality check, because a pane whose *reason*
+        // changed without its state changing is exactly the case the check
+        // filters out — and the log's own de-duplication is on state, so
+        // nothing is written twice.
+        let sourceName = AppSettings.agentStateSource.rawValue
+        for (pane, badge) in next {
+            guard let window = windows.first(where: { $0.paneIDs.contains(pane) }) else { continue }
+            AgentTransitionLog.record(
+                paneID: pane, state: badge.state, reason: badge.reason, source: sourceName,
+                session: sessionID, window: window.id, windowName: window.name
+            )
+        }
+
+        guard next != agentByPane else { return }
+        agentByPane = next
+        notifyModelChanged()
+    }
+
+    /// Start, stop, or re-time the pane capture the screen strategy needs.
+    ///
+    /// One `capture-pane` per agent pane per tick. That is a real cost and the
+    /// reason it is opt-in: with hooks the app is told, and here it has to go
+    /// and look. Only panes whose foreground process looks like an agent are
+    /// captured, so a session of shells costs nothing either way.
+    /// Stop or resume the screen capture with the window's visibility.
+    func setPaused(_ paused: Bool) {
+        guard paused != isPaused else { return }
+        isPaused = paused
+        applyAgentStateSource()
+    }
+
+    func applyAgentStateSource() {
+        screenPollTimer?.invalidate()
+        screenPollTimer = nil
+
+        guard !isPaused else { return }
+        guard AppSettings.agentStateSource.needsScreen else {
+            // Drop what was captured. Left behind, it would be handed to a
+            // strategy that never asked for it the next time this switches.
+            for pane in evidenceByPane.keys { evidenceByPane[pane]?.screen = nil }
+            lastScreenByPane.removeAll()
+            recomputeAgentBadges()
+            return
+        }
+
+        let timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.captureAgentScreens()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        screenPollTimer = timer
+        captureAgentScreens()
+    }
+
+    private func captureAgentScreens() {
+        pruneVanishedPanes()
+        for (pane, evidence) in evidenceByPane
+            where AgentDetector.isAgentCommand(evidence.currentCommand)
+        {
+            // The visible screen only, no history: the question is what the
+            // pane is doing *now*, and scrollback from an hour ago answers a
+            // different one — including, wrongly, with text that matches a rule.
+            // `runBytes`, not `run`. This file says why twice over: a reply
+            // decoded to `String` on the way past substitutes U+FFFD for
+            // anything that is not valid UTF-8, `failed` stays false, and no
+            // later code can tell. A pane's own bytes are exactly what that
+            // ruins — and a corrupted line changes what a `contains` rule
+            // matches with no signal at all. The other two `capture-pane` call
+            // sites in this file already use it.
+            client.runBytes("capture-pane -p -t \(pane)") { [weak self] output, failed in
+                guard let self, !failed else { return }
+                let lines = output.map { TmuxText.plain(String(decoding: $0, as: UTF8.self)) }
+                let previous = self.lastScreenByPane[pane]
+                self.lastScreenByPane[pane] = lines
+                self.evidenceByPane[pane]?.screen = lines
+                // Only once there is something to compare against. A first
+                // capture is not evidence of a repaint.
+                self.evidenceByPane[pane]?.screenChanged = previous != nil && previous != lines
+                self.recomputeAgentBadges()
+            }
+        }
+    }
 
     /// The most urgent agent badge among a window's panes, or nil.
     ///
@@ -273,7 +442,61 @@ final class TmuxSessionConnection {
     /// on every `prefix z`.
     func agentBadge(forWindow windowID: String) -> AgentBadge? {
         guard let window = windows.first(where: { $0.id == windowID }) else { return nil }
-        return window.paneIDs.reduce(nil) { AgentBadge.moreUrgent($0, agentByPane[$1]) }
+        var badge = window.paneIDs.reduce(nil) { AgentBadge.moreUrgent($0, agentByPane[$1]) }
+        // Stamped here rather than in a strategy: whether the *user* has looked
+        // is a property of the window, not of the pane the agent happens to be
+        // in, and no strategy has any business knowing about it.
+        badge?.seenAt = seenByWindow[windowID].map { Date(timeIntervalSince1970: $0) }
+        return badge
+    }
+
+    /// What the agent in a window says about itself, or nil.
+    ///
+    /// Takes the numbers from **the same pane the badge came from**, so a row
+    /// never reads `needs you` beside another pane's model and cost. Same pane
+    /// set as `agentBadge(forWindow:)` and for the same zoom reason.
+    func agentStats(forWindow windowID: String) -> AgentStats? {
+        guard let window = windows.first(where: { $0.id == windowID }) else { return nil }
+        var best: (pane: String, badge: AgentBadge)?
+        for pane in window.paneIDs {
+            guard let badge = agentByPane[pane] else { continue }
+            guard let current = best else { best = (pane, badge); continue }
+
+            // **Asked both ways round, and that is the fix.** `moreUrgent`
+            // answers with one of its arguments and returns the first on a
+            // tie, so a single comparison cannot tell "strictly more urgent"
+            // from "identical" — and identical is not hypothetical here, since
+            // `@agent_at` has one-second resolution and two panes that changed
+            // state in the same second produce equal badges. Reading a single
+            // comparison as a win silently preferred the later pane, which
+            // hid the numbers whenever that pane was the one without them.
+            let challengerWins = AgentBadge.moreUrgent(badge, current.badge) == badge
+            let holderWins = AgentBadge.moreUrgent(current.badge, badge) == current.badge
+            if challengerWins, !holderWins {
+                best = (pane, badge)
+            } else if challengerWins, holderWins {
+                // Equal rank. Prefer whichever pane actually reported, rather
+                // than drawing nothing while the answer sits one pane away.
+                // The badge is the same either way — equal rank means the same
+                // word on the row — so this cannot disagree with
+                // `agentBadge(forWindow:)` about what is being shown.
+                if statsByPane[current.pane] == nil, statsByPane[pane] != nil {
+                    best = (pane, badge)
+                }
+            }
+        }
+        return best.flatMap { statsByPane[$0.pane] }
+    }
+
+    /// The freshest account-wide rate-limit snapshot any pane here has
+    /// reported, or nil.
+    ///
+    /// Every open Claude Code session writes the same two windows, and an idle
+    /// one keeps re-writing whatever it saw when it was last busy — so this is
+    /// a `fresher` reduce rather than "whichever pane answered last". Taking
+    /// the last writer is what makes the number jump about.
+    var accountUsage: AccountUsage? {
+        statsByPane.values.reduce(nil) { AccountUsage.fresher($0, $1.usage) }
     }
 
     /// Ask tmux to tell us when a window gains or loses activity, instead of
@@ -313,7 +536,8 @@ final class TmuxSessionConnection {
         // text — these are constants written here, so there is nothing to
         // escape and nothing a name could smuggle in.
         client.send(
-            "refresh-client -B '\(Self.pathSubscription):@*:#{pane_current_path}'"
+            "refresh-client -B '\(Self.pathSubscription):@*:"
+                + "#{pane_current_path}\u{01}#{@agent_seen}'"
         )
         client.send(
             "refresh-client -B '\(Self.agentSubscription):%*:\(AgentDetector.paneFormat)'"
@@ -422,6 +646,22 @@ final class TmuxSessionConnection {
 
     func selectWindow(id: String) {
         client.send("select-window -t \(id)")
+        markSeen(windowID: id)
+    }
+
+    /// Record that the user has looked at this window.
+    ///
+    /// This is what retires a finished agent's green mark, instead of a timer.
+    /// A clock is arbitrary and throws the information away exactly when it is
+    /// worth most — come back after an hour and everything that finished while
+    /// you were gone has already faded. "Seen" is the predicate that was
+    /// actually meant, and it is the same one tmux uses for its own activity
+    /// flag.
+    ///
+    /// Sent even when the window is already selected, so clicking a row is
+    /// always a way to dismiss its mark.
+    func markSeen(windowID: String) {
+        client.send("set-option -w -t \(windowID) @agent_seen \(Int(Date().timeIntervalSince1970))")
     }
 
     func newWindow() {
@@ -804,6 +1044,9 @@ final class TmuxSessionConnection {
                 noteName(name)
             }
             subscribeToActivity()
+            // After the subscriptions, so the first capture has a pane list to
+            // work from rather than starting on an empty one.
+            applyAgentStateSource()
             refreshWindows()
 
         case .subscriptionChanged(let name, let window, let pane, let value):
@@ -818,6 +1061,11 @@ final class TmuxSessionConnection {
 
             case Self.pathSubscription:
                 guard let window else { return }
+                let parts = value.components(separatedBy: "\u{01}")
+                let value = parts.first ?? ""
+                let seen = parts.count > 1 ? TimeInterval(parts[1]) : nil
+                let seenChanged = seenByWindow[window] != seen
+                seenByWindow[window] = seen
                 // An empty path is what a window whose pane has already died
                 // reports. Dropping the entry rather than storing "" keeps
                 // "we have never been told" and "it is nothing" the same
@@ -825,18 +1073,48 @@ final class TmuxSessionConnection {
                 let changed = value.isEmpty
                     ? pathByWindow.removeValue(forKey: window) != nil
                     : pathByWindow.updateValue(value, forKey: window) != value
-                if changed { notifyModelChanged() }
+                if changed || seenChanged { notifyModelChanged() }
 
             case Self.agentSubscription:
                 guard let pane else { return }
-                let badge = AgentDetector.badge(fromSubscriptionValue: value)
-                guard agentByPane[pane] != badge else { return }
-                if let badge {
-                    agentByPane[pane] = badge
-                } else {
-                    agentByPane.removeValue(forKey: pane)
+                let fields = value.components(separatedBy: "\u{01}")
+                guard fields.count >= 4 else { return }
+                var evidence = evidenceByPane[pane]
+                    ?? AgentEvidence(paneID: pane, currentCommand: fields[3])
+                evidence.currentCommand = fields[3]
+                evidence.optionState = fields[0]
+                evidence.optionKind = fields[1]
+                evidence.optionAt = fields[2]
+                evidence.optionWhy = fields.count > 4 ? fields[4] : ""
+
+                // **Re-parse only when the text moved.** The status line
+                // wrapper rewrites `@agent_stat` on every render — every five
+                // seconds, per agent pane — while the numbers a person can see
+                // move far less often. Comparing the raw string first keeps a
+                // 1.3 KB JSON parse off most of those notifications, and
+                // comparing the *parsed* value afterwards keeps the rail from
+                // rebuilding when only a fraction of a cent changed. That
+                // second comparison is the one that matters: `AgentStats`
+                // rounds context to a whole percent and cost to cents for
+                // exactly this reason.
+                var statsDidChange = false
+                let rawStats = fields.count > 5 ? fields[5] : ""
+                if rawStats != evidence.optionStats {
+                    evidence.optionStats = rawStats
+                    let parsed = AgentStats.parse(rawStats)
+                    if statsByPane[pane] != parsed {
+                        if let parsed { statsByPane[pane] = parsed }
+                        else { statsByPane.removeValue(forKey: pane) }
+                        statsDidChange = true
+                    }
                 }
-                notifyModelChanged()
+
+                evidenceByPane[pane] = evidence
+                recomputeAgentBadges()
+                // After the recompute, which sends its own notification only
+                // when a badge moved. A cost that ticked up while the state
+                // stayed `working` moves no badge at all.
+                if statsDidChange { notifyModelChanged() }
 
             default:
                 return

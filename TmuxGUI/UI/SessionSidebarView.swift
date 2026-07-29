@@ -105,6 +105,11 @@ final class SessionSidebarView: NSView {
     private let newButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
+    /// The account's rate-limit windows. They sit at the foot of the rail
+    /// rather than on a row because they are not about any one window — every
+    /// Claude Code session on the machine shares them.
+    private let fiveHourGauge = UsageGaugeView(title: "5h")
+    private let sevenDayGauge = UsageGaugeView(title: "Week")
     private let scrollView = NSScrollView()
     private let rowsView = RowsView()
     private let dropIndicator = NSView()
@@ -284,6 +289,11 @@ final class SessionSidebarView: NSView {
         statusLabel.font = .systemFont(ofSize: 10.5)
         detailLabel.font = .monospacedDigitSystemFont(ofSize: 9.5, weight: .regular)
 
+        for gauge in [fiveHourGauge, sevenDayGauge] {
+            gauge.isHidden = true
+            addSubview(gauge)
+        }
+
         applyChromeTheme()
     }
 
@@ -295,9 +305,29 @@ final class SessionSidebarView: NSView {
         newButton.contentTintColor = theme.faintText
         statusLabel.textColor = theme.mutedText
         detailLabel.textColor = theme.faintText
+        fiveHourGauge.applyTheme()
+        sevenDayGauge.applyTheme()
         dropIndicator.layer?.backgroundColor = theme.accent.cgColor
         rebuild()
         needsDisplay = true
+    }
+
+    /// The account's rate-limit windows, or nil for "nothing has told us".
+    ///
+    /// Nil hides both gauges and gives the space back to the list. That is not
+    /// a placeholder decision but the ordinary state of a machine where the
+    /// status line wrapper is not installed, and a rail that reserved room for
+    /// numbers it will never have would be worse for those users than one that
+    /// simply does not mention them.
+    func showUsage(_ usage: AccountUsage?) {
+        let wanted = AppSettings.sidebarShowsUsage ? usage : nil
+        let changed = fiveHourGauge.usage != wanted?.fiveHour
+            || sevenDayGauge.usage != wanted?.sevenDay
+        fiveHourGauge.usage = wanted?.fiveHour
+        sevenDayGauge.usage = wanted?.sevenDay
+        // The gauges hide themselves, but the list above them has to be told
+        // to take the space back.
+        if changed { needsLayout = true }
     }
 
     func showStatus(_ status: String, detail: String) {
@@ -384,12 +414,13 @@ final class SessionSidebarView: NSView {
     private var drawnSignature: String {
         var parts = [selectedID ?? "-"]
         for entry in entries {
-            let sessionAgent = entry.visibleWindows
+            let sessionBadge = entry.visibleWindows
                 .compactMap { entry.decorations[$0.id]?.agent }
-                .reduce(nil) { AgentBadge.moreUrgent($0, $1) }?.state
+                .reduce(nil) { AgentBadge.moreUrgent($0, $1) }
             parts.append(
                 "\(entry.id)|\(entry.name)|\(entry.hasActivity ? 1 : 0)"
-                    + "|\(sessionAgent?.rawValue ?? "-")"
+                    + "|\(sessionBadge?.state?.rawValue ?? "-")"
+                    + "|\(sessionBadge?.isSettled == true ? "old" : "new")"
             )
             parts.append(isExpanded(entry.id) ? "+" : "-")
             guard isExpanded(entry.id) else { continue }
@@ -400,7 +431,11 @@ final class SessionSidebarView: NSView {
                         + "|\(window.id == entry.activeWindowID ? 1 : 0)"
                         + "|\(window.hasActivity ? 1 : 0)"
                         + "|\(decoration?.git.map { "\($0.displayRef)/\($0.staged)/\($0.modified)/\($0.untracked)/\($0.conflicted)/\($0.ahead)/\($0.behind)/\($0.hasUpstream)" } ?? "-")"
-                        + "|\(decoration?.agent.map { "\($0.kind ?? "?")/\($0.state?.rawValue ?? "-")/\($0.since?.timeIntervalSince1970 ?? 0)" } ?? "-")"
+                        // The *bucket*, not the timestamp. See `AgentBadge
+                        // .isSettled` — a raw `since` never changes, so the
+                        // short-circuit below matched forever and the 30-minute
+                        // transition never repainted anything.
+                        + "|\(decoration?.agent.map { "\($0.kind ?? "?")/\($0.state?.rawValue ?? "-")/\($0.isSettled ? "old" : "new")" } ?? "-")"
                         + "|\(decoration?.isNotARepository == true ? "!" : "")"
                         + "|\(decoration?.path ?? "")"
                 )
@@ -413,6 +448,13 @@ final class SessionSidebarView: NSView {
     private var lastDrawnSignature: String?
 
     private func rebuild() {
+        if editor != nil || draggingWindowID != nil || NSEvent.pressedMouseButtons != 0 {
+            TmuxLog.lifecycle(
+                "CLICKTRACE rebuild held back — editor=\(editor != nil)"
+                    + " drag=\(draggingWindowID != nil)"
+                    + " buttons=\(NSEvent.pressedMouseButtons)"
+            )
+        }
         // Never tear down a field the user is typing in, and never pull a row
         // out from under a drag, just because tmux said something. tmux
         // chatters constantly and both gestures take longer than the gap
@@ -451,9 +493,12 @@ final class SessionSidebarView: NSView {
 
             // The most urgent agent anywhere in this session, so a collapsed
             // heading still reports one that is waiting for input.
-            let sessionAgent = entry.visibleWindows
+            // Settled-aware, like the window rows: a heading that kept saying
+            // "just finished" hours later is the same defect one level up.
+            let winner = entry.visibleWindows
                 .compactMap { entry.decorations[$0.id]?.agent }
-                .reduce(nil) { AgentBadge.moreUrgent($0, $1) }?.state
+                .reduce(nil) { AgentBadge.moreUrgent($0, $1) }
+            let sessionAgent = (winner?.isSettled == true) ? nil : winner?.state
 
             let header = SidebarSessionRow(
                 id: session,
@@ -556,11 +601,20 @@ final class SessionSidebarView: NSView {
         statusLabel.frame = CGRect(x: inset, y: bounds.maxY - 62, width: width, height: 32)
         newButton.frame = CGRect(x: inset, y: bounds.maxY - 96, width: width, height: 26)
 
+        // Above the button, and only when there is something to show. A hidden
+        // gauge gives its height back to the window list rather than leaving a
+        // gap where a number might one day be.
+        var listBottom = newButton.frame.minY
+        for gauge in [sevenDayGauge, fiveHourGauge] where !gauge.isHidden {
+            listBottom -= UsageGaugeView.height + 6
+            gauge.frame = CGRect(x: inset, y: listBottom, width: width, height: UsageGaugeView.height)
+        }
+
         let top = contentTopInset
         scrollView.frame = CGRect(
             x: 0, y: top,
             width: bounds.width,
-            height: max(0, newButton.frame.minY - 6 - top)
+            height: max(0, listBottom - 6 - top)
         )
         layoutRows()
     }

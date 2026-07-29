@@ -56,13 +56,6 @@ final class MainViewController: NSSplitViewController {
     private var appliedSidebarWidth: CGFloat?
     private var settingsObserver: NSObjectProtocol?
     private var occlusionObserver: NSObjectProtocol?
-    /// Fires when the oldest `done` badge on screen stops being recent.
-    ///
-    /// A finished agent's green dot expires after a few minutes, and expiry is
-    /// the one state change nothing else announces: tmux has nothing to say
-    /// about it and no repository changed. Without this the dot would sit there
-    /// until some unrelated notification happened to rebuild the rail.
-    private var agentExpiryTimer: Timer?
     private var appearanceObservation: NSKeyValueObservation?
 
     var onStatusChange: ((String) -> Void)?
@@ -130,7 +123,13 @@ final class MainViewController: NSSplitViewController {
             guard let window = notification.object as? NSWindow else { return }
             Task { @MainActor in
                 guard let self, window === self.view.window else { return }
-                self.gitStatus.setPaused(!window.occlusionState.contains(.visible))
+                let hidden = !window.occlusionState.contains(.visible)
+                self.gitStatus.setPaused(hidden)
+                // The pane capture the screen strategy runs is the same kind of
+                // work for the same nobody.
+                for id in self.server.sessionIDs {
+                    self.server.connection(id: id)?.setPaused(hidden)
+                }
             }
         }
     }
@@ -279,6 +278,12 @@ final class MainViewController: NSSplitViewController {
         // when only the current session had rows.
         sidebar.onSelectWindow = { [weak self] session, id in
             guard let self else { return }
+            let wasCurrent = currentSessionID == session
+            let tmuxThinks = server.connection(id: session)?.activeWindowID ?? "-"
+            TmuxLog.lifecycle(
+                "CLICKTRACE select \(id) in \(session)"
+                    + " — session already shown=\(wasCurrent), tmux active=\(tmuxThinks)"
+            )
             show(sessionID: session)
             inSession(session) { $0.selectWindow(id: id) }
         }
@@ -785,6 +790,8 @@ final class MainViewController: NSSplitViewController {
         // Before the rail is rebuilt, so a fetch that was just switched off
         // does not get one more turn on the way past.
         gitStatus.applySettings()
+        // Each connection decides for itself whether to start capturing panes.
+        for id in server.sessionIDs { server.connection(id: id)?.applyAgentStateSource() }
         sidebar.applyChromeTheme()
         for controller in controllers.values { controller.applySettings() }
         // The row height itself is a setting now, so a change to it is a
@@ -816,6 +823,13 @@ final class MainViewController: NSSplitViewController {
                 decoration.path = connection.pathByWindow[window.id]
                 if AppSettings.sidebarShowsAgent {
                     decoration.agent = connection.agentBadge(forWindow: window.id)
+                    // Gated on the badge as well as on its own setting: the
+                    // numbers belong to the agent the dot is about, so a rail
+                    // with the agent column switched off has no place to put
+                    // them either.
+                    if AppSettings.sidebarShowsAgentStats {
+                        decoration.stats = connection.agentStats(forWindow: window.id)
+                    }
                 }
                 if AppSettings.sidebarShowsGit, let path = decoration.path {
                     visiblePaths.insert(path)
@@ -844,7 +858,6 @@ final class MainViewController: NSSplitViewController {
             )
         }
         gitStatus.setVisiblePaths(visiblePaths)
-        scheduleAgentExpiry(for: entries)
 
         // Whatever the app was showing may have been killed elsewhere; fall
         // back to the first session rather than a blank pane. A rename no
@@ -855,35 +868,16 @@ final class MainViewController: NSSplitViewController {
         }
 
         sidebar.update(entries: entries, selected: currentSessionID)
-    }
 
-    /// Wake up once, when the soonest `done` badge goes stale.
-    ///
-    /// One timer for the earliest of them rather than one per row: they all
-    /// resolve to the same rebuild, and a rail full of finished agents should
-    /// not mean a rail full of timers.
-    private func scheduleAgentExpiry(for entries: [SessionSidebarView.Entry]) {
-        agentExpiryTimer?.invalidate()
-        agentExpiryTimer = nil
-
-        let deadlines = entries.flatMap { entry in
-            entry.decorations.values.compactMap { decoration -> Date? in
-                guard decoration.agent?.state == .done,
-                      let since = decoration.agent?.since else { return nil }
-                return since.addingTimeInterval(SidebarWindowRow.doneShowsFor)
-            }
-        }
-        guard let soonest = deadlines.filter({ $0 > Date() }).min() else { return }
-
-        // A second past it, so the row is rebuilt on the far side of the
-        // comparison rather than exactly on it.
-        let timer = Timer(
-            fire: soonest.addingTimeInterval(1), interval: 0, repeats: false
-        ) { _ in
-            Task { @MainActor [weak self] in self?.refreshSidebar() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        agentExpiryTimer = timer
+        // Across every session, not the one on screen. Rate limits belong to
+        // the account, so the answer must not change when the rail is pointed
+        // at a different session — and the session being looked at is often
+        // the one with no agent in it.
+        sidebar.showUsage(
+            server.sessionIDs
+                .compactMap { server.connection(id: $0)?.accountUsage }
+                .reduce(nil) { AccountUsage.fresher($0, $1) }
+        )
     }
 
     /// Give up the controller of a session the server no longer has.

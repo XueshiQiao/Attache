@@ -43,11 +43,17 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var sidebarShowsGit: Bool
     @Published private(set) var sidebarShowsAgent: Bool
     @Published private(set) var sidebarShowsAgentText: Bool
+    @Published private(set) var sidebarShowsAgentStats: Bool
+    @Published private(set) var sidebarShowsUsage: Bool
+    @Published private(set) var agentStateSource: AgentStateSource
     @Published private(set) var gitAutoFetch: Bool
     @Published private(set) var gitAutoFetchMinutes: Int
 
     // ─── Agent hook (Behaviour page) ─────────────────────────────────────────
     @Published private(set) var agentHookInstalled = AgentHookInstaller.isInstalled()
+    /// Installed, but not what this version installs. See `isUpToDate`.
+    @Published private(set) var agentHookNeedsUpdate =
+        AgentHookInstaller.isInstalled() && !AgentHookInstaller.isUpToDate()
     /// The exact JSON an install would add, shown before anything is written.
     @Published private(set) var agentHookPlan = (try? AgentHookInstaller.plannedAdditions()) ?? ""
     /// What happened last, including where the backup went. Kept on screen
@@ -63,6 +69,7 @@ final class SettingsStore: ObservableObject {
 
     func refreshAgentHookState() {
         agentHookInstalled = AgentHookInstaller.isInstalled()
+        agentHookNeedsUpdate = agentHookInstalled && !AgentHookInstaller.isUpToDate()
         agentHookPlan = (try? AgentHookInstaller.plannedAdditions()) ?? ""
     }
 
@@ -100,6 +107,63 @@ final class SettingsStore: ObservableObject {
         }
         refreshAgentHookState()
     }
+
+    // ─── Status line wrapper (Behaviour page) ────────────────────────────────
+    @Published private(set) var statusLineInstalled = AgentStatusLineInstaller.isInstalled()
+    /// The command that will be wrapped, shown before anything is written. Nil
+    /// means there is no status line — the case that gets a minimal one.
+    @Published private(set) var statusLineWrapped = AgentStatusLineInstaller.commandToWrap()
+    @Published private(set) var statusLineMessage: String?
+    @Published private(set) var statusLineFailed = false
+    @Published private(set) var statusLineBusy = false
+
+    func refreshStatusLineState() {
+        statusLineInstalled = AgentStatusLineInstaller.isInstalled()
+        statusLineWrapped = AgentStatusLineInstaller.commandToWrap()
+    }
+
+    func installStatusLine() {
+        guard !statusLineBusy else { return }
+        statusLineBusy = true
+        defer { statusLineBusy = false }
+        do {
+            let hadOne = AgentStatusLineInstaller.commandToWrap() != nil
+            let backup = try AgentStatusLineInstaller.install()
+            statusLineFailed = false
+            // Measured 2026-07-29 on Claude Code 2.1.220: a session that is
+            // already open picks up a changed `statusLine.command` within
+            // seconds, so there is deliberately no "restart your agents" here.
+            // The hook above does need one, which is why the two messages
+            // differ.
+            statusLineMessage = (hadOne
+                ? "Installed around your existing status line, which still draws exactly as it did. "
+                : "Installed. You had no status line, so a minimal one is drawn instead of a blank row. ")
+                + "Sessions already running pick it up within a few seconds. Your previous "
+                + "settings were copied to " + backup.lastPathComponent + "."
+        } catch {
+            statusLineFailed = true
+            statusLineMessage = error.localizedDescription
+        }
+        refreshStatusLineState()
+    }
+
+    func uninstallStatusLine() {
+        guard !statusLineBusy else { return }
+        statusLineBusy = true
+        defer { statusLineBusy = false }
+        do {
+            let backup = try AgentStatusLineInstaller.uninstall()
+            statusLineFailed = false
+            statusLineMessage = "Removed, and your own status line put back. Your previous "
+                + "settings were copied to " + backup.lastPathComponent
+                + ". The scripts are left in ~/.claude/hooks/ and do nothing on their own."
+        } catch {
+            statusLineFailed = true
+            statusLineMessage = error.localizedDescription
+        }
+        refreshStatusLineState()
+    }
+
     @Published private(set) var windowOpacity: CGFloat
     @Published private(set) var backgroundBlur: Bool
     @Published private(set) var blurRadius: CGFloat
@@ -132,6 +196,9 @@ final class SettingsStore: ObservableObject {
         sidebarShowsGit = AppSettings.sidebarShowsGit
         sidebarShowsAgent = AppSettings.sidebarShowsAgent
         sidebarShowsAgentText = AppSettings.sidebarShowsAgentText
+        sidebarShowsAgentStats = AppSettings.sidebarShowsAgentStats
+        sidebarShowsUsage = AppSettings.sidebarShowsUsage
+        agentStateSource = AppSettings.agentStateSource
         gitAutoFetch = AppSettings.gitAutoFetch
         gitAutoFetchMinutes = AppSettings.gitAutoFetchMinutes
         windowOpacity = AppSettings.windowOpacity
@@ -257,9 +324,27 @@ final class SettingsStore: ObservableObject {
         AppSettings.notifyChanged()
     }
 
+    func setAgentStateSource(_ source: AgentStateSource) {
+        AppSettings.agentStateSource = source
+        agentStateSource = source
+        AppSettings.notifyChanged()
+    }
+
     func setSidebarShowsAgentText(_ shows: Bool) {
         AppSettings.sidebarShowsAgentText = shows
         sidebarShowsAgentText = shows
+        AppSettings.notifyChanged()
+    }
+
+    func setSidebarShowsAgentStats(_ shows: Bool) {
+        AppSettings.sidebarShowsAgentStats = shows
+        sidebarShowsAgentStats = shows
+        AppSettings.notifyChanged()
+    }
+
+    func setSidebarShowsUsage(_ shows: Bool) {
+        AppSettings.sidebarShowsUsage = shows
+        sidebarShowsUsage = shows
         AppSettings.notifyChanged()
     }
 

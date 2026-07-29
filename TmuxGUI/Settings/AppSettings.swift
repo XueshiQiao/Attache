@@ -46,6 +46,10 @@ enum AppSettings {
         static let sidebarShowsGit      = "TmuxGUISidebarShowsGit"
         static let sidebarShowsAgent    = "TmuxGUISidebarShowsAgent"
         static let sidebarShowsAgentText = "TmuxGUISidebarShowsAgentText"
+        static let sidebarShowsAgentStats = "TmuxGUISidebarShowsAgentStats"
+        static let sidebarShowsUsage    = "TmuxGUISidebarShowsUsage"
+        static let agentStateSource     = "TmuxGUIAgentStateSource"
+        static let logsAgentTransitions = "TmuxGUILogsAgentTransitions"
         static let gitAutoFetch         = "TmuxGUIGitAutoFetch"
         static let gitAutoFetchMinutes  = "TmuxGUIGitAutoFetchMinutes"
         static let liquidGlassClear     = "TmuxGUILiquidGlassClear"
@@ -482,6 +486,50 @@ enum AppSettings {
     static var sidebarShowsAgentText: Bool {
         get { store.object(forKey: Key.sidebarShowsAgentText) as? Bool ?? true }
         set { store.set(newValue, forKey: Key.sidebarShowsAgentText) }
+    }
+
+    /// Whether a window running an agent gets a third line with the model it
+    /// is on, how full its context is, and what the session has cost.
+    ///
+    /// On by default, and it costs height only on rows that have an agent —
+    /// see `SidebarWindowRow.height`. Needs the status line wrapper installed;
+    /// without it there is simply nothing to draw and the row stays two lines,
+    /// which is why this is not gated on the installer.
+    static var sidebarShowsAgentStats: Bool {
+        get { store.object(forKey: Key.sidebarShowsAgentStats) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.sidebarShowsAgentStats) }
+    }
+
+    /// Whether the account's rate-limit windows are drawn at the foot of the
+    /// rail. Account-wide rather than per window, which is why it is not part
+    /// of the row settings above.
+    static var sidebarShowsUsage: Bool {
+        get { store.object(forKey: Key.sidebarShowsUsage) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.sidebarShowsUsage) }
+    }
+
+    /// Where an agent's state is read from. See `AgentStateStrategy`.
+    ///
+    /// Hooks are the default: exact, and the state lands in tmux where any
+    /// client can see it. Reading the pane needs nothing installed but infers
+    /// from a user interface its author is free to change.
+    static var agentStateSource: AgentStateSource {
+        get {
+            store.string(forKey: Key.agentStateSource)
+                .flatMap(AgentStateSource.init(rawValue:)) ?? .hook
+        }
+        set { store.set(newValue.rawValue, forKey: Key.agentStateSource) }
+    }
+
+    /// Whether to write a state-transition log per tmux window.
+    ///
+    /// On by default, because the thing it is for is checking that the state
+    /// machine the app implements is the one that was designed — and a log that
+    /// has to be switched on before the interesting transition happens is a log
+    /// that is always switched on afterwards.
+    static var logsAgentTransitions: Bool {
+        get { store.object(forKey: Key.logsAgentTransitions) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.logsAgentTransitions) }
     }
 
     /// Whether to run `git fetch` in the background so `↓` means something.

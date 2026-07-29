@@ -89,6 +89,36 @@ struct BehaviourPage: View {
                 }
 
                 if store.sidebarShowsAgent {
+                    Picker(selection: Binding(
+                        get: { store.agentStateSource },
+                        set: { store.setAgentStateSource($0) }
+                    )) {
+                        ForEach(AgentStateSource.allCases, id: \.self) { source in
+                            Text(source.title).tag(source)
+                        }
+                    } label: {
+                        iconLabel(
+                            "antenna.radiowaves.left.and.right",
+                            .blue,
+                            "Where the agent's state comes from"
+                        )
+                    }
+
+                    Label(
+                        store.agentStateSource == .hook
+                            ? "Exact, and the state is stored in tmux so any terminal attached to "
+                                + "the same session sees it. Needs the hook below."
+                            : "Needs nothing installed, and works the moment an agent appears. "
+                                + "It reads the pane and infers, so it is guessing from a user "
+                                + "interface its author is free to change — and it only knows "
+                                + "Claude Code's. A pane it has no rules for is marked as an "
+                                + "agent and nothing more.",
+                        systemImage: store.agentStateSource == .hook ? "checkmark.seal" : "eye"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                     Toggle(isOn: Binding(
                         get: { store.sidebarShowsAgentText },
                         set: { store.setSidebarShowsAgentText($0) }
@@ -98,6 +128,41 @@ struct BehaviourPage: View {
                             store.sidebarShowsAgentText ? .blue : .gray,
                             "Spell the agent's state out beside the dot"
                         )
+                    }
+
+                    Toggle(isOn: Binding(
+                        get: { store.sidebarShowsAgentStats },
+                        set: { store.setSidebarShowsAgentStats($0) }
+                    )) {
+                        iconLabel(
+                            "gauge.with.needle",
+                            store.sidebarShowsAgentStats ? .blue : .gray,
+                            "Model, context and cost on the row"
+                        )
+                    }
+
+                    Toggle(isOn: Binding(
+                        get: { store.sidebarShowsUsage },
+                        set: { store.setSidebarShowsUsage($0) }
+                    )) {
+                        iconLabel(
+                            "chart.bar.horizontal.page",
+                            store.sidebarShowsUsage ? .blue : .gray,
+                            "5-hour and weekly limits at the foot of the rail"
+                        )
+                    }
+
+                    if store.sidebarShowsAgentStats || store.sidebarShowsUsage {
+                        Label(
+                            store.statusLineInstalled
+                                ? "Both read the status line wrapper below."
+                                : "Both need the status line wrapper below — without it there is "
+                                    + "nothing to draw, and rows stay the height they are now.",
+                            systemImage: store.statusLineInstalled ? "checkmark.seal" : "info.circle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
@@ -166,7 +231,12 @@ struct BehaviourPage: View {
                             : "Claude Code is detected, but not what it is doing"
                     )
                     Spacer()
-                    if store.agentHookInstalled {
+                    if store.agentHookNeedsUpdate {
+                        Button("Update…") { store.installAgentHook() }
+                            .disabled(store.agentHookBusy)
+                        Button("Remove") { store.uninstallAgentHook() }
+                            .disabled(store.agentHookBusy)
+                    } else if store.agentHookInstalled {
                         Button("Remove") { store.uninstallAgentHook() }
                             .disabled(store.agentHookBusy)
                     } else {
@@ -175,7 +245,9 @@ struct BehaviourPage: View {
                     }
                 }
 
-                if !store.agentHookInstalled, !store.agentHookPlan.isEmpty {
+                if !store.agentHookInstalled || store.agentHookNeedsUpdate,
+                   !store.agentHookPlan.isEmpty
+                {
                     DisclosureGroup("Show exactly what will be added") {
                         Text(store.agentHookPlan)
                             .font(.system(size: 10.5, design: .monospaced))
@@ -211,6 +283,65 @@ struct BehaviourPage: View {
                         + "One thing it cannot preserve: the file comes back sorted and "
                         + "re-indented, because there is no way to keep the original key order. "
                         + "Nothing is lost, and the backup has the original."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
+                HStack {
+                    featureLabel(
+                        store.statusLineInstalled ? "checkmark.circle.fill" : "gauge.with.needle",
+                        store.statusLineInstalled ? .green : .orange,
+                        store.statusLineInstalled
+                            ? "Claude Code reports its model, context and cost"
+                            : "Claude Code's model, context and cost are not reported",
+                        store.statusLineInstalled
+                            ? (store.statusLineWrapped.map { "Wrapping: \($0)" }
+                                ?? "You had no status line, so a minimal one is drawn.")
+                            : (store.statusLineWrapped.map {
+                                "Your status line will keep drawing exactly as it does now: \($0)"
+                            } ?? "You have no status line, so a minimal one will be drawn.")
+                    )
+                    Spacer()
+                    if store.statusLineInstalled {
+                        Button("Remove") { store.uninstallStatusLine() }
+                            .disabled(store.statusLineBusy)
+                    } else {
+                        Button("Install…") { store.installStatusLine() }
+                            .disabled(store.statusLineBusy)
+                    }
+                }
+
+                if let message = store.statusLineMessage {
+                    Label(
+                        message,
+                        systemImage: store.statusLineFailed
+                            ? "exclamationmark.triangle.fill"
+                            : "checkmark.circle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(store.statusLineFailed ? .red : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text("Session details")
+            } footer: {
+                Text(
+                    "How full an agent's context is, which model it is on, what the session has "
+                        + "cost, and how much of your 5-hour and weekly limits is left — Claude "
+                        + "Code publishes all of that in exactly one place, the JSON it hands to "
+                        + "your status line. Hooks never see it.\n\n"
+                        + "So this points statusLine.command at a small script that runs your own "
+                        + "status line with the same input and prints its output unchanged. The "
+                        + "line in your terminal does not change, whichever status line you use. "
+                        + "If you have none, it draws a minimal one, because a status line that "
+                        + "prints nothing still costs a row.\n\n"
+                        + "The script needs nothing installed — no jq, no Python. It writes the "
+                        + "numbers into tmux, where the sidebar already reads everything else. "
+                        + "Your settings file is copied to a timestamped backup first, and the "
+                        + "command being wrapped is kept in ~/.claude/hooks/"
+                        + "tmuxgui-statusline.conf where you can read or change it."
                 )
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

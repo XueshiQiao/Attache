@@ -140,6 +140,75 @@ check("anything outranks nothing", {
         ?? expect(AgentBadge.moreUrgent(nil, nil) == nil, true)
 }())
 
+// MARK: - Seen, which is what retires a finished agent
+
+print("\n— the unread model —")
+
+private func badge(_ state: AgentState?, since: TimeInterval?, seen: TimeInterval?) -> AgentBadge {
+    var b = AgentBadge(state: state, kind: "claude",
+                       since: since.map { Date(timeIntervalSince1970: $0) })
+    b.seenAt = seen.map { Date(timeIntervalSince1970: $0) }
+    return b
+}
+
+check("a finished agent nobody has looked at stays news", {
+    expect(badge(.done, since: 1000, seen: nil).isSettled, false)
+}())
+check("looked at after it finished — retired", {
+    expect(badge(.done, since: 1000, seen: 2000).isSettled, true)
+}())
+check("looked at BEFORE it finished — still news", {
+    // The case a naive "has a seen timestamp" test gets wrong: you were in that
+    // window, left, and it finished after you went.
+    expect(badge(.done, since: 2000, seen: 1000).isSettled, false)
+}())
+check("a working agent is never retired by looking at it", {
+    expect(badge(.working, since: 1000, seen: 2000).isSettled, false)
+}())
+check("**a blocked agent is never retired by looking at it**", {
+    // The failure that matters most: "needs you" must not be hidden because
+    // the row was clicked. Only `done` is retirable.
+    expect(badge(.needsInput, since: 1000, seen: 2000).isSettled, false)
+}())
+check("no timestamp at all cannot be retired", {
+    // Regression guard for a real defect. The screen strategy produces badges
+    // with no `since`; comparing a seen-timestamp against `distantPast` made
+    // *any* click settle the mark permanently, so a window clicked once never
+    // showed green again however many turns finished afterwards. The connection
+    // stamps the transition now — but if that ever stops, this is the shape the
+    // bug takes, and it must not silently pass.
+    expect(badge(.done, since: nil, seen: 2000).isSettled, true)
+}())
+
+check("two finished panes: the window speaks for the later one", {
+    // The bug this pins: pane A finished long ago and was seen; pane B finished
+    // just now. If the window inherits A's timestamp it reports itself read,
+    // and B finishing is lost with no way back.
+    let old = badge(.done, since: 1000, seen: nil)
+    let fresh = badge(.done, since: 5000, seen: nil)
+    return expect(AgentBadge.moreUrgent(old, fresh)?.since?.timeIntervalSince1970 ?? -1, 5000.0)
+        // Order must not matter — the reduce feeds them in `paneIDs` order.
+        ?? expect(AgentBadge.moreUrgent(fresh, old)?.since?.timeIntervalSince1970 ?? -1, 5000.0)
+}())
+
+check("and the window is then correctly unread", {
+    var old = badge(.done, since: 1000, seen: nil)
+    let fresh = badge(.done, since: 5000, seen: nil)
+    var winner = AgentBadge.moreUrgent(old, fresh)!
+    // The window's seen-mark is stamped after the reduce, as the connection does.
+    winner.seenAt = Date(timeIntervalSince1970: 2000)
+    old.seenAt = Date(timeIntervalSince1970: 2000)
+    return expect(winner.isSettled, false) ?? expect(old.isSettled, true)
+}())
+
+check("a tie between ranks still prefers urgency over recency", {
+    // Recency only breaks ties. A blocked pane outranks a done one however old.
+    let blockedLongAgo = badge(.needsInput, since: 1000, seen: nil)
+    let doneJustNow = badge(.done, since: 9000, seen: nil)
+    return expect(AgentBadge.moreUrgent(blockedLongAgo, doneJustNow)?.state?.rawValue ?? "nil",
+                  "needs-input")
+}())
+
 // MARK: - Result
 
 print("")

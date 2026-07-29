@@ -294,11 +294,18 @@ final class SidebarWindowRow: NSView {
     /// halves how many windows fit on screen, and that is a trade only the
     /// person looking at their own twenty windows can make. With both status
     /// settings off the rail is exactly the 27pt list it was before any of this.
+    /// The height a row *without* an agent's numbers gets. The rail's own
+    /// layout asks each instance instead — see `rowHeight` — because a third
+    /// line depends on what is in the window, not only on the settings.
     static var height: CGFloat { showsSecondLine ? 40 : 27 }
 
     private static var showsSecondLine: Bool {
         AppSettings.sidebarShowsGit
     }
+
+    /// How tall each line is, and where it starts. One place, because the
+    /// stats line moves up into the second slot when the Git line is off.
+    private static let lineHeight: CGFloat = 15
 
     private let isActive: Bool
     private let indexLabel = NSTextField(labelWithString: "")
@@ -319,12 +326,27 @@ final class SidebarWindowRow: NSView {
     /// was what the colours meant. The word answers it without a tooltip, and
     /// can be switched off once it stops being needed.
     private let agentLabel = NSTextField(labelWithString: "")
+    /// The third line: which model, how full its context is, what it has cost.
+    ///
+    /// Four views rather than one string, because each is measured separately
+    /// and they give way in a fixed order as the rail narrows — the cost is
+    /// the last thing to go and the model is the first, since the model is the
+    /// field that changes least.
+    private let modelLabel = NSTextField(labelWithString: "")
+    private let contextBar = NSView()
+    private let contextFill = NSView()
+    private let contextLabel = NSTextField(labelWithString: "")
+    private let costLabel = NSTextField(labelWithString: "")
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
     private var dragOrigin: NSPoint?
     private var didDrag = false
     private let decoration: WindowDecoration
     private let showsSecondLine: Bool
+    /// Whether this row drew a third line, decided once in `init` for the same
+    /// reason `rowHeight` is. A row that grew because an agent started must
+    /// keep laying itself out that way until the rail rebuilds it.
+    private let showsStatsLine: Bool
 
     /// The height this row was *built* for.
     ///
@@ -343,7 +365,13 @@ final class SidebarWindowRow: NSView {
         self.decoration = decoration
         let twoLines = Self.showsSecondLine
         showsSecondLine = twoLines
-        rowHeight = twoLines ? 40 : 27
+        // **Only when there is something to draw**, which is why this is not
+        // just a setting. A rail whose windows are all shells is the rail that
+        // existed before this feature, to the pixel; only the rows running an
+        // agent that reports pay the 13pt.
+        let stats = decoration.stats
+        showsStatsLine = stats != nil && !(stats?.isEmpty ?? true)
+        rowHeight = (twoLines ? 40 : 27) + (showsStatsLine ? 13 : 0)
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -378,6 +406,24 @@ final class SidebarWindowRow: NSView {
         agentLabel.lineBreakMode = .byClipping
         addSubview(agentLabel)
 
+        for line in [modelLabel, contextLabel, costLabel] {
+            line.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+            line.isSelectable = false
+            line.refusesFirstResponder = true
+            line.isHidden = !showsStatsLine
+            addSubview(line)
+        }
+        modelLabel.lineBreakMode = .byTruncatingTail
+        costLabel.alignment = .right
+
+        contextBar.wantsLayer = true
+        contextBar.layer?.cornerRadius = 2.5
+        contextBar.isHidden = !showsStatsLine
+        contextFill.wantsLayer = true
+        contextFill.layer?.cornerRadius = 2.5
+        contextBar.addSubview(contextFill)
+        addSubview(contextBar)
+
         applyStatus(window: window)
         applyColors()
     }
@@ -388,6 +434,7 @@ final class SidebarWindowRow: NSView {
     /// both are "something happened here", and the agent's is the more specific
     /// of the two. A row with an agent in it has no use for "unseen output".
     private func applyStatus(window: TmuxWindow) {
+        shownCache = computeShown()
         var tips = ["\(window.index): \(window.name)"]
 
         // Switched on `shown`, so every case that has an agent takes the same
@@ -447,7 +494,82 @@ final class SidebarWindowRow: NSView {
         }
 
         agentLabel.stringValue = agentWord ?? ""
+
+        if let stats = decoration.stats {
+            modelLabel.stringValue = stats.shortModel ?? ""
+            // Nothing at all while the percentage is null, which is what a
+            // session that has not sent a message reports. An empty bar there
+            // would read as "context is empty" — true by accident today and
+            // wrong the moment it is not.
+            contextLabel.stringValue = stats.contextPercent.map { "\($0)%" } ?? ""
+            contextBar.isHidden = !showsStatsLine || stats.contextPercent == nil
+            costLabel.stringValue = stats.costText ?? ""
+            tips.append(contentsOf: Self.statsTooltip(for: stats))
+        }
+
         toolTip = tips.joined(separator: "\n")
+    }
+
+    /// Everything the agent reports that the row has no width for.
+    ///
+    /// The row shows three fields because at the default 168pt rail three is
+    /// what fits. The rest is real and worth keeping, so it goes here rather
+    /// than being thrown away — which is also why the wrapper sends the whole
+    /// object instead of the three numbers the row draws.
+    private static func statsTooltip(for stats: AgentStats) -> [String] {
+        var lines = [String]()
+        if let model = stats.model { lines.append(model) }
+
+        var context = [String]()
+        if let percent = stats.contextPercent { context.append("\(percent)% of context") }
+        if let tokens = stats.contextTokens {
+            context.append(
+                stats.contextWindowSize.map { "\(compact(tokens)) / \(compact($0))" }
+                    ?? compact(tokens)
+            )
+        }
+        if !context.isEmpty { lines.append(context.joined(separator: " · ")) }
+
+        var session = [String]()
+        if let cost = stats.costText { session.append(cost) }
+        if let added = stats.linesAdded, let removed = stats.linesRemoved,
+           added + removed > 0
+        {
+            session.append("+\(added) −\(removed) lines")
+        }
+        if let duration = stats.durationMS, duration > 0 {
+            session.append(elapsed(milliseconds: duration))
+        }
+        if !session.isEmpty { lines.append(session.joined(separator: " · ")) }
+
+        var mode = [String]()
+        if let effort = stats.effort { mode.append("effort \(effort)") }
+        if let style = stats.outputStyle, style != "default" { mode.append(style) }
+        if !mode.isEmpty { lines.append(mode.joined(separator: " · ")) }
+
+        return lines
+    }
+
+    /// `812k`, `1.2M`. Token counts, where the exact digit never matters and
+    /// the magnitude always does.
+    private static func compact(_ value: Int) -> String {
+        if value >= 1_000_000 {
+            let millions = Double(value) / 1_000_000
+            return millions >= 10
+                ? "\(Int(millions.rounded()))M"
+                : String(format: "%.1fM", millions)
+        }
+        if value >= 1000 { return "\(value / 1000)k" }
+        return "\(value)"
+    }
+
+    private static func elapsed(milliseconds: Int) -> String {
+        let seconds = milliseconds / 1000
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        if hours > 0 { return "\(hours)h\(minutes)m" }
+        if minutes > 0 { return "\(minutes)m" }
+        return "\(seconds)s"
     }
 
     /// `+3 ~1 ↑2` — staged, unstaged, and what is not pushed.
@@ -526,20 +648,6 @@ final class SidebarWindowRow: NSView {
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
 
-    /// How long a finished agent stays *fresh* before it reads as merely idle.
-    ///
-    /// 30 minutes, matching `partner0/tmux-agent-status`, whose hook-driven
-    /// model this row now follows: its `working`/`waiting`/`idle` are this
-    /// file's `working`/`needs-input`/`done`, and its `paused` is what an
-    /// untouched `done` becomes here.
-    ///
-    /// The first attempt made `done` expire to *nothing* after 5 minutes, which
-    /// was wrong twice over. A finished agent does not stop being finished, and
-    /// falling back to no-state made the row say "unknown" about a window whose
-    /// state is perfectly well known — the app had simply decided to stop
-    /// believing it.
-    static let doneShowsFor: TimeInterval = 30 * 60
-
     /// What the row should draw, which is not always the word tmux is holding.
     ///
     /// `none` and `silent` were one case and had to be separated: "there is no
@@ -559,17 +667,21 @@ final class SidebarWindowRow: NSView {
         case none
     }
 
-    private var shown: Shown {
-        guard let agent = decoration.agent else { return .none }
-        guard let state = agent.state else { return .silent }
-        guard state == .done, let since = agent.since else { return .state(state) }
-        return Date().timeIntervalSince(since) < Self.doneShowsFor ? .state(state) : .settled
-    }
+    /// Decided once, in `applyStatus`, and read from everywhere else.
+    ///
+    /// It depends on the clock, and `applyColors()` and `layout()` are called
+    /// independently — AppKit lays a view out on a window resize without
+    /// repainting it. Recomputing in both meant the dot could take its *size*
+    /// from one side of the 30-minute boundary and its *colour* from the other.
+    private var shownCache: Shown = .none
 
-    /// Kept for the places that only care about the live state.
-    private var shownAgentState: AgentState? {
-        if case .state(let state) = shown { return state }
-        return nil
+    private var shown: Shown { shownCache }
+
+    private func computeShown() -> Shown {
+        guard let agent = decoration.agent else { return .none }
+        guard agent.state != nil else { return .silent }
+        if agent.isSettled { return .settled }
+        return agent.state.map { Shown.state($0) } ?? .silent
     }
 
     private var agentName: String {
@@ -673,6 +785,43 @@ final class SidebarWindowRow: NSView {
             branchLabel.textColor = decoration.git == nil ? theme.faintText : theme.mutedText
             statsLabel.textColor = statsColor(theme)
         }
+
+        applyStatsColors(theme)
+    }
+
+    /// The third line's colours.
+    ///
+    /// Only the context bar carries a hue, and it carries it for one reason:
+    /// a context that is nearly full is the thing on this line that is about
+    /// to cost you something. The model and the cost are facts, not warnings,
+    /// so they stay in the rail's own greys — colouring them too would leave
+    /// three competing signals on a line 122pt wide.
+    private func applyStatsColors(_ theme: ChromeTheme) {
+        guard showsStatsLine else { return }
+        let percent = decoration.stats?.contextPercent ?? 0
+        let hue = Self.contextColor(percent)
+
+        if isActive {
+            modelLabel.textColor = theme.onAccent.withAlphaComponent(0.75)
+            costLabel.textColor = theme.onAccent.withAlphaComponent(0.85)
+            contextLabel.textColor = theme.onAccent.withAlphaComponent(0.85)
+            contextBar.layer?.backgroundColor = theme.onAccent.withAlphaComponent(0.25).cgColor
+            contextFill.layer?.backgroundColor = theme.onAccent.withAlphaComponent(0.9).cgColor
+        } else {
+            modelLabel.textColor = theme.faintText
+            costLabel.textColor = theme.mutedText
+            contextLabel.textColor = hue
+            contextBar.layer?.backgroundColor = theme.faintText.withAlphaComponent(0.25).cgColor
+            contextFill.layer?.backgroundColor = hue.cgColor
+        }
+    }
+
+    /// Blue while there is room, orange when there is not much, red when the
+    /// next long file is going to force a compaction.
+    private static func contextColor(_ percent: Int) -> NSColor {
+        if percent >= 90 { return .systemRed }
+        if percent >= 70 { return .systemOrange }
+        return .systemBlue
     }
 
     /// One colour for the whole stats field, chosen by the most serious thing
@@ -695,21 +844,27 @@ final class SidebarWindowRow: NSView {
         guard showsSecondLine else {
             // The single-line row exactly as it was, so turning the setting off
             // is a return to the old rail rather than a narrower version of the
-            // new one.
-            indexLabel.frame = CGRect(x: 14, y: (bounds.height - 13) / 2, width: 14, height: 13)
+            // new one. Centred within **27pt**, not within `bounds.height`: a
+            // row that grew for an agent's numbers is 40pt tall and centring
+            // the name in that would leave it floating over the line below.
+            let band: CGFloat = 27
+            indexLabel.frame = CGRect(x: 14, y: (band - 13) / 2, width: 14, height: 13)
             var right = bounds.maxX - 8
             if !activityDot.isHidden {
                 activityDot.frame = CGRect(
-                    x: right - dotSize, y: (bounds.height - dotSize) / 2,
+                    x: right - dotSize, y: (band - dotSize) / 2,
                     width: dotSize, height: dotSize
                 )
                 right -= dotSize + 6
             }
             let left = indexLabel.frame.maxX + 10
             label.frame = CGRect(
-                x: left, y: (bounds.height - 15) / 2,
+                x: left, y: (band - 15) / 2,
                 width: max(0, right - left), height: 15
             )
+            // With the Git line off the numbers move up into the slot it would
+            // have used. They are the second line, not the third.
+            layoutStatsLine(left: left, y: 25)
             return
         }
 
@@ -755,6 +910,95 @@ final class SidebarWindowRow: NSView {
         branchLabel.frame = CGRect(
             x: left, y: 21, width: max(0, branchRight - left), height: 14
         )
+
+        layoutStatsLine(left: left, y: 37)
+    }
+
+    /// `Opus 5  ▰▱▱ 34%  $2.14`, built from the right.
+    ///
+    /// The rail is 168pt by default, which leaves about 122pt here — nineteen
+    /// characters of the 10pt monospaced face. So the fields cannot all be
+    /// drawn at every width, and the order they give way in is a decision
+    /// rather than an accident:
+    ///
+    /// 1. **The model goes first.** It is the field that changes least, and
+    ///    knowing you are on Opus rather than Sonnet is a thing you already
+    ///    know.
+    /// 2. **Then the bar**, because the percentage beside it says the same
+    ///    thing in fewer pixels.
+    /// 3. **The cost never goes.** It is five characters and it is the number
+    ///    people open the rail to look at.
+    ///
+    /// Everything is measured rather than reserved, the way `statsLabel` on
+    /// the line above already is: a fixed reservation either clips `Sonnet 5`
+    /// or wastes the space `$0.02` does not need.
+    private func layoutStatsLine(left: CGFloat, y: CGFloat) {
+        guard showsStatsLine else { return }
+        let height: CGFloat = 13
+        let barWidth: CGFloat = 22
+        let barHeight: CGFloat = 5
+        /// Below this the model can only draw an ellipsis, which is worse than
+        /// drawing nothing.
+        let modelFloor: CGFloat = 30
+
+        var right = bounds.maxX - 8
+
+        let costWidth = costLabel.stringValue.isEmpty
+            ? 0
+            : ceil(costLabel.attributedStringValue.size().width) + 1
+        costLabel.frame = CGRect(x: right - costWidth, y: y, width: costWidth, height: height)
+        costLabel.isHidden = costWidth <= 0
+        if costWidth > 0 { right -= costWidth + 7 }
+
+        let percentWidth = contextLabel.stringValue.isEmpty
+            ? 0
+            : ceil(contextLabel.attributedStringValue.size().width) + 1
+        let wantsBar = !contextBar.isHidden && percentWidth > 0
+        let available = right - left
+
+        var showsPercent = false
+        var showsBar = false
+        if percentWidth > 0 {
+            let withBar = percentWidth + (wantsBar ? barWidth + 4 : 0)
+            if available >= withBar + modelFloor || available >= withBar {
+                showsPercent = true
+                showsBar = wantsBar
+            } else if available >= percentWidth {
+                showsPercent = true
+            }
+        }
+
+        if showsPercent {
+            contextLabel.frame = CGRect(
+                x: right - percentWidth, y: y, width: percentWidth, height: height
+            )
+            contextLabel.isHidden = false
+            right -= percentWidth
+            if showsBar {
+                right -= 4
+                contextBar.frame = CGRect(
+                    x: right - barWidth, y: y + (height - barHeight) / 2,
+                    width: barWidth, height: barHeight
+                )
+                contextBar.isHidden = false
+                let fraction = min(1, max(0, Double(decoration.stats?.contextPercent ?? 0) / 100))
+                contextFill.frame = CGRect(
+                    x: 0, y: 0, width: barWidth * fraction, height: barHeight
+                )
+                right -= barWidth
+            } else {
+                contextBar.isHidden = true
+            }
+            right -= 7
+        } else {
+            contextLabel.isHidden = true
+            contextBar.isHidden = true
+        }
+
+        let modelWidth = right - left
+        let fits = !modelLabel.stringValue.isEmpty && modelWidth >= modelFloor
+        modelLabel.frame = CGRect(x: left, y: y, width: max(0, modelWidth), height: height)
+        modelLabel.isHidden = !fits
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -801,7 +1045,12 @@ final class SidebarWindowRow: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        if isDoubleClick?(rowIdentity, event.clickCount) ?? (event.clickCount >= 2) {
+        let double = isDoubleClick?(rowIdentity, event.clickCount) ?? (event.clickCount >= 2)
+        TmuxLog.lifecycle(
+            "CLICKTRACE down \(rowIdentity) clickCount=\(event.clickCount)"
+                + " → \(double ? "DOUBLE (rename)" : "single")"
+        )
+        if double {
             onDoubleClick?()
             return
         }
@@ -820,10 +1069,15 @@ final class SidebarWindowRow: NSView {
 
     override func mouseUp(with _: NSEvent) {
         defer { dragOrigin = nil }
-        guard dragOrigin != nil else { return }
+        guard dragOrigin != nil else {
+            TmuxLog.lifecycle("CLICKTRACE up \(rowIdentity) — no press recorded, doing nothing")
+            return
+        }
         if didDrag {
+            TmuxLog.lifecycle("CLICKTRACE up \(rowIdentity) → drag ended")
             onDragEnded?()
         } else {
+            TmuxLog.lifecycle("CLICKTRACE up \(rowIdentity) → onClick")
             onClick?()
         }
     }

@@ -34,8 +34,12 @@ struct WindowDecoration: Equatable {
     /// not enough, because a repository can be refusing to fetch.
     var fetchIsLive = false
     var agent: AgentBadge?
+    /// What the agent says about itself — model, context, cost. Nil unless the
+    /// status line wrapper is installed, which is the ordinary case; the badge
+    /// works without it and this is the part that does not.
+    var stats: AgentStats?
 
     var isEmpty: Bool {
-        git == nil && agent == nil && !isNotARepository
+        git == nil && agent == nil && stats == nil && !isNotARepository
     }
 }
