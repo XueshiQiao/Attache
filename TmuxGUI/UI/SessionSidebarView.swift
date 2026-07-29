@@ -448,13 +448,6 @@ final class SessionSidebarView: NSView {
     private var lastDrawnSignature: String?
 
     private func rebuild() {
-        if editor != nil || draggingWindowID != nil || NSEvent.pressedMouseButtons != 0 {
-            TmuxLog.lifecycle(
-                "CLICKTRACE rebuild held back — editor=\(editor != nil)"
-                    + " drag=\(draggingWindowID != nil)"
-                    + " buttons=\(NSEvent.pressedMouseButtons)"
-            )
-        }
         // Never tear down a field the user is typing in, and never pull a row
         // out from under a drag, just because tmux said something. tmux
         // chatters constantly and both gestures take longer than the gap

@@ -537,13 +537,39 @@ enum AgentHookInstaller {
         ] as? Date
     }
 
+    /// Read the settings, and hand back a modification stamp that is known to
+    /// belong to the bytes that were read.
+    ///
+    /// **Reading first and stamping afterwards is a real window, not a
+    /// theoretical one.** An edit that lands between the two becomes the
+    /// recorded baseline, so `writeSettings` sees nothing newer and overwrites
+    /// that edit with a snapshot taken before it. Stamping on both sides and
+    /// insisting they agree closes it; a disagreement just means going round
+    /// again, because somebody genuinely was writing.
+    static func loadSettingsVerifying() throws -> ([String: Any], Date?) {
+        for _ in 0 ..< 3 {
+            let before = settingsModified()
+            let settings = try loadSettings()
+            let after = settingsModified()
+            if before == after { return (settings, after) }
+        }
+        throw Failure.writeFailed(
+            "~/.claude/settings.json kept changing while it was being read —"
+                + " nothing was written. Close whatever is editing it and try again."
+        )
+    }
+
     static func writeSettings(_ settings: [String: Any], readAt: Date?) throws {
         // Somebody else wrote the file while we were working on it. Last write
         // wins would silently discard their change, and this is a file four
         // other tools have entries in — refusing costs a retry and clobbering
         // costs somebody their setup.
+        // Any transition counts, including a file that did not exist when it
+        // was read and does now: `readAt == nil` with a stamp on disk means
+        // somebody created it in between, and writing over that is the same
+        // loss as writing over an edit.
         let now = settingsModified()
-        if let readAt, let now, now > readAt {
+        if now != readAt {
             throw Failure.writeFailed(
                 "the file changed while this was being prepared — nothing was written."
                     + " Close whatever edited it and try again."

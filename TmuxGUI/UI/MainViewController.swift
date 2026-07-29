@@ -278,12 +278,6 @@ final class MainViewController: NSSplitViewController {
         // when only the current session had rows.
         sidebar.onSelectWindow = { [weak self] session, id in
             guard let self else { return }
-            let wasCurrent = currentSessionID == session
-            let tmuxThinks = server.connection(id: session)?.activeWindowID ?? "-"
-            TmuxLog.lifecycle(
-                "CLICKTRACE select \(id) in \(session)"
-                    + " — session already shown=\(wasCurrent), tmux active=\(tmuxThinks)"
-            )
             show(sessionID: session)
             inSession(session) { $0.selectWindow(id: id) }
         }

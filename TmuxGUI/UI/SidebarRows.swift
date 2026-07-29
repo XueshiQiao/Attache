@@ -414,7 +414,9 @@ final class SidebarWindowRow: NSView {
             addSubview(line)
         }
         modelLabel.lineBreakMode = .byTruncatingTail
-        costLabel.alignment = .right
+        // All three left-aligned. The line reads left to right from a fixed
+        // edge, so each field starts where the one before it ended and none of
+        // them needs a box wider than its own text.
 
         contextBar.wantsLayer = true
         contextBar.layer?.cornerRadius = 2.5
@@ -501,6 +503,10 @@ final class SidebarWindowRow: NSView {
             // session that has not sent a message reports. An empty bar there
             // would read as "context is empty" — true by accident today and
             // wrong the moment it is not.
+            // No padding. The line runs left to right from a fixed left edge,
+            // so nothing downstream depends on this field having a constant
+            // width — and a pad character would only push the digits away from
+            // the bar on the rows that have one digit.
             contextLabel.stringValue = stats.contextPercent.map { "\($0)%" } ?? ""
             contextBar.isHidden = !showsStatsLine || stats.contextPercent == nil
             costLabel.stringValue = stats.costText ?? ""
@@ -799,7 +805,7 @@ final class SidebarWindowRow: NSView {
     private func applyStatsColors(_ theme: ChromeTheme) {
         guard showsStatsLine else { return }
         let percent = decoration.stats?.contextPercent ?? 0
-        let hue = Self.contextColor(percent)
+        let hue = Self.contextColor(percent, theme)
 
         if isActive {
             modelLabel.textColor = theme.onAccent.withAlphaComponent(0.75)
@@ -812,16 +818,31 @@ final class SidebarWindowRow: NSView {
             costLabel.textColor = theme.mutedText
             contextLabel.textColor = hue
             contextBar.layer?.backgroundColor = theme.faintText.withAlphaComponent(0.25).cgColor
-            contextFill.layer?.backgroundColor = hue.cgColor
+            contextFill.layer?.backgroundColor = hue.withAlphaComponent(
+                percent >= Self.contextWarnPercent ? 1 : 0.8
+            ).cgColor
         }
     }
 
-    /// Blue while there is room, orange when there is not much, red when the
-    /// next long file is going to force a compaction.
-    private static func contextColor(_ percent: Int) -> NSColor {
-        if percent >= 90 { return .systemRed }
-        if percent >= 70 { return .systemOrange }
-        return .systemBlue
+    static let contextWarnPercent = 70
+    private static let contextHotPercent = 90
+
+    /// **Grey until it means something.**
+    ///
+    /// This started blue, which made the one coloured thing on the row the
+    /// number that is normally fine — so the line read as three greys and an
+    /// alarm, on every row, all day. A context under 70% is not news; it is the
+    /// same kind of fact as the model name and the cost beside it, and it is
+    /// drawn the same way.
+    ///
+    /// The colour is kept for the two states where it is telling you something
+    /// you would otherwise have to read the number to find out: amber when
+    /// there is not much room left, red when the next long file is going to
+    /// force a compaction.
+    private static func contextColor(_ percent: Int, _ theme: ChromeTheme) -> NSColor {
+        if percent >= contextHotPercent { return .systemRed }
+        if percent >= contextWarnPercent { return .systemOrange }
+        return theme.mutedText
     }
 
     /// One colour for the whole stats field, chosen by the most serious thing
@@ -914,24 +935,25 @@ final class SidebarWindowRow: NSView {
         layoutStatsLine(left: left, y: 37)
     }
 
-    /// `Opus 5  ▰▱▱ 34%  $2.14`, built from the right.
+    /// `Opus 5  ▰▱▱ 34%  $2.14`, laid out left to right.
     ///
-    /// The rail is 168pt by default, which leaves about 122pt here — nineteen
-    /// characters of the 10pt monospaced face. So the fields cannot all be
-    /// drawn at every width, and the order they give way in is a decision
-    /// rather than an accident:
+    /// **Everything hangs off the left edge, which is the one thing on this
+    /// line that never moves.** Anchoring on the right was the other way to do
+    /// it and it could not be made to settle: with the fields right-aligned,
+    /// whichever one changed width pushed everything to its left along with
+    /// it, so a cost going from `$9.99` to `$10.01`, or a context going from
+    /// `9%` to `10%`, shifted a whole column. Any two of the three could be
+    /// held still, never all three.
     ///
-    /// 1. **The model goes first.** It is the field that changes least, and
-    ///    knowing you are on Opus rather than Sonnet is a thing you already
-    ///    know.
-    /// 2. **Then the bar**, because the percentage beside it says the same
-    ///    thing in fewer pixels.
-    /// 3. **The cost never goes.** It is five characters and it is the number
-    ///    people open the rail to look at.
+    /// From the left there is nothing to trade. The model name is what decides
+    /// where the bar starts, and on a machine running one model — which is the
+    /// ordinary case — every row has the same model name and therefore the
+    /// same bar position, for free and without reserving anything.
     ///
-    /// Everything is measured rather than reserved, the way `statsLabel` on
-    /// the line above already is: a fixed reservation either clips `Sonnet 5`
-    /// or wastes the space `$0.02` does not need.
+    /// What gives way as the rail narrows is the model, by truncation and then
+    /// entirely: it is the field that changes least and the one already known.
+    /// Then the bar, because the percentage beside it says the same thing in
+    /// fewer pixels.
     private func layoutStatsLine(left: CGFloat, y: CGFloat) {
         guard showsStatsLine else { return }
         let height: CGFloat = 13
@@ -940,65 +962,89 @@ final class SidebarWindowRow: NSView {
         /// Below this the model can only draw an ellipsis, which is worse than
         /// drawing nothing.
         let modelFloor: CGFloat = 30
+        let rightEdge = bounds.maxX - 8
 
-        var right = bounds.maxX - 8
+        let percentWidth = Self.measure(contextLabel)
+        let costWidth = Self.measure(costLabel)
+        let wantsBar = !contextBar.isHidden
 
-        let costWidth = costLabel.stringValue.isEmpty
-            ? 0
-            : ceil(costLabel.attributedStringValue.size().width) + 1
-        costLabel.frame = CGRect(x: right - costWidth, y: y, width: costWidth, height: height)
-        costLabel.isHidden = costWidth <= 0
-        if costWidth > 0 { right -= costWidth + 7 }
+        // What the fields after the model need, so the model can be given the
+        // rest rather than pushing them off the row.
+        var tail = percentWidth
+        if wantsBar { tail += barWidth + Self.fieldGap }
+        if costWidth > 0 { tail += Self.fieldGap + costWidth }
 
-        let percentWidth = contextLabel.stringValue.isEmpty
-            ? 0
-            : ceil(contextLabel.attributedStringValue.size().width) + 1
-        let wantsBar = !contextBar.isHidden && percentWidth > 0
-        let available = right - left
-
-        var showsPercent = false
-        var showsBar = false
-        if percentWidth > 0 {
-            let withBar = percentWidth + (wantsBar ? barWidth + 4 : 0)
-            if available >= withBar + modelFloor || available >= withBar {
-                showsPercent = true
-                showsBar = wantsBar
-            } else if available >= percentWidth {
-                showsPercent = true
-            }
+        var x = left
+        let roomForModel = rightEdge - left - tail - Self.fieldGap
+        let modelWidth = min(Self.box(modelLabel), max(0, roomForModel))
+        modelLabel.isHidden = modelWidth < modelFloor
+        if !modelLabel.isHidden {
+            modelLabel.frame = CGRect(x: x, y: y, width: modelWidth, height: height)
+            // Advanced past the *glyphs*, not past the box: the extra the cell
+            // needed is empty on both sides, and counting it would leave the
+            // bar further from the model than every other field is from its
+            // neighbour.
+            let inset = max(0, (modelWidth - Self.measure(modelLabel)) / 2)
+            x += modelWidth - inset + Self.fieldGap
         }
 
-        if showsPercent {
-            contextLabel.frame = CGRect(
-                x: right - percentWidth, y: y, width: percentWidth, height: height
+        let showsBar = wantsBar && x + barWidth + Self.fieldGap + percentWidth <= rightEdge
+        if showsBar {
+            contextBar.frame = CGRect(
+                x: x, y: y + (height - barHeight) / 2, width: barWidth, height: barHeight
             )
-            contextLabel.isHidden = false
-            right -= percentWidth
-            if showsBar {
-                right -= 4
-                contextBar.frame = CGRect(
-                    x: right - barWidth, y: y + (height - barHeight) / 2,
-                    width: barWidth, height: barHeight
-                )
-                contextBar.isHidden = false
-                let fraction = min(1, max(0, Double(decoration.stats?.contextPercent ?? 0) / 100))
-                contextFill.frame = CGRect(
-                    x: 0, y: 0, width: barWidth * fraction, height: barHeight
-                )
-                right -= barWidth
-            } else {
-                contextBar.isHidden = true
-            }
-            right -= 7
+            let fraction = min(1, max(0, Double(decoration.stats?.contextPercent ?? 0) / 100))
+            contextFill.frame = CGRect(x: 0, y: 0, width: barWidth * fraction, height: barHeight)
+            x += barWidth + Self.fieldGap
         } else {
-            contextLabel.isHidden = true
             contextBar.isHidden = true
         }
 
-        let modelWidth = right - left
-        let fits = !modelLabel.stringValue.isEmpty && modelWidth >= modelFloor
-        modelLabel.frame = CGRect(x: left, y: y, width: max(0, modelWidth), height: height)
-        modelLabel.isHidden = !fits
+        if percentWidth > 0 {
+            contextLabel.frame = CGRect(x: x, y: y, width: percentWidth, height: height)
+            x += percentWidth + Self.fieldGap
+        }
+        contextLabel.isHidden = percentWidth <= 0
+
+        costLabel.frame = CGRect(
+            x: x, y: y, width: max(0, min(costWidth, rightEdge - x)), height: height
+        )
+        costLabel.isHidden = costWidth <= 0 || x >= rightEdge
+    }
+
+    /// The space between the fields on the third line. One constant, because
+    /// the whole point of the line is that its columns agree.
+    private static let fieldGap: CGFloat = 7
+
+    /// The width of a label's glyphs. What a field needs in order to *draw*
+    /// them can be more — see `box`.
+    private static func measure(_ label: NSTextField) -> CGFloat {
+        label.stringValue.isEmpty
+            ? 0
+            : ceil(label.attributedStringValue.size().width) + 1
+    }
+
+    /// The width a label needs before it will stop truncating itself.
+    ///
+    /// **A cell wants more than its glyphs**, and only the field that is
+    /// allowed to truncate cares. Measured at 10pt: `Opus 5` advances 34.70
+    /// and its cell reports 38.70, and a frame of 34, 35 or 36 draws `Opu…`
+    /// while 38 and up draws all of it. `intrinsicContentSize` is not the
+    /// answer either — it reports 35.00, under the width at which the field
+    /// truncates, which is how this was got wrong once already.
+    ///
+    /// The other two fields are measured, not truncating, so they are given
+    /// their glyphs and nothing more.
+    private static func box(_ label: NSTextField) -> CGFloat {
+        guard !label.stringValue.isEmpty, let cell = label.cell else { return 0 }
+        return ceil(cell.cellSize.width)
+    }
+
+    /// The drawn width of a string in a given font, for reserving a column
+    /// against the widest value rather than the current one.
+    private static func width(of text: String, font: NSFont?) -> CGFloat {
+        guard let font else { return 0 }
+        return ceil((text as NSString).size(withAttributes: [.font: font]).width) + 1
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -1045,12 +1091,7 @@ final class SidebarWindowRow: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        let double = isDoubleClick?(rowIdentity, event.clickCount) ?? (event.clickCount >= 2)
-        TmuxLog.lifecycle(
-            "CLICKTRACE down \(rowIdentity) clickCount=\(event.clickCount)"
-                + " → \(double ? "DOUBLE (rename)" : "single")"
-        )
-        if double {
+        if isDoubleClick?(rowIdentity, event.clickCount) ?? (event.clickCount >= 2) {
             onDoubleClick?()
             return
         }
@@ -1069,15 +1110,10 @@ final class SidebarWindowRow: NSView {
 
     override func mouseUp(with _: NSEvent) {
         defer { dragOrigin = nil }
-        guard dragOrigin != nil else {
-            TmuxLog.lifecycle("CLICKTRACE up \(rowIdentity) — no press recorded, doing nothing")
-            return
-        }
+        guard dragOrigin != nil else { return }
         if didDrag {
-            TmuxLog.lifecycle("CLICKTRACE up \(rowIdentity) → drag ended")
             onDragEnded?()
         } else {
-            TmuxLog.lifecycle("CLICKTRACE up \(rowIdentity) → onClick")
             onClick?()
         }
     }

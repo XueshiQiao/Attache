@@ -120,13 +120,9 @@ enum AgentStatusLineInstaller {
     /// pressed. Nil means there is none — the case that gets a minimal line.
     static func commandToWrap() -> String? {
         switch ownership() {
-        case .ours:
-            if case .command(let inner) = recovery() { return inner }
-            return nil
-        case .foreign(let command):
-            return command
-        case .unrecognised(let command):
-            return command
+        case .ours: return recovery().command
+        case .foreign(let command): return command
+        case .unrecognised(let command): return command
         }
     }
 
@@ -136,12 +132,34 @@ enum AgentStatusLineInstaller {
         StatusLineRecovery.recovery(from: try? String(contentsOf: configURL, encoding: .utf8))
     }
 
+    /// The whole `statusLine` object as compact JSON, or nil if there is none.
+    ///
+    /// Recorded verbatim so uninstall can put back what was there rather than
+    /// what this app happened to look at. `refreshInterval`, `padding` and any
+    /// key a future Claude Code adds all ride along without this file having to
+    /// know they exist.
+    private static func serialise(statusLine: Any?) -> String? {
+        guard let object = statusLine as? [String: Any] else { return nil }
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]
+        ) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func deserialise(_ text: String?) -> [String: Any]? {
+        guard let text, let data = text.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
     // MARK: - Install and uninstall
 
     /// Returns the backup that was taken.
     @discardableResult
     static func install() throws -> URL {
-        var settings = try AgentHookInstaller.loadSettings()
+        // Read and mtime together — see `loadSettingsVerifying`. Capturing the
+        // stamp after the read makes an edit that lands in between look like
+        // the baseline, and the write then overwrites it.
+        var (settings, readAt) = try AgentHookInstaller.loadSettingsVerifying()
 
         // Every refusal below happens before a single byte is written, so a
         // configuration this cannot put back leaves the disk exactly as it was.
@@ -153,7 +171,7 @@ enum AgentStatusLineInstaller {
         }
 
         let current = command(in: settings)
-        let inner: Recovery
+        var record: Recovery
         switch classify(current) {
         case .ours:
             // Re-install. The record already holds the right answer; deriving
@@ -163,28 +181,39 @@ enum AgentStatusLineInstaller {
             // **An unreadable record is refused rather than degraded.** The
             // tempting shortcut is to treat it as "there was no status line",
             // since re-installing removes nothing — but it writes that claim
-            // into the record, and the *next* uninstall then deletes a
-            // `statusLine` the user did have. A silent loss one step removed
-            // from the action that caused it is the worst kind.
+            // into the record, and the *next* uninstall then acts on it. A
+            // silent loss one step removed from the action that caused it is
+            // the worst kind.
             let recorded = recovery()
-            guard recorded != .unavailable else { throw Failure.recoveryUnavailable }
-            inner = recorded
+            guard !recorded.isUnavailable else { throw Failure.recoveryUnavailable }
+            record = recorded
         case .unrecognised(let command):
             throw Failure.externallyModified(command)
         case .foreign(let command):
-            guard let command else {
-                inner = .none
-                break
+            // **Validated against the raw command**, before any trimming. A
+            // newline cannot round-trip through a line-based record, and a
+            // record written anyway restores something other than what was
+            // there — which for a shell command means it still runs.
+            if let command {
+                guard StatusLineRecovery.canRoundTrip(command) else {
+                    throw Failure.notASingleLine
+                }
             }
-            // A command with a newline in it cannot round-trip through a
-            // line-based record, and writing it anyway would silently restore a
-            // truncated command on uninstall.
-            guard StatusLineRecovery.canRoundTrip(command) else { throw Failure.notASingleLine }
-            inner = .command(command)
+            record = Recovery(command: command, original: nil)
         }
 
-        let readAt = AgentHookInstaller.settingsModified()
-        try writeScripts(recovery: inner)
+        // The object as it stands now, whatever else is in it. On a re-install
+        // the recorded one is older and therefore the right one to keep.
+        if record.original == nil {
+            record.original = serialise(statusLine: settings["statusLine"])
+        }
+        if let original = record.original,
+           !StatusLineRecovery.canRoundTrip(original)
+        {
+            throw Failure.notASingleLine
+        }
+
+        try writeScripts(recovery: record)
         let backup = try AgentHookInstaller.backUpSettings()
 
         // Only `command` and `type` are touched. `padding`, `refreshInterval`
@@ -206,7 +235,7 @@ enum AgentStatusLineInstaller {
     /// Returns the backup that was taken.
     @discardableResult
     static func uninstall() throws -> URL {
-        var settings = try AgentHookInstaller.loadSettings()
+        var (settings, readAt) = try AgentHookInstaller.loadSettingsVerifying()
 
         switch classify(command(in: settings)) {
         case .ours: break
@@ -216,24 +245,37 @@ enum AgentStatusLineInstaller {
 
         // Decided before the backup, so a refusal writes nothing at all.
         let restore = recovery()
-        guard restore != .unavailable else { throw Failure.recoveryUnavailable }
+        guard !restore.isUnavailable else { throw Failure.recoveryUnavailable }
 
-        let readAt = AgentHookInstaller.settingsModified()
         let backup = try AgentHookInstaller.backUpSettings()
 
-        var statusLine = (settings["statusLine"] as? [String: Any]) ?? [:]
-        switch restore {
-        case .command(let inner):
-            statusLine["command"] = inner
-            settings["statusLine"] = statusLine
-        case .none:
-            // There was no status line before, so there is none after. Leaving
-            // one that runs nothing is the blank row this feature exists to
-            // avoid — and this branch is only reached when the record says so
-            // in as many words.
+        // **The whole object goes back, not just the command.** A settings file
+        // can hold a `statusLine` with `refreshInterval` and no command at all;
+        // reading "there was no command" as "there was no object" deletes that,
+        // and nothing says so. The recorded object is the shape that was there.
+        if var original = deserialise(restore.original) {
+            // An edit to INNER wins: the record is advertised as editable and
+            // this is the field people will edit.
+            // **Nothing is removed from the recorded object.** It is the
+            // shape that was there before this app touched it, command
+            // included, so putting it back unchanged is the restore. Stripping
+            // `command` when the record does not name one throws away whatever
+            // was in that field — and the field can hold something this app
+            // declined to treat as a command without it stopping being the
+            // user's text.
+            if let command = restore.command {
+                // A hand edit to INNER wins over the recorded object.
+                original["command"] = command
+                if original["type"] == nil { original["type"] = "command" }
+            }
+            settings["statusLine"] = original
+        } else if let command = restore.command {
+            // No object was recorded but a command was — a hand-edited record.
+            // Honour it rather than throwing the command away.
+            settings["statusLine"] = ["type": "command", "command": command]
+        } else {
+            // There was no object before, so there is none after.
             settings.removeValue(forKey: "statusLine")
-        case .unavailable:
-            preconditionFailure("refused above")
         }
 
         try AgentHookInstaller.writeSettings(settings, readAt: readAt)
@@ -252,7 +294,11 @@ enum AgentStatusLineInstaller {
     private static func command(in settings: [String: Any]) -> String? {
         guard let statusLine = settings["statusLine"] as? [String: Any],
               let command = statusLine["command"] as? String,
-              !command.trimmingCharacters(in: .whitespaces).isEmpty
+              // Newlines count as empty here, so `classify` never has to
+              // decide whether a command made only of whitespace is a command.
+              // The raw text is still what gets returned, and the recorded
+              // object still carries the field verbatim either way.
+              !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
         return command
     }
@@ -296,22 +342,39 @@ enum AgentStatusLineInstaller {
     input=$(cat)
     here=$(dirname "$0")
 
-    # **Reporting runs in the background and is never waited for.** It is cheap
-    # — one tmux call, measured at 6ms — but cheap is not the same as bounded,
-    # and a wedged tmux server would otherwise stall every status line render on
-    # the machine. A wrapper that can hang the status line it wraps is worse
-    # than no wrapper.
+    # **Reporting runs in the background, is never waited for, and never has
+    # more than one instance per pane.**
+    #
+    # Backgrounding is what stops a wedged tmux server from stalling every
+    # status line on the machine — a wrapper that can hang the status line it
+    # wraps is worse than no wrapper. But backgrounding alone turns that hang
+    # into a leak: a server that accepts connections and stops answering would
+    # collect one more client every five seconds, per session, forever.
+    #
+    # `mkdir` is atomic, so it is the lock. If the previous update for this pane
+    # has not finished, this render is skipped rather than starting a second
+    # one. A pane whose numbers stop moving is a visible, bounded failure; a
+    # thousand stuck tmux clients is not.
     if [ -n "$TMUX_PANE" ]; then
-        (
-            # Newlines stripped: a control-mode notification is line-based, and
-            # a raw newline in an option value would break TmuxGUI's read loop.
-            # JSON carries newlines inside strings as \n escapes, so this is
-            # lossless.
-            printf '%s' "$input" | tr -d '\n\r' | {
-                read -r line
-                tmux set-option -p -t "$TMUX_PANE" @agent_stat "$line"
-            }
-        ) </dev/null >/dev/null 2>&1 &
+        lock="${TMPDIR:-/tmp}/tmuxgui-stat${TMUX_PANE}.lock"
+        if mkdir "$lock" 2>/dev/null; then
+            (
+                # Newlines stripped: a control-mode notification is line-based,
+                # and a raw newline in an option value would break TmuxGUI's
+                # read loop. JSON carries newlines inside strings as \n escapes,
+                # so this is lossless.
+                printf '%s' "$input" | tr -d '\n\r' | {
+                    read -r line
+                    tmux set-option -p -t "$TMUX_PANE" @agent_stat "$line"
+                }
+                rmdir "$lock" 2>/dev/null
+            ) </dev/null >/dev/null 2>&1 &
+        else
+            # A lock older than any real update means the process holding it was
+            # killed rather than finishing — reap it so one bad update cannot
+            # wedge a pane's numbers permanently.
+            find "$lock" -maxdepth 0 -mmin +2 -exec rmdir {} \; 2>/dev/null
+        fi
     fi
 
     # **Read, not sourced.** This file is advertised as safe to edit, so it must

@@ -1010,35 +1010,31 @@ final class SessionViewController: NSViewController {
 private final class ContentHalfView: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
 
-    /// Paint the strip `gridLeftInset` holds open, because otherwise nobody
-    /// does and it shows as a line down the whole window.
+    /// **Nothing is painted here, and that is the fix rather than the bug.**
     ///
-    /// Every fill in this window goes on **over** the window's own background
-    /// colour, which `PaneGridView` is required to match exactly — see the
-    /// comment on its `draw`, and the 66pt overhang it exists for. So a region
-    /// painted by a view reaches `1-(1-a)²` while a region painted by nobody
-    /// stays at `a`. At the default 0.35 that is 0.58 against 0.35: the same
-    /// colour, visibly more transparent, in a band the width of the inset.
-    /// Measured on the running app 2026-07-28: the rail ends at x=377.5 and
-    /// `PaneGridView` starts at 385.5, so the band is 8pt — 16 device pixels at
-    /// 2x, which is what a person sees as "an empty line between the halves".
+    /// This used to fill the strip `gridLeftInset` holds open with `paneFill`,
+    /// on the reasoning that a region painted by nobody would sit at the
+    /// window's own alpha while the panes reached `1-(1-a)²` beside it. That
+    /// was true when it was written and is not true now — the translucency the
+    /// window is built from moved into `WindowGlass` since.
     ///
-    /// Painting only the inset, not the whole half: the grid paints the rest,
-    /// and a full-bleed fill here would be a *third* coat under it and make the
-    /// panes darker than `AppSettings.windowOpacity` asks for.
+    /// Measured on the running app, 2026-07-29, sampling across the boundary:
     ///
-    /// The inset itself stays. Its comment justifies it by the rail being an
-    /// inset rounded panel with a margin of its own, and that panel is gone —
-    /// but "air between the rail and the first column of text" outlived the
-    /// panel, and air is not the same thing as a hole.
-    override func draw(_ dirtyRect: NSRect) {
-        var gutter = bounds
-        gutter.size.width = SessionViewController.gridLeftInset
-        let region = gutter.intersection(dirtyRect)
-        guard !region.isEmpty else { return }
-        WindowGlass.resolved().paneFill.setFill()
-        region.fill()
-    }
+    ///     fill                 gutter            panes
+    ///     paneFill        rgb(63, 66, 75)   rgb(82, 85, 92)
+    ///     paneFill doubled rgb(53, 56, 66)   rgb(82, 85, 92)
+    ///     opaque theme    rgb(42, 46, 56)   rgb(82, 85, 92)
+    ///     nothing         rgb(82, 85, 92)   rgb(82, 85, 92)
+    ///
+    /// Every coat made it darker, which is the opposite of what the old
+    /// arithmetic predicts, and the unpainted strip matches the panes exactly.
+    /// So the fill was the seam: a band agreeing with neither half, eight
+    /// points wide, down the whole window.
+    ///
+    /// Not drawing at all is also the safer shape. A view that draws gets a
+    /// backing layer 66pt taller than itself on macOS 26 and the overhang is
+    /// not clipped — see CLAUDE.md — so a view with no `draw` has one less way
+    /// to go wrong.
 }
 
 #if DEBUG
