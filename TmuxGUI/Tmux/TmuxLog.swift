@@ -58,7 +58,14 @@ enum TmuxLog {
         session: String,
         caller: StaticString = #function
     ) {
-        emit(kind(of: command), session: session, caller: "\(caller)", text: redacted(command))
+        let text = redacted(command)
+        emit(kind(of: command), session: session, caller: "\(caller)", text: text)
+        // The diagnostics tap, and this gate is *why* it works: every command
+        // passes through here, so expectations derived from the text cover
+        // call sites that do not exist yet. The redacted form on purpose —
+        // diagnostics keeps a ring of recent commands in its snapshots, and a
+        // snapshot must not hold what this file just refused to log.
+        DiagnosticsCenter.shared.commandSent(text, session: session)
     }
 
     /// Record something that is not a tmux command — a process spawning or

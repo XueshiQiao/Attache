@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Noticing that nothing happened — TmuxGUI diagnostics &amp; notifications</title>
+<style>
+  :root {
+    --bg: #faf9f5;
+    --surface: #ffffff;
+    --ink: #1f1e1c;
+    --ink-soft: #5a5751;
+    --ink-faint: #8a857c;
+    --rule: #e6e2d4;
+    --rule-soft: #efece1;
+    --code-bg: #f3f0e6;
+    --accent: #d97757;
+    --accent-soft: #f4e2d6;
+    --good: #4f8a5c;
+    --warn: #b6711c;
+    --bad: #b14338;
+    --serif: "Tiempos", "Source Serif Pro", "Iowan Old Style", Georgia, serif;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Monaco, "Cascadia Code", monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .container { max-width: 880px; margin: 0 auto; padding: 80px 40px 120px; }
+
+  header.hero { margin-bottom: 56px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--accent); margin-bottom: 18px;
+  }
+  h1 {
+    font-family: var(--serif); font-weight: 500; font-size: 48px; line-height: 1.1;
+    margin: 0 0 20px; letter-spacing: -0.015em; color: var(--ink);
+  }
+  .lede {
+    font-family: var(--serif); font-size: 22px; line-height: 1.45;
+    color: var(--ink-soft); margin: 0; max-width: 640px;
+  }
+
+  h2 {
+    font-family: var(--serif); font-weight: 500; font-size: 30px; line-height: 1.2;
+    margin: 64px 0 16px; letter-spacing: -0.01em;
+  }
+  h3 { font-family: var(--sans); font-weight: 600; font-size: 17px; margin: 36px 0 10px; letter-spacing: -0.005em; }
+  p { margin: 0 0 16px; }
+  p, li { color: var(--ink); }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+
+  ul, ol { padding-left: 24px; margin: 0 0 16px; }
+  li { margin-bottom: 8px; }
+  li code { font-size: 0.92em; }
+
+  code { font-family: var(--mono); background: var(--code-bg); padding: 1px 6px; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: #1f1e1c; color: #f6f3eb; padding: 20px 24px; border-radius: 8px;
+    overflow-x: auto; line-height: 1.55; font-size: 13.5px; margin: 20px 0 28px;
+  }
+  pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+  .tok-comment  { color: #9b9081; font-style: italic; }
+  .tok-keyword  { color: #e89b6f; }
+  .tok-fn       { color: #f0d68a; }
+  .tok-string   { color: #b8d49d; }
+  .tok-num      { color: #d8b9e3; }
+
+  .meta-row {
+    display: flex; flex-wrap: wrap; gap: 18px 32px; margin: 32px 0 48px; padding: 18px 0;
+    border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft);
+  }
+  .meta-row b { color: var(--ink); font-weight: 500; margin-right: 8px; }
+
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--accent-soft);
+    padding: 18px 22px; margin: 28px 0; border-radius: 0 6px 6px 0; color: var(--ink);
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout .label {
+    font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--accent); font-weight: 600; margin-bottom: 6px; display: block;
+  }
+
+  .figure {
+    margin: 36px 0; background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 10px; padding: 28px 24px 18px;
+  }
+  .figure svg { display: block; width: 100%; height: auto; }
+  .figure .caption {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-faint);
+    margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--rule);
+  }
+  .figure .caption b { color: var(--ink-soft); font-weight: 600; }
+
+  table { border-collapse: collapse; width: 100%; margin: 24px 0 32px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--ink-soft); background: var(--rule-soft); font-size: 13px; letter-spacing: 0.01em; }
+  td code { font-size: 0.88em; }
+
+  .pill {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  }
+  .pill.good    { background: #e3f0e2; color: var(--good); }
+  .pill.warn    { background: #f5e7d0; color: var(--warn); }
+  .pill.bad     { background: #f5dad6; color: var(--bad); }
+  .pill.neutral { background: var(--rule-soft); color: var(--ink-soft); }
+
+  .footer {
+    margin-top: 96px; padding-top: 24px; border-top: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 12px; color: var(--ink-faint);
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+  }
+
+  svg text { font-family: var(--sans); font-size: 12.5px; fill: var(--ink); }
+  svg .label-mono  { font-family: var(--mono); font-size: 11.5px; fill: var(--ink-soft); }
+  svg .label-soft  { fill: var(--ink-soft); }
+  svg .label-faint { fill: var(--ink-faint); }
+
+  /* ── Toast preview stage: mimics the app so the options are judged in context ── */
+  .stage {
+    margin: 30px 0 8px;
+    border-radius: 12px;
+    padding: 22px;
+    background:
+      radial-gradient(120% 90% at 82% 8%, rgba(120,160,200,0.30), transparent 60%),
+      radial-gradient(90% 70% at 12% 92%, rgba(180,140,120,0.22), transparent 62%),
+      linear-gradient(150deg, #2b3440 0%, #1d232c 55%, #171c23 100%);
+    display: flex;
+    justify-content: flex-end;
+    min-height: 200px;
+    border: 1px solid var(--rule);
+  }
+  .stage.tall { min-height: 250px; }
+  .toast-stack { display: flex; flex-direction: column; gap: 8px; width: 316px; }
+
+  .toast {
+    font-family: var(--sans);
+    color: #ecebe7;
+    background: rgba(38,44,54,0.72);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    backdrop-filter: blur(24px) saturate(150%);
+    border: 0.5px solid rgba(255,255,255,0.13);
+    box-shadow: 0 6px 22px rgba(0,0,0,0.34);
+  }
+  .t-title { font-size: 12px; font-weight: 600; letter-spacing: -0.005em; }
+  .t-body  { font-size: 10.5px; color: #a9b0ba; line-height: 1.42; }
+  .t-meta  { font-family: var(--mono); font-size: 9.5px; color: #7d8590; }
+
+  /* Option A — rail-consistent */
+  .toast.a { border-radius: 6px; padding: 8px 11px 9px 10px; display: flex; gap: 9px; align-items: flex-start; }
+  .toast.a .edge { width: 2px; align-self: stretch; border-radius: 1px; flex: none; }
+  .toast.a .edge.warn { background: #d9a24a; }
+  .toast.a .edge.bad  { background: #d1685c; }
+  .toast.a .edge.info { background: #6d8fb5; }
+
+  /* Option B — banded, with grouping */
+  .toast.b { border-radius: 8px; overflow: hidden; }
+  .toast.b .head {
+    display: flex; align-items: center; gap: 7px;
+    padding: 8px 11px 7px; border-bottom: 0.5px solid rgba(255,255,255,0.10);
+  }
+  .toast.b .dot { width: 6px; height: 6px; border-radius: 3px; flex: none; }
+  .toast.b .dot.warn { background: #d9a24a; }
+  .toast.b .dot.bad  { background: #d1685c; }
+  .toast.b .count {
+    margin-left: auto; font-family: var(--mono); font-size: 9.5px; color: #99a1ab;
+    background: rgba(255,255,255,0.07); padding: 1px 6px; border-radius: 999px;
+  }
+  .toast.b .bodywrap { padding: 8px 11px 10px; }
+
+  /* Option C — one-line ticker */
+  .toast.c {
+    border-radius: 999px; padding: 6px 13px 6px 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .toast.c .dot { width: 5px; height: 5px; border-radius: 3px; flex: none; }
+  .toast.c .dot.warn { background: #d9a24a; }
+  .toast.c .dot.bad  { background: #d1685c; }
+  .toast.c .txt { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .opt-label {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-faint);
+    margin: 0 0 6px; padding-top: 6px;
+  }
+  .opt-label b { color: var(--ink); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header class="hero">
+  <div class="eyebrow">Design note · TmuxGUI · 2026-07-29</div>
+  <h1>Noticing that nothing happened</h1>
+  <p class="lede">Every failure this app had today was silent. It sent the command, drew the old picture, and waited — and only a person staring at it could tell. This adds the missing half: the app checks that what it asked for actually happened.</p>
+</header>
+
+<div class="meta-row">
+  <span><b>Adds</b><code>TmuxGUI/Diagnostics/</code>, <code>TmuxGUI/UI/Notifications/</code></span>
+  <span><b>After</b><code>359fa0b</code></span>
+  <span><b>Status</b><span class="pill neutral">DESIGN</span></span>
+</div>
+
+<h2>1 · Why</h2>
+
+<p>Three separate faults surfaced on 2026-07-29. Every one of them presented to the user as “the app is broken” and took hours to name, because none of them said anything:</p>
+
+<ul>
+  <li>A hook-produced reply block stole another command’s completion, so <code>list-windows</code> returned early on an empty parse — <b>a silent <code>return</code></b> — and the window list froze on a pane tmux had already left.</li>
+  <li><code>focusPane</code> then re-sent <code>select-pane</code> for a pane tmux had already selected. tmux answers a no-op with silence, so the mirror was never corrected and the keyboard was pulled back to the stale pane after every click.</li>
+  <li>An unrelated tool pulled application activation away on every <code>select-pane</code>. The app was healthy: rendering, tracking the mouse, main thread idle. It simply was not the active application, and nothing recorded that.</li>
+</ul>
+
+<div class="callout">
+  <span class="label">The point</span>
+  <p>The user should not have to describe a symptom, and the agent should not have to guess what the description meant. <b>The app knows what it asked for. It should notice when it does not get it.</b></p>
+</div>
+
+<h2>2 · Two layers that do not know about each other</h2>
+
+<p>Notification is a <em>presentation</em> concern the app will want for many things. Diagnostics is a <em>detection</em> concern. Keeping them apart is what lets either one grow without touching the other, and lets diagnostics be tested with no window on screen.</p>
+
+<div class="figure">
+<svg viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg" aria-label="Two layers and the taps between them">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5a5751"/>
+    </marker>
+    <marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97757"/>
+    </marker>
+  </defs>
+
+  <!-- existing app -->
+  <rect x="14" y="26" width="228" height="248" rx="10" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="28" y="48" class="label-mono" style="fill:#8a857c">EXISTING — unchanged</text>
+  <rect x="30" y="62" width="196" height="34" rx="6" fill="#fff" stroke="#e6e2d4"/>
+  <text x="42" y="84" style="font-size:12px">TmuxLog.command()</text>
+  <rect x="30" y="106" width="196" height="34" rx="6" fill="#fff" stroke="#e6e2d4"/>
+  <text x="42" y="128" style="font-size:12px">%begin / %end handler</text>
+  <rect x="30" y="150" width="196" height="34" rx="6" fill="#fff" stroke="#e6e2d4"/>
+  <text x="42" y="172" style="font-size:12px">notifyModelChanged()</text>
+  <rect x="30" y="194" width="196" height="34" rx="6" fill="#fff" stroke="#e6e2d4"/>
+  <text x="42" y="216" style="font-size:12px">AppKit notifications</text>
+  <text x="30" y="252" class="label-faint" style="font-size:11px">three one-line taps + one</text>
+  <text x="30" y="266" class="label-faint" style="font-size:11px">self-subscribe</text>
+
+  <!-- diagnostics -->
+  <rect x="292" y="26" width="222" height="248" rx="10" fill="#fff" stroke="#d97757" stroke-width="1.5"/>
+  <text x="306" y="48" class="label-mono" style="fill:#d97757">Diagnostics/</text>
+  <rect x="308" y="62" width="190" height="30" rx="6" fill="#f4e2d6" stroke="#eccdb9"/>
+  <text x="320" y="82" style="font-size:12px">CommandExpectations</text>
+  <rect x="308" y="100" width="190" height="30" rx="6" fill="#f4e2d6" stroke="#eccdb9"/>
+  <text x="320" y="120" style="font-size:12px">ReplyTimeoutProbe</text>
+  <rect x="308" y="138" width="190" height="30" rx="6" fill="#f4e2d6" stroke="#eccdb9"/>
+  <text x="320" y="158" style="font-size:12px">ActivationProbe</text>
+  <rect x="308" y="176" width="190" height="30" rx="6" fill="#faf9f5" stroke="#e6e2d4" stroke-dasharray="4 3"/>
+  <text x="320" y="196" class="label-faint" style="font-size:12px">…the next one</text>
+  <text x="308" y="230" class="label-mono" style="font-size:11px">one file + one line</text>
+  <text x="308" y="246" class="label-mono" style="font-size:11px">to register</text>
+
+  <!-- sinks -->
+  <rect x="564" y="26" width="222" height="106" rx="10" fill="#fff" stroke="#e6e2d4"/>
+  <text x="578" y="48" class="label-mono" style="fill:#8a857c">SINKS</text>
+  <rect x="580" y="60" width="190" height="26" rx="6" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="592" y="78" style="font-size:11.5px">anomalies.log + snapshot</text>
+  <rect x="580" y="94" width="190" height="26" rx="6" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="592" y="112" style="font-size:11.5px">Notifications/ (toast)</text>
+
+  <rect x="564" y="164" width="222" height="110" rx="10" fill="#fff" stroke="#e6e2d4"/>
+  <text x="578" y="186" class="label-mono" style="fill:#8a857c">OTHER PRODUCERS</text>
+  <text x="578" y="210" style="font-size:11.5px">“tmux paused a pane”</text>
+  <text x="578" y="230" style="font-size:11.5px">“another client took the size”</text>
+  <text x="578" y="250" style="font-size:11.5px">“window list refresh failed”</text>
+  <text x="578" y="266" class="label-faint" style="font-size:11px">already exist, currently invisible</text>
+
+  <line x1="242" y1="150" x2="284" y2="150" stroke="#d97757" stroke-width="1.5" marker-end="url(#arrA)"/>
+  <line x1="514" y1="96" x2="556" y2="82" stroke="#5a5751" marker-end="url(#arr)"/>
+  <line x1="514" y1="120" x2="556" y2="106" stroke="#5a5751" marker-end="url(#arr)"/>
+  <path d="M675,164 L675,140" stroke="#5a5751" stroke-dasharray="4 3" marker-end="url(#arr)"/>
+</svg>
+<div class="caption"><b>Figure 1.</b> The orange boundary is all the new code. The app pushes four kinds of fact across it and is told nothing back — diagnostics has no way to change behaviour, which is what makes it safe to leave on.</div>
+</div>
+
+<h2>3 · Expectations are derived, not registered</h2>
+
+<p>The obvious design has each UI action register what it expects. That is exactly the intrusion to avoid: every new action would have to remember to do it, and the memory would rot.</p>
+
+<p><code>TmuxLog.command()</code> is already <b>the single gate every command passes through</b> — its own documentation says so, and lists the three exceptions. So diagnostics reads the command text and derives the expectation itself. No call site changes; a new pane action gets covered for free.</p>
+
+<table>
+  <thead><tr><th>Command seen going out</th><th>Expectation</th><th>Deadline</th></tr></thead>
+  <tbody>
+    <tr><td><code>select-window -t @9</code></td><td>active window becomes <code>@9</code></td><td>300 ms</td></tr>
+    <tr><td><code>select-pane -t %606</code></td><td>active pane becomes <code>%606</code></td><td>300 ms</td></tr>
+    <tr><td><code>split-window -t %584</code></td><td>that window’s pane count rises</td><td>1500 ms</td></tr>
+    <tr><td><code>kill-pane -t %x</code></td><td><code>%x</code> leaves the pane set</td><td>1500 ms</td></tr>
+    <tr><td><code>resize-pane -Z -t %x</code></td><td>the zoom flag flips</td><td>300 ms</td></tr>
+    <tr><td><code>resize-pane -x/-y</code></td><td>the layout string changes</td><td>1500 ms</td></tr>
+    <tr><td><code>new-window</code>, <code>kill-window</code></td><td>the window list changes</td><td>1500 ms</td></tr>
+    <tr><td>anything else</td><td>a reply block arrives at all</td><td>5000 ms</td></tr>
+  </tbody>
+</table>
+
+<p>Expectations are checked whenever the model changes and swept by a timer. The last row is the important one: it is the detector that would have caught the deaf-channel state — 847 commands sent, zero replies — in five seconds rather than in an hour.</p>
+
+<h2>4 · Record early, alert late</h2>
+
+<p>300 ms is the sensitivity the user asked for and it is right for the <em>log</em>: a false positive there costs nothing and the agent reading it can tell a slow round trip from a real stall. It is the wrong number for a <em>toast</em>, because a toast that cries wolf gets ignored, and an ignored mechanism is worse than none.</p>
+
+<div class="figure">
+<svg viewBox="0 0 800 172" xmlns="http://www.w3.org/2000/svg" aria-label="Two-tier timing for an unmet expectation">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5a5751"/>
+    </marker>
+  </defs>
+  <line x1="60" y1="70" x2="760" y2="70" stroke="#e6e2d4" stroke-width="2"/>
+
+  <circle cx="60" cy="70" r="5" fill="#1f1e1c"/>
+  <text x="60" y="52" text-anchor="middle" class="label-mono">t=0</text>
+  <text x="60" y="98" text-anchor="middle" style="font-size:11.5px">command out</text>
+
+  <line x1="270" y1="46" x2="270" y2="94" stroke="#b6711c" stroke-width="1.5"/>
+  <circle cx="270" cy="70" r="5" fill="#b6711c"/>
+  <text x="270" y="36" text-anchor="middle" class="label-mono" style="fill:#b6711c">300 ms</text>
+  <text x="270" y="112" text-anchor="middle" style="font-size:11.5px">write to anomalies.log</text>
+  <text x="270" y="128" text-anchor="middle" class="label-faint" style="font-size:11px">+ snapshot · screen unchanged</text>
+
+  <line x1="560" y1="46" x2="560" y2="94" stroke="#b14338" stroke-width="1.5"/>
+  <circle cx="560" cy="70" r="5" fill="#b14338"/>
+  <text x="560" y="36" text-anchor="middle" class="label-mono" style="fill:#b14338">1500 ms</text>
+  <text x="560" y="112" text-anchor="middle" style="font-size:11.5px">still unmet → toast</text>
+  <text x="560" y="128" text-anchor="middle" class="label-faint" style="font-size:11px">the user is told</text>
+
+  <path d="M60,70 C150,20 190,20 268,58" stroke="#4f8a5c" fill="none" stroke-dasharray="4 3" marker-end="url(#arr2)"/>
+  <text x="150" y="26" class="label-soft" style="font-size:11.5px">satisfied here → nothing happens at all</text>
+</svg>
+<div class="caption"><b>Figure 2.</b> One expectation, two thresholds. The log keeps the sensitivity; the screen keeps the signal-to-noise. An expectation met before 300 ms leaves no trace anywhere.</div>
+</div>
+
+<h2>5 · The toast — three options to pick from</h2>
+
+<p>Top-right, sliding in, stacking downward, auto-dismissing. All three below are drawn at real size against a dark translucent backdrop so the glass reads honestly. They differ in how much they say before you interact.</p>
+
+<p class="opt-label"><b>Option A — rail-consistent.</b> Reuses the sidebar row vocabulary exactly: 6 pt radius, 12 pt semibold title, 10.5 pt secondary line, severity as a 2 pt edge.</p>
+<div class="stage">
+  <div class="toast-stack">
+    <div class="toast a">
+      <div class="edge warn"></div>
+      <div>
+        <div class="t-title">Window did not switch</div>
+        <div class="t-body">Asked tmux for window 8 · dotfiles. No confirmation after 1.5 s.</div>
+      </div>
+    </div>
+    <div class="toast a">
+      <div class="edge bad"></div>
+      <div>
+        <div class="t-title">tmux stopped answering</div>
+        <div class="t-body">Session dev · 41 commands sent, no reply for 6 s.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="opt-label"><b>Option B — banded, with grouping.</b> A header rule separates title from detail, and repeats collapse into a count instead of stacking. Roomier; carries a timestamp.</p>
+<div class="stage tall">
+  <div class="toast-stack">
+    <div class="toast b">
+      <div class="head">
+        <span class="dot warn"></span>
+        <span class="t-title">Window did not switch</span>
+        <span class="count">×3</span>
+      </div>
+      <div class="bodywrap">
+        <div class="t-body">Asked tmux for window 8 · dotfiles. No confirmation after 1.5 s.</div>
+        <div class="t-meta" style="margin-top:6px">21:58:04 · session dev</div>
+      </div>
+    </div>
+    <div class="toast b">
+      <div class="head">
+        <span class="dot bad"></span>
+        <span class="t-title">tmux stopped answering</span>
+      </div>
+      <div class="bodywrap">
+        <div class="t-body">41 commands sent, no reply for 6 s.</div>
+        <div class="t-meta" style="margin-top:6px">21:58:11 · session dev</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="opt-label"><b>Option C — one-line ticker.</b> The least the app can say and still be honest. Detail only on click. Cheapest to ignore, which cuts both ways.</p>
+<div class="stage">
+  <div class="toast-stack">
+    <div class="toast c"><span class="dot warn"></span><span class="txt">Window did not switch — window 8</span></div>
+    <div class="toast c"><span class="dot bad"></span><span class="txt">tmux stopped answering — session dev</span></div>
+  </div>
+</div>
+
+<div class="callout">
+  <span class="label">Recommendation</span>
+  <p><b>Option A.</b> It is the only one that adds no new visual vocabulary — the radius, the type sizes and the accent edge are already on screen in every sidebar row, so a toast reads as part of the app rather than as a system alert wearing its clothes. B’s grouping is worth stealing later if repeats turn out to be common; C hides the one thing worth reading.</p>
+</div>
+
+<h2>6 · What gets written</h2>
+
+<p>Two sinks, because they answer different questions. The line is for “did this ever happen”; the snapshot is for “why”.</p>
+
+<pre><code><span class="tok-comment">// ~/Library/Logs/TmuxGUI/anomalies.log — one line, greppable</span>
+[2026-07-29 21:58:04.311] [EXPECT] [dev] select-window -t @13 unmet after 312ms
+    (active window still @9) snapshot=21-58-04-311-expect-window.json
+
+<span class="tok-comment">// ~/Library/Logs/TmuxGUI/anomalies/&lt;stamp&gt;-&lt;kind&gt;.json — the scene</span>
+{
+  <span class="tok-string">"tmuxTruth"</span>:   { <span class="tok-comment">/* list-windows / list-panes, asked at this instant */</span> },
+  <span class="tok-string">"appModel"</span>:    { <span class="tok-comment">/* what the app believed */</span> },
+  <span class="tok-string">"recent"</span>:      [ <span class="tok-comment">/* last 200 commands and reply blocks */</span> ],
+  <span class="tok-string">"activation"</span>:  [ <span class="tok-comment">/* key-window and first-responder transitions */</span> ]
+}</code></pre>
+
+<p>Snapshots are capped at the most recent 20 and pruned on launch. Every anomaly also goes to <code>tmux-commands.log</code> so one file still holds the whole timeline.</p>
+
+<div class="callout">
+  <span class="label">Learned today, at a cost of about an hour</span>
+  <p>The <code>activation</code> array exists because on 2026-07-29 the app looked frozen — no typing, no clicks, no window switching — and was in perfect health. It had merely stopped being the active application, and <b>nothing in the app recorded that it ever had been</b>. One line of transition history would have answered it immediately.</p>
+</div>
+
+<h2>7 · What is deliberately not in scope</h2>
+
+<table>
+  <thead><tr><th>Not doing</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Auto-recovery — re-sending a command that went unconfirmed</td><td>Re-sending is exactly what locked the state today. Measure the real rate first; decide what to repair second.</td></tr>
+    <tr><td>A <code>select-pane</code> dedupe</td><td>The reason it mattered (an external tool stealing focus on every hook) is being removed. A redundant no-op costs one round trip.</td></tr>
+    <tr><td>Anything about the mouse-report volume</td><td>Today’s numbers are contaminated by a resize war an external tool amplified. Re-measure on a clean machine before tuning a filter.</td></tr>
+    <tr><td>The window-size war itself</td><td>Real, unwinnable by the current back-off, and a product decision rather than a bug. Separate note.</td></tr>
+  </tbody>
+</table>
+
+<h2>8 · Failure modes</h2>
+
+<table>
+  <thead><tr><th>If this is removed or wrong</th><th>What breaks</th></tr></thead>
+  <tbody>
+    <tr><td>Diagnostics can change app behaviour</td><td>The observer becomes a participant, and a false positive turns into a real fault. It must be write-only into logs and the toast.</td></tr>
+    <tr><td>Expectations registered at call sites instead of derived</td><td>Rots on the first new action nobody remembers to annotate — the failure this design exists to avoid.</td></tr>
+    <tr><td>One threshold instead of two</td><td>At 300 ms the toast fires on slow round trips and gets ignored; at 1500 ms the log loses the sensitivity that makes it worth reading.</td></tr>
+    <tr><td>Snapshots unbounded</td><td>An anomaly storm fills the boot volume — the thing that reports a problem must not become one.</td></tr>
+    <tr><td>No “reply block never arrived” probe</td><td>The deaf-channel state stays invisible; it is the one failure where every other detector also goes quiet.</td></tr>
+  </tbody>
+</table>
+
+<div class="footer">
+  <span>2026-07-29 · design note</span>
+  <span>after 359fa0b · TmuxGUI</span>
+</div>
+
+</div>
+</body>
+</html>

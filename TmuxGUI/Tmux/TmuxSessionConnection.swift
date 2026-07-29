@@ -54,6 +54,9 @@ final class TmuxSessionConnection {
 
     private func notifyModelChanged() {
         for observer in modelObservers { observer() }
+        // The diagnostics tap: the mirror just moved, so expectations checked
+        // against it can be answered now rather than at the next sweep.
+        DiagnosticsCenter.shared.modelChanged(self)
     }
     var onStatusChange: ((String) -> Void)?
     var onExit: ((String?) -> Void)?
@@ -110,6 +113,9 @@ final class TmuxSessionConnection {
         client.onExit = { [weak self] reason in
             self?.onExit?(reason)
         }
+        // Held weakly there, so registration does not extend this object's
+        // life — see `DiagnosticsCenter`.
+        DiagnosticsCenter.shared.register(self)
     }
 
     // MARK: - Lifecycle
@@ -1215,6 +1221,15 @@ final class TmuxSessionConnection {
 
         case .paused(let pane):
             onStatusChange?("⚠️ tmux paused pane \(pane) — output backed up")
+            // The first non-diagnostic producer: this used to be a status-bar
+            // string nobody saw. Same fact, now somewhere a person looks.
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .warning,
+                title: "tmux paused a pane",
+                body: "Pane \(pane) in \(sessionName) is producing output faster"
+                    + " than it can be read; tmux paused it.",
+                session: sessionName
+            ))
 
         default:
             break
@@ -1407,6 +1422,68 @@ extension TmuxSessionConnection {
     }
 
 #endif
+
+// MARK: - Diagnostics truth
+
+extension TmuxSessionConnection {
+    /// The ground-truth half of a diagnostics snapshot: what tmux itself says
+    /// about this session's windows and panes, right now, through the same
+    /// channel the anomaly is about.
+    ///
+    /// Read-only by construction — two `list-*` queries and nothing else —
+    /// which is what keeps `DiagnosticsCenter` inside its write-only contract
+    /// while still letting a snapshot compare mirror against reality. Lives in
+    /// this file because `client` is private, and widening `client`'s access
+    /// for a probe would hand diagnostics the one thing it must never have: a
+    /// way to send arbitrary commands.
+    ///
+    /// The timeout is the interesting half. On a deaf channel these queries
+    /// never answer, and the snapshot then records that the truth query itself
+    /// went unanswered — for that anomaly, the most incriminating fact a
+    /// snapshot can hold.
+    func diagnosticsTruth(timeout: TimeInterval, completion: @escaping ([String: Any]) -> Void) {
+        var truth = [String: Any]()
+        var remaining = 2
+        var delivered = false
+
+        // Everything below runs on the main queue: `client.run` calls back
+        // there and the deadline is scheduled there, so plain captured vars
+        // are enough.
+        let deadline = DispatchWorkItem {
+            guard !delivered else { return }
+            delivered = true
+            truth["unanswered"] = "truth queries got no reply within \(timeout)s"
+                + " — the channel itself is not answering"
+            completion(truth)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: deadline)
+        let deliverIfReady = {
+            guard remaining == 0, !delivered else { return }
+            delivered = true
+            deadline.cancel()
+            completion(truth)
+        }
+
+        client.run(
+            "list-windows -t \(sessionTarget) -F '#{window_id} #{window_index}"
+                + " #{window_name} active=#{window_active} panes=#{window_panes}"
+                + " layout=#{window_layout} visible=#{window_visible_layout}'"
+        ) { lines, failed in
+            truth["windows"] = failed ? ["<query failed>"] : lines
+            remaining -= 1
+            deliverIfReady()
+        }
+        client.run(
+            "list-panes -s -t \(sessionTarget) -F '#{window_id} #{pane_id}"
+                + " active=#{pane_active} #{pane_width}x#{pane_height}"
+                + " cmd=#{pane_current_command}'"
+        ) { lines, failed in
+            truth["panes"] = failed ? ["<query failed>"] : lines
+            remaining -= 1
+            deliverIfReady()
+        }
+    }
+}
 
 // MARK: - Quoting
 

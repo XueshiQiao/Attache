@@ -358,7 +358,7 @@ final class TmuxControlClient {
             openBlockNumber = number
             stateLock.unlock()
 
-        case .end(_, let failed, let isCommandReply):
+        case .end(let number, let failed, let isCommandReply):
             stateLock.lock()
             let lines = replyLines ?? []
             replyLines = nil
@@ -402,6 +402,13 @@ final class TmuxControlClient {
             if let completion {
                 callbackQueue.async { completion(lines, failed) }
             }
+            // The diagnostics tap: any block, ours or not, proves the channel
+            // still carries bytes in this direction — which is the whole
+            // deaf-channel detector.
+            DiagnosticsCenter.shared.replyBlockEnded(
+                session: sessionLabel, number: number,
+                isCommandReply: isCommandReply, failed: failed, lines: lines.count
+            )
 
         case .sessionChanged:
             flushHandshakeQueue()

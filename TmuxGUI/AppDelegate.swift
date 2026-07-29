@@ -21,6 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppSettings.applyAppearanceOverride()
         ChromeTheme.reload()
 
+        // Diagnostics is wired before the first connection exists, so the
+        // first command of the first attach is already covered. The sink is
+        // the one place detection meets presentation — everything else about
+        // the two layers is kept apart on purpose.
+        DiagnosticsCenter.shared.noticeSink = { notice in
+            MainActor.assumeIsolated { NoticeCenter.shared.post(notice) }
+        }
+        ActivationProbe.shared.start()
+
         installMenu()
 
         guard let tmuxPath = TmuxControlClient.locateTmux() else {
