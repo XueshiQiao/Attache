@@ -176,6 +176,23 @@ swiftc -O -o /tmp/screenreplaycheck TmuxGUI/Tmux/TmuxPaneSnapshot.swift \
 What it cannot tell you is what libghostty then *does* with those bytes. That
 needs the running app and someone looking at it.
 
+**`TmuxRenameString` has one, and its important half is the list of streams it
+must *not* touch.** It decides what never reaches a pane's surface — the same
+power `TerminalReply` has over keystrokes, and the same way to fail. A sequence
+that leaks is cosmetic; a byte of real output that gets eaten is silent and
+unrecoverable. Run it after touching `TmuxRenameString.swift`, and put the
+stream in `passthrough` before touching anything:
+
+```sh
+swiftc -O -o /tmp/renamestringcheck TmuxGUI/Tmux/TmuxRenameString.swift \
+  Tools/RenameStringCheck/main.swift
+/tmp/renamestringcheck
+```
+
+It splits every case at every byte boundary and again one byte per chunk,
+because tmux cuts `%output` wherever its own buffer ends — including between the
+`ESC` and the `k`.
+
 **Screenshots need an awake display, and there is no way to wake one from
 here.** `screencapture` answers `could not create image from display` and the
 inspector's `/shot` composites the window to plain white — both of which read
@@ -353,6 +370,26 @@ one of them presents as "the code is obviously correct and yet".
   prompt. `TerminalReply` filters them out on the bytes. It cannot be done on
   provenance: a keystroke's write callback arrives asynchronously on the same
   queue as a mouse report, so the call stack carries nothing to key off.
+- **`%output` is written for a terminal we are not.** tmux's wiki says it is
+  "exactly what the application running in the pane sent to tmux", carrying
+  escape sequences "as expected by tmux (so for `TERM=screen` or `TERM=tmux`)" —
+  the pane's raw bytes, before tmux's own parser. libghostty emulates xterm. Line
+  up the two escape tables and the *string*-introducing finals are `P X ] ^ _ k`
+  for tmux against `P X ] ^ _` for Ghostty, so the gap is exactly `ESC k`,
+  screen's window-rename string. Ghostty logs it as an unimplemented action,
+  drops it, returns to ground, and draws the title behind it as ordinary text.
+  With `TERM=tmux-256color` oh-my-zsh sends one before every command and one
+  before every prompt, so every command's output arrived with the command name
+  glued to its front and the working directory on the line beneath — which reads
+  as `echo` being broken, not as a terminal gap. `TmuxRenameString` removes it.
+  Three of its rules had to be measured, because the sequence does not behave
+  like it looks: **BEL does not terminate it**, **any `ESC` does and is then
+  reprocessed as a fresh sequence** (so there is no terminator to match, and the
+  trailing `ESC \` is passed through as a bare ST that Ghostty no-ops), and **an
+  unterminated one expires after five seconds** — without that last one a stray
+  `ESC k` in front of a plain-text file eats the whole file, because plain text
+  holds no escape byte to get out on. Verified on tmux 3.6a; the table diff is
+  read from Ghostty's source at the pinned commit.
 - **`TMUX_TMPDIR` without `-L` is ignored, silently.** It reads as isolation and
   is not. On 2026-07-26 an agent set it, believed it had a private server, ran
   cleanup without `-L`, and destroyed the user's tmux server and every agent

@@ -71,6 +71,12 @@ final class TmuxSessionConnection {
     private let client: TmuxControlClient
     private var lastReportedGrid: (columns: Int, rows: Int)?
 
+    /// Unlocked on purpose. Every `%output` arrives on the one serial queue
+    /// `FileHandle.readabilityHandler` uses, so this is only ever touched from
+    /// there — and the point of the whole path is that it does not wait on
+    /// anything.
+    private var renameStrings = TmuxRenameString()
+
     /// Pane whose arrival gaps the metrics track. Normally the focused pane;
     /// the throughput probe points it at a synthetic heartbeat instead.
     private var measuredPane: String?
@@ -89,8 +95,14 @@ final class TmuxSessionConnection {
             self.measuredPaneLock.lock()
             let measured = self.measuredPane
             self.measuredPaneLock.unlock()
+            // Measured on what tmux sent, filtered on what Ghostty is shown:
+            // the throughput number should stay comparable to tmux's own.
             self.metrics.record(pane: pane, watched: pane == measured, byteCount: data.count)
-            self.router.deliver(paneID: pane, data: data)
+            // Delivered even when the filter emptied it. `deliveryCounts` means
+            // "tmux sent a chunk for this pane", which is still true, and the
+            // repaint pass reads it — changing what it counts is a different
+            // question from what the pane draws.
+            self.router.deliver(paneID: pane, data: self.renameStrings.strip(paneID: pane, from: data))
         }
         client.onNotification = { [weak self] notification in
             self?.handle(notification)
