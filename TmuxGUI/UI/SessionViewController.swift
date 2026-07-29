@@ -819,6 +819,9 @@ final class SessionViewController: NSViewController {
         surface.view.onDropText = { [weak self] text in
             self?.handleDrop(text: text, into: paneID) ?? false
         }
+        surface.view.onContextMenu = { [weak self] in
+            self?.paneContextMenu(for: paneID)
+        }
         surfaces[paneID] = surface
 
         primeSurface(paneID)
@@ -968,6 +971,202 @@ final class SessionViewController: NSViewController {
     private func focusPane(_ paneID: String) {
         guard connection.activeWindow?.activePaneID != paneID else { return }
         connection.focus(paneID: paneID)
+    }
+
+    // MARK: - Pane commands
+
+    /// Where a split puts the new pane.
+    ///
+    /// Named after the result rather than after the divider, because the other
+    /// two names for this are actively misleading: tmux calls "beside" `-h` and
+    /// iTerm calls the very same arrangement "Split Vertically". Nothing in the
+    /// UI has to know which of those is meant.
+    enum PaneSplit {
+        case right
+        case down
+    }
+
+    func splitPane(_ paneID: String, _ direction: PaneSplit) {
+        connection.splitPane(id: paneID, horizontally: direction == .right)
+    }
+
+    func toggleZoom(_ paneID: String) {
+        connection.toggleZoom(paneID: paneID)
+    }
+
+    /// The pane menu items driven from the menu bar, which have no pointer to
+    /// take a pane from and use the one the keyboard is in.
+    ///
+    /// Each answers whether it found a pane, so `AppDelegate` can tell "there
+    /// was nothing to do" from "done" — the same contract `pasteIntoFocusedPane`
+    /// has, and for the same reason: with the settings window in front there is
+    /// no pane and the shortcut must not silently address the last one.
+    func splitFocusedPane(_ direction: PaneSplit) -> Bool {
+        guard let paneID = paneWithKeyboard else { return false }
+        splitPane(paneID, direction)
+        return true
+    }
+
+    func toggleZoomOnFocusedPane() -> Bool {
+        guard let paneID = paneWithKeyboard else { return false }
+        toggleZoom(paneID)
+        return true
+    }
+
+    func confirmKillFocusedPane() -> Bool {
+        guard let paneID = paneWithKeyboard else { return false }
+        confirmKillPane(paneID)
+        return true
+    }
+
+    /// Ending one pane, on the same terms as ending a window.
+    ///
+    /// Separate wording from hiding and a confirmation first, because there is
+    /// no undo and a pane is exactly as likely to hold an agent mid-run as a
+    /// window is. The extra sentence when this is the window's last pane is not
+    /// decoration: tmux closes a window whose last pane is killed, so the same
+    /// menu item means "close one pane" most of the time and "close the whole
+    /// window" the rest of it, and the dialog is the only place that difference
+    /// can be stated before it happens.
+    func confirmKillPane(_ paneID: String) {
+        let window = connection.activeWindow
+        let isLastPane = (window?.paneIDs.count ?? 0) <= 1
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = isLastPane
+            ? "Kill the last pane of window \(window.map { "\($0.index):\($0.name)" } ?? "")?"
+            : "Kill pane \(paneID)?"
+        alert.informativeText = isLastPane
+            ? "It is the only pane left, so tmux closes the window with it."
+                + "\nEvery process in it ends, including any AI agent mid-run."
+            : "Every process in the pane ends, including any AI agent mid-run."
+        alert.addButton(withTitle: "Kill")
+        alert.addButton(withTitle: "Cancel")
+
+        // Logged before it is shown and on both outcomes, for the reason spelled
+        // out at `confirmKillWindow`: if work disappears, the log is the only
+        // record of whether a human was ever asked.
+        TmuxLog.destructive(
+            "kill confirmation shown for pane \(paneID)\(isLastPane ? " (last pane — takes the window)" : "")",
+            session: connection.sessionName
+        )
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            TmuxLog.lifecycle("pane kill cancelled for \(paneID)", session: connection.sessionName)
+            return
+        }
+        TmuxLog.destructive(
+            "pane kill CONFIRMED for \(paneID) — every process in it ends",
+            session: connection.sessionName
+        )
+        connection.killPane(id: paneID)
+    }
+
+    // MARK: - Pane context menu
+
+    /// The right-click menu for one pane.
+    ///
+    /// Built fresh on every click rather than kept, because two of its items
+    /// depend on what tmux says right now — whether the window has more than one
+    /// pane, and whether one of them is zoomed — and a menu cached at surface
+    /// creation would still be answering for the window as it was then.
+    ///
+    /// Every item names its pane by id in the closure that builds it, so the
+    /// menu acts on the pane the pointer was over even if focus has moved on by
+    /// the time an item is chosen.
+    private func paneContextMenu(for paneID: String) -> NSMenu {
+        let menu = NSMenu()
+        // Off, or AppKit decides what is enabled by asking each item's target
+        // whether it responds to the selector — which every one of these does,
+        // so the answer is always yes and `isEnabled` set below is overwritten
+        // before the menu is drawn. Zoom on a one-pane window looked available
+        // and did nothing.
+        menu.autoenablesItems = false
+        let window = connection.activeWindow
+        let paneCount = window?.paneIDs.count ?? 1
+        // The two layouts differ exactly while a pane is zoomed — the same
+        // derivation `DebugInspector` uses. There is no zoom flag to read.
+        let isZoomed = window.map { $0.visibleLayoutText != $0.savedLayoutText } ?? false
+
+        menu.addItem(paneItem("Split Right", key: "d", flags: [.command]) { [weak self] in
+            self?.splitPane(paneID, .right)
+        })
+        // Uppercase "D" for the shifted one — see the Pane menu in `AppDelegate`
+        // for why. Only the drawing of it matters here, but a context menu that
+        // advertises a different shortcut from the one that works is worse than
+        // one that advertises none.
+        menu.addItem(paneItem("Split Down", key: "D", flags: [.command, .shift]) { [weak self] in
+            self?.splitPane(paneID, .down)
+        })
+
+        menu.addItem(.separator())
+
+        let zoom = paneItem(
+            isZoomed ? "Unzoom Pane" : "Zoom Pane", key: "\r", flags: [.command]
+        ) { [weak self] in
+            self?.toggleZoom(paneID)
+        }
+        // tmux ignores `-Z` on a one-pane window rather than erroring, so an
+        // enabled item there would be a menu entry that does nothing.
+        zoom.isEnabled = paneCount > 1
+        menu.addItem(zoom)
+
+        menu.addItem(.separator())
+
+        // Copy is offered whether or not anything is selected: libghostty's
+        // selection state is internal to that module, so this side cannot ask,
+        // and `copySelectedTextToPasteboard` already answers "nothing selected"
+        // by doing nothing.
+        //
+        // Called on the surface rather than sent as `copy:`, which is the
+        // obvious form and drew a clipboard icon beside this one item — AppKit
+        // decorates the standard edit selectors — indenting Copy and Paste away
+        // from every other title in the menu.
+        menu.addItem(paneItem("Copy", key: "c", flags: [.command]) { [weak self] in
+            self?.surfaces[paneID]?.view.copySelectedTextToPasteboard()
+        })
+
+        menu.addItem(paneItem("Paste", key: "v", flags: [.command]) { [weak self] in
+            _ = self?.pastePasteboard(into: paneID)
+        })
+
+        menu.addItem(.separator())
+
+        // Trailing ellipsis because it asks first, and the wording says kill
+        // rather than close: this is the item that ends processes.
+        menu.addItem(paneItem("Kill Pane…", key: "", flags: []) { [weak self] in
+            self?.confirmKillPane(paneID)
+        })
+
+        return menu
+    }
+
+    /// A menu item that runs a closure.
+    ///
+    /// `NSMenuItem` only takes a selector, so the closure is parked on a small
+    /// owned object the item retains. The alternative — one `@objc` method per
+    /// item reading the pane id back out of `representedObject` — puts the pane
+    /// id through a round trip that can be nil, for a menu whose whole point is
+    /// that it knows which pane it belongs to.
+    ///
+    /// The key equivalents are shown, not obeyed: a context menu's items are not
+    /// consulted for shortcuts. The real ⌘D and ⇧⌘D live in the Pane menu in
+    /// `AppDelegate`; these are here so the menu tells the user they exist.
+    private func paneItem(
+        _ title: String, key: String, flags: NSEvent.ModifierFlags, action: @escaping () -> Void
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(ClosureTarget.fire), keyEquivalent: key)
+        item.keyEquivalentModifierMask = flags
+        let target = ClosureTarget(action)
+        item.target = target
+        item.representedObject = target  // the item is the only owner
+        return item
+    }
+
+    private final class ClosureTarget: NSObject {
+        private let action: () -> Void
+        init(_ action: @escaping () -> Void) { self.action = action }
+        @objc func fire() { action() }
     }
 
     // MARK: - Teardown

@@ -181,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
 
+        mainMenu.addItem(makePaneMenuItem())
         mainMenu.addItem(makeWindowMenuItem())
         mainMenu.addItem(makeSessionMenuItem())
 
@@ -205,6 +206,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.target = self
         item.tag = tag
         menu.addItem(item)
+    }
+
+    /// The pane level, which is also a pane's right-click menu.
+    ///
+    /// Ordered smallest to largest beside Window and Session, matching the way
+    /// tmux nests them. It exists mainly so the splits have real key
+    /// equivalents: a context menu's items are drawn with their shortcuts but
+    /// never consulted for them, so without a menu-bar copy ⌘D would be a
+    /// promise the right-click menu makes and nothing keeps.
+    ///
+    /// The titles name where the new pane lands, not which way the divider
+    /// runs: tmux calls "beside" `-h` and iTerm calls the same arrangement
+    /// "Split Vertically", so either of those words would be wrong for half
+    /// the people reading it. See `SessionViewController.PaneSplit`.
+    ///
+    /// Kill Pane deliberately has no shortcut. ⌘W is Hide Current Window, and a
+    /// neighbouring key that ends processes with no undo is the kind of
+    /// adjacency that gets hit by accident.
+    private func makePaneMenuItem() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "Pane")
+        entry(menu, "Split Right", "d", [.command], #selector(splitRight))
+        // Uppercase, and it has to be. AppKit matches a key equivalent against
+        // the event's `charactersIgnoringModifiers`, which ignores every
+        // modifier *except* shift — so ⇧⌘D arrives as "D" and an item
+        // registered as "d" is never found. Measured 2026-07-29: with the
+        // lowercase form, ⇧⌘D reached neither the menu nor the log while ⌘D on
+        // the line above worked, so it read as the split being broken rather
+        // than as the shortcut never firing.
+        entry(menu, "Split Down", "D", [.command, .shift], #selector(splitDown))
+        menu.addItem(.separator())
+        entry(menu, "Zoom Pane", "\r", [.command], #selector(toggleZoomPane))
+        menu.addItem(.separator())
+        entry(menu, "Kill Pane…", "", [], #selector(killPane))
+        item.submenu = menu
+        return item
     }
 
     /// Native shortcuts for the window level, which lives in the rail.
@@ -282,6 +319,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func undoInPaneOrResponder(_ sender: Any?) {
         if main?.currentSession?.sendUndoToFocusedPane() == true { return }
         NSApp.sendAction(Selector(("undo:")), to: nil, from: sender)
+    }
+
+    // The pane these act on is the one the keyboard is in, not the one the app
+    // last drew a focus ring on — see `SessionViewController.paneWithKeyboard`.
+    // Each returns false when there is no pane at all, which is what happens
+    // with the settings window in front, and the shortcut then does nothing
+    // rather than addressing whichever pane was last touched.
+    @objc private func splitRight() {
+        _ = main?.currentSession?.splitFocusedPane(.right)
+    }
+
+    @objc private func splitDown() {
+        _ = main?.currentSession?.splitFocusedPane(.down)
+    }
+
+    @objc private func toggleZoomPane() {
+        _ = main?.currentSession?.toggleZoomOnFocusedPane()
+    }
+
+    @objc private func killPane() {
+        _ = main?.currentSession?.confirmKillFocusedPane()
     }
 
     @objc private func newWindow() { main?.currentSession?.newWindow() }

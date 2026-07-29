@@ -30,6 +30,11 @@ final class TmuxTerminalView: TerminalView {
     /// it. Set by whoever knows the pane id; the view deliberately does not.
     var onDropText: ((String) -> Bool)?
 
+    /// The menu a right-click in this pane should open, or nil to leave the
+    /// event to libghostty. Set by whoever knows the pane id; the view
+    /// deliberately does not, the same arrangement `onDropText` uses.
+    var onContextMenu: (() -> NSMenu?)?
+
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted { onBecameFirstResponder?() }
@@ -119,6 +124,72 @@ final class TmuxTerminalView: TerminalView {
     // through the `copy-on-select` key in the terminal configuration — see
     // `AppSettings.terminalConfiguration`. A copy made here as well is what made
     // the setting do the opposite of what it said.
+
+    // MARK: - Right-click
+
+    /// Whether the matching `rightMouseUp` belongs to a menu this view opened.
+    ///
+    /// Set on the way down and cleared at the start of the *next* press rather
+    /// than only on the way up, because `popUpContextMenu` runs its own event
+    /// loop and swallows the release — so the up half often never arrives and a
+    /// flag cleared only there would stay set and eat a later ⌥ right-click's
+    /// release instead.
+    private var openedOwnMenu = false
+
+    /// Right-click opens the app's menu; ⌥ right-click goes to libghostty.
+    ///
+    /// The ⌥ half is a road left open rather than one in use. libghostty's
+    /// `rightMouseDown` asks its surface to report a right-button press, and
+    /// `TerminalReply` would forward one — only bare pointer motion is withheld,
+    /// button presses are deliberate acts. Reading that, it looks as though a
+    /// program with mouse tracking on receives right-clicks today.
+    ///
+    /// **It does not.** Measured 2026-07-29 with htop running in a pane and the
+    /// surface's write callback logged: neither a right-click nor a plain left
+    /// click produced a single outbound byte. Nothing about mouse buttons
+    /// reaches a pane in this app at present, so the menu is not taking a
+    /// working mechanism away from anyone.
+    ///
+    /// ⌥ is kept anyway, at the cost of one condition. If pane mouse input is
+    /// ever wired up, the gesture that reaches it already exists and nothing
+    /// here has to be renegotiated; and a right-click a user wants delivered
+    /// rather than answered has somewhere to go.
+    ///
+    /// Focus is taken exactly as libghostty's own handler took it, so a
+    /// right-click moves the active pane the same way it did before this
+    /// existed. The menu itself does not need it — every item names its pane by
+    /// id — but changing what a right-click does to focus was not the ask.
+    override func rightMouseDown(with event: NSEvent) {
+        openedOwnMenu = false
+        guard !event.modifierFlags.contains(.option), let menu = onContextMenu?() else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        window?.makeFirstResponder(self)
+        openedOwnMenu = true
+        // `popUp(positioning:at:in:)` rather than `NSMenu.popUpContextMenu`,
+        // which is the obvious call and the wrong one here: it is the API that
+        // enriches a context menu with the system's own items, and this view
+        // conforms to `NSTextInputClient` for input-method support — so AppKit
+        // appended an **AutoFill** submenu to the pane menu, offering to type a
+        // saved password into a terminal. Observed, not guessed at.
+        menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+    }
+
+    /// Swallow the release that belongs to a menu this view opened.
+    ///
+    /// libghostty's `rightMouseUp` sends a mouse *release* report unconditionally.
+    /// Letting it run after a press this view kept would hand the program in the
+    /// pane a release with no matching press — which for a TUI tracking drags is
+    /// a button it thinks is still down being let go at a coordinate nothing
+    /// happened at.
+    override func rightMouseUp(with event: NSEvent) {
+        guard !openedOwnMenu else {
+            openedOwnMenu = false
+            return
+        }
+        super.rightMouseUp(with: event)
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command),

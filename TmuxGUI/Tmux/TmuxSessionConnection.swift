@@ -672,6 +672,46 @@ final class TmuxSessionConnection {
         client.send("kill-window -t \(id)")
     }
 
+    /// Split a pane in two. `-h` puts the new pane beside it, `-v` below it.
+    ///
+    /// tmux's own letters, which is why the menu items say "Horizontally" and
+    /// "Vertically" — and worth knowing that iTerm uses those two words for the
+    /// opposite pair of directions. Here `-h` is a *horizontal arrangement*:
+    /// two panes side by side, divided by a vertical line.
+    ///
+    /// `-c '#{pane_current_path}'` is what makes the new pane open in the
+    /// directory the user is already in, which is the whole point of splitting
+    /// rather than opening a window. It looks like interpolated text and is
+    /// not: tmux parses the command line first and expands the format
+    /// afterwards, inside `-c`'s value, so a path holding a quote or a space
+    /// cannot escape the argument. That is why this does not violate the rule
+    /// about only ever naming tmux objects by id.
+    ///
+    /// Nothing local is drawn or predicted. tmux answers with `%layout-change`
+    /// and `%window-pane-changed`, and the new pane's surface is built from
+    /// those — the same path a split typed into `tmux attach` takes.
+    func splitPane(id: String, horizontally: Bool) {
+        client.send("split-window \(horizontally ? "-h" : "-v") -t \(id) -c '#{pane_current_path}'")
+    }
+
+    /// End one pane. Everything running in it dies with it; the caller is
+    /// responsible for having asked first.
+    ///
+    /// Killing the last pane of a window kills the window, which is tmux's
+    /// behaviour and not something this app second-guesses.
+    func killPane(id: String) {
+        client.send("kill-pane -t \(id)")
+    }
+
+    /// Toggle this pane filling its window.
+    ///
+    /// `-Z` is a toggle in tmux, so there is no zoom state to keep here. What
+    /// zoom currently is gets read back off `window_visible_layout` differing
+    /// from `window_layout` — see `TmuxWindow`.
+    func toggleZoom(paneID: String) {
+        client.send("resize-pane -Z -t \(paneID)")
+    }
+
     func renameSession(to name: String) {
         client.send("rename-session -t \(sessionTarget) \(TmuxCommand.quote(name))")
     }
