@@ -135,6 +135,11 @@ final class TmuxControlClient {
         }
 
         process.terminationHandler = { [weak self] process in
+            // Cleared here rather than only in `stop()`, because a client that
+            // exits on its own — tmux killed the session, the server went away —
+            // never reaches `stop()`, and a dead pid left in the file is a pid a
+            // later sweep has to reason about for no reason.
+            TmuxChildRegistry.forget(childPID: process.processIdentifier)
             guard let self else { return }
             TmuxLog.lifecycle(
                 "control client exited — status \(process.terminationStatus)"
@@ -145,6 +150,12 @@ final class TmuxControlClient {
         }
 
         try process.run()
+        // Written down before anything else happens with it. An ordinary crash
+        // does collect these children, but one was found on 2026-07-30 that had
+        // outlived its parent by nine hours and had to be killed by pid — see
+        // `TmuxChildRegistry`, including the part where the mechanism is still
+        // unknown. This record is what lets a later run collect one anyway.
+        TmuxChildRegistry.record(childPID: process.processIdentifier, sessionID: sessionID)
         TmuxLog.lifecycle(
             "spawned \(tmuxPath) -C attach -t \(sessionID) (\(sessionLabel),"
                 + " pid \(process.processIdentifier))",

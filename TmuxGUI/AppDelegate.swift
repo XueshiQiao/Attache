@@ -30,6 +30,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         ActivationProbe.shared.start()
 
+        // Before any connection of our own exists, so a reclaimed pid can never
+        // be one this run just spawned. A previous run that died without
+        // tearing down leaves its control clients attached and unread, and tmux
+        // buffers for an attached client indefinitely — see
+        // `TmuxChildRegistry` for what that costs and why the process tree
+        // cannot be used instead.
+        let reclaimed = TmuxChildRegistry.sweep()
+        if reclaimed > 0 {
+            // Written out both ways rather than "1 connection(s)". This notice is
+            // the app admitting it left something behind, and reading like a
+            // form letter while it does so is a small thing that undoes it.
+            let body = reclaimed == 1
+                ? "One tmux connection was left attached by a copy of this app that"
+                    + " did not shut down. It has been closed."
+                : "\(reclaimed) tmux connections were left attached by a copy of this"
+                    + " app that did not shut down. They have been closed."
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .warning,
+                title: "Cleaned up after a previous run", body: body
+            ))
+        }
+
         installMenu()
 
         guard let tmuxPath = TmuxControlClient.locateTmux() else {

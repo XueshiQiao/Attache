@@ -42,6 +42,23 @@ final class NoticeCenter {
     private let trailingMargin: CGFloat = 12
     private let gap: CGFloat = 8
 
+    /// Notices that arrived before there was a window to put them over.
+    ///
+    /// **Dropping these was a real defect and exactly the kind this whole
+    /// feature exists to remove.** `TmuxChildRegistry.sweep()` runs at launch,
+    /// deliberately before the first connection and therefore before the window
+    /// exists, and its "cleaned up after a previous run" notice went straight
+    /// into the `guard` below and vanished — found 2026-07-30 by provoking a
+    /// reclaim and watching for a toast that never came. A producer must not
+    /// have to know how early it is; anything that arrives before there is
+    /// somewhere to draw waits here and goes up when there is.
+    ///
+    /// Capped, and the newest win. A launch that somehow produced hundreds of
+    /// notices should not open with a wall of them, and the last few are the
+    /// ones still worth reading.
+    private var pending = [AppNotice]()
+    private let pendingCap = 4
+
     private init() {
         NotificationCenter.default.addObserver(
             self, selector: #selector(parentChanged(_:)),
@@ -51,10 +68,31 @@ final class NoticeCenter {
             self, selector: #selector(parentClosing(_:)),
             name: NSWindow.willCloseNotification, object: nil
         )
+        // A window appearing is what makes a held notice showable. `didBecomeKey`
+        // rather than `didBecomeMain`: a window that is ordered front on launch
+        // gets both, and this one also fires when the app is brought back from
+        // another application, which is a second chance to flush.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowAppeared(_:)),
+            name: NSWindow.didBecomeKeyNotification, object: nil
+        )
+    }
+
+    /// Put up anything that was waiting for a window. Safe to call whenever;
+    /// with an empty queue it does nothing.
+    @objc private func windowAppeared(_: Notification) {
+        guard !pending.isEmpty, targetWindow() != nil else { return }
+        let held = pending
+        pending.removeAll()
+        for notice in held { post(notice) }
     }
 
     func post(_ notice: AppNotice) {
-        guard let window = targetWindow() else { return }
+        guard let window = targetWindow() else {
+            pending.append(notice)
+            if pending.count > pendingCap { pending.removeFirst(pending.count - pendingCap) }
+            return
+        }
         ensureOverlay(over: window)
 
         let toast = ToastView(notice: notice)
