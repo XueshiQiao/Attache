@@ -72,6 +72,25 @@ let passthrough: [(String, Data)] = [
     ("a K that is not a k", bytes("\(esc)K")),
     ("k with no escape in front", bytes("kkkk")),
     ("CAN and SUB on their own", bytes("a\(can)b\(sub)c")),
+    // The held escape released ahead of a cancel byte, which is a different
+    // path through `.escape` from releasing it ahead of a printable one.
+    ("escape then CAN", bytes("a\(esc)\(can)b")),
+    ("escape then SUB", bytes("a\(esc)\(sub)b")),
+
+    // KNOWN divergence, measured on tmux 3.6a and deliberately not matched.
+    // tmux's `esc_enter` state survives a byte in the middle — C0 is dispatched
+    // on the way past and 0x7f–0xff is ignored, neither changing state — so all
+    // three of these rename in tmux and none of them does here. Verified: a pane
+    // fed each of these shows `AB`, `DE`, `FG`. They leak rather than being
+    // eaten, nothing emits them (a prompt writes `ESC k` in one piece), and
+    // matching tmux would mean holding an unbounded run and reordering C0s out
+    // from under a held escape. See the note in `TmuxRenameString`.
+    ("KNOWN: ESC <C0> k renames in tmux, not here",
+     Data(Array("A".utf8) + [0x1b, 0x01, 0x6b] + Array("C0TITLE".utf8) + [0x1b, 0x5c] + Array("B".utf8))),
+    ("KNOWN: ESC <DEL> k renames in tmux, not here",
+     Data(Array("F".utf8) + [0x1b, 0x7f, 0x6b] + Array("DELTITLE".utf8) + [0x1b, 0x5c] + Array("G".utf8))),
+    ("KNOWN: ESC <high byte> k renames in tmux, not here",
+     Data(Array("D".utf8) + [0x1b, 0xe4, 0x6b] + Array("HIGHTITLE".utf8) + [0x1b, 0x5c] + Array("E".utf8))),
 ]
 
 // MARK: - Streams with a rename string in them
@@ -134,6 +153,14 @@ let stripped: [(name: String, input: Data, expected: Data)] = [
     ("two of them back to back",
      bytes("\(esc)ka\(esc)\\\(esc)kb\(esc)\\tail"),
      bytes("\(esc)\\\(esc)\\tail")),
+
+    // A doubled escape outside a DCS. tmux renames here too — its ANYWHERE
+    // entry re-enters `esc_enter` on the second escape — so this is the right
+    // answer rather than a false positive, and it is the case that makes
+    // `holdsRenameString` assign `previousWasEscape` unconditionally.
+    ("a doubled escape in ground still introduces one",
+     bytes("A\(esc)\(esc)kT\(esc)\\B"),
+     bytes("A\(esc)\(esc)\\B")),
 
     // Documented, deliberate, and not a defect to fix here. Inside tmux's DCS
     // passthrough the escapes are doubled, so `1B 1B 6B` appears as payload and
@@ -198,7 +225,14 @@ for (name, input, expected) in stripped {
 // cut at an arbitrary byte — including between the escape and the k, which is
 // the split the whole `escape` state exists for.
 
-for (name, input, expected) in stripped {
+// Both lists, not just `stripped`. Splitting only the streams that are supposed
+// to change leaves the `escape` state — the one that holds a byte back across a
+// boundary — exercised almost nowhere, and a defect that dropped or doubled that
+// held escape would show up as damage to a stream nobody was cutting in half.
+let boundaryCases: [(name: String, input: Data, expected: Data)] =
+    stripped + passthrough.map { (name: $0.0, input: $0.1, expected: $0.1) }
+
+for (name, input, expected) in boundaryCases {
     let all = [UInt8](input)
     // 100k of `t` would make this quadratic for no extra coverage; the
     // interesting boundaries are all near the sequence.
@@ -216,7 +250,7 @@ for (name, input, expected) in stripped {
 }
 
 // A byte at a time, which is the worst case a slow pty can produce.
-for (name, input, expected) in stripped {
+for (name, input, expected) in boundaryCases {
     let all = [UInt8](input)
     guard all.count < 400 else { continue }
     let got = strip(all.map { (Data([$0]), UInt64(0)) })
@@ -279,6 +313,67 @@ do {
     if restarted != bytes("\(esc)\\") {
         fail("a fresh sequence inherited a stale deadline: got \(show(restarted))")
     }
+
+    // A clock that appears to go backwards must not expire anything. The
+    // guard is `now >= since`; without it the subtraction wraps to ~584 years
+    // and every sequence ends on its next chunk.
+    let backwards = strip([(bytes("\(esc)kTITLE"), 1_000), (bytes("swallowed"), 0)])
+    if backwards != Data() {
+        fail("a backwards clock expired a live sequence: got \(show(backwards))")
+    }
+
+    // The deadline is per pane, not global.
+    var split = TmuxRenameString()
+    _ = split.strip(paneID: "%1", from: bytes("\(esc)kearly"), now: 0)
+    _ = split.strip(paneID: "%2", from: bytes("\(esc)klate"), now: TmuxRenameString.expiry)
+    let expired = split.strip(paneID: "%1", from: bytes("ONE"), now: TmuxRenameString.expiry)
+    let alive = split.strip(paneID: "%2", from: bytes("TWO"), now: TmuxRenameString.expiry)
+    if expired != bytes("ONE") { fail("%1's deadline did not fire: got \(show(expired))") }
+    if alive != Data() { fail("%2 expired on %1's clock: got \(show(alive))") }
+
+    // A chunk that arrives past the deadline AND opens a fresh sequence: the
+    // expiry has to resolve before the chunk is walked, or the new sequence is
+    // opened into a state that is about to be reset.
+    let both = strip([
+        (bytes("\(esc)kstale"), UInt64(0)),
+        (bytes("VISIBLE\(esc)kfresh"), TmuxRenameString.expiry),
+        (bytes("swallowed"), TmuxRenameString.expiry + 1),
+    ])
+    if both != bytes("VISIBLE") {
+        fail("expiry and a fresh introducer in one chunk: got \(show(both))")
+    }
+}
+
+// MARK: - 5b. A held escape does not expire, on purpose
+//
+// Measured on tmux 3.6a: `X ESC k TITLE ESC`, a seven-second gap, then
+// `k SECOND ESC \ TAIL` leaves `XTAIL` on screen — tmux stayed in its escape
+// state across the gap and the later `k` restarted the rename. Only the rename
+// string itself is on a timer. Pinned so nobody "fixes" the asymmetry.
+
+do {
+    let got = strip([
+        (bytes("X\(esc)kTITLE\(esc)"), UInt64(0)),
+        (bytes("kSECOND\(esc)\\TAIL"), TmuxRenameString.expiry * 2),
+    ])
+    if got != bytes("X\(esc)\\TAIL") {
+        fail("a held escape should not expire: got \(show(got))")
+    }
+}
+
+// MARK: - 5c. The fast path hands back the same buffer
+//
+// The throughput path depends on an ordinary chunk being returned rather than
+// copied. Large enough to be heap-backed: Swift stores a small `Data` inline,
+// where the address belongs to the struct and says nothing about copying.
+
+do {
+    var filter = TmuxRenameString()
+    let big = Data(repeating: UInt8(ascii: "x"), count: 64 * 1024)
+    let sent = big.withUnsafeBytes { $0.baseAddress }
+    let got = filter.strip(paneID: "%1", from: big, now: 0)
+    let back = got.withUnsafeBytes { $0.baseAddress }
+    if sent != back { fail("the fast path copied a chunk it had nothing to do to") }
 }
 
 // MARK: - 6. Panes do not see each other's state
@@ -301,7 +396,8 @@ do {
 if failures == 0 {
     print("[+] \(passthrough.count) streams passed through untouched,"
         + " \(stripped.count) rename strings removed,"
-        + " every chunk boundary and the deadline agree")
+        + " all \(boundaryCases.count) cut at every byte and again one byte per chunk,"
+        + " deadline and fast path agree")
     exit(0)
 }
 print("[-] \(failures) failure(s)")

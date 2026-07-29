@@ -107,6 +107,12 @@ final class TmuxOutputRouter {
         lock.lock()
         defer { lock.unlock() }
         deliveryCounts[paneID, default: 0] &+= 1
+        // A chunk still counts when it arrives empty — tmux did send output for
+        // this pane, which is all the count claims — but there is nothing to
+        // hand over. `InMemoryTerminalSession.receive` has no empty case, so it
+        // would take libghostty's surface lock and dispatch a zero-byte write;
+        // `TmuxRenameString` empties two chunks per command under oh-my-zsh.
+        guard !data.isEmpty else { return sessions[paneID] != nil }
         if let session = sessions[paneID] {
             session.receive(data)
             return true

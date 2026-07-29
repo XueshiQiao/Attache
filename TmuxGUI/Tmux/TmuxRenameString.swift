@@ -46,11 +46,29 @@ import Foundation
 ///   the same deadline, one stray `ESC k` ahead of a plain-text file would eat
 ///   the entire file, because plain text holds no escape byte to get out on.
 ///
-/// Nothing is buffered and no title is kept. The window name belongs to tmux,
-/// which applies it to its own model and tells the rail through the ordinary
-/// notification path; authoring it here would be the local state this codebase
-/// exists to not have. The state is one enum and one timestamp per pane that is
-/// mid-sequence, and panes in the ordinary case hold no entry at all.
+/// Nothing is buffered and no title is kept, because the name was never ours to
+/// apply. What tmux does with it is tmux's business and depends on a tmux
+/// option: `allow-rename` is **off** by default on 3.6a, and `input_exit_rename`
+/// returns early when it is, so a default server swallows the string and throws
+/// the name away. Turn it on and the window is renamed and the rail hears about
+/// it through the ordinary notification path. Either way this side does the same
+/// thing, and keeping the title here to "help" would be exactly the authored
+/// state this codebase exists to not have.
+///
+/// So the state is one enum and one timestamp, held only for a pane that is
+/// mid-sequence; in the ordinary case a pane has no entry at all.
+///
+/// Known and deliberate: tmux's `esc_enter` state survives a byte in the middle.
+/// Its table keeps the state on C0 (dispatching the control character on the
+/// way past) and on 0x7f–0xff, so `ESC <C0> k`, `ESC <DEL> k` and `ESC <high> k`
+/// are all rename strings to tmux — measured on 3.6a — and none of them is one
+/// here, because this looks only at the byte after the escape. Those leak rather
+/// than being eaten, which is the safe direction, and nothing emits them: a
+/// prompt writes `ESC k` in one piece. Matching tmux would mean holding an
+/// unbounded run of bytes and emitting the C0s out from under a held escape —
+/// state and reordering, in the one file that can silently delete a user's
+/// output. `Tools/RenameStringCheck` pins the current behaviour so the next
+/// reader finds a decision rather than an oversight.
 struct TmuxRenameString {
     /// `ESC`, the byte every sequence starts with.
     static let escape: UInt8 = 0x1b
