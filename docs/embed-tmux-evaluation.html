@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Embedding the whole of tmux: an evaluation</title>
+<style>
+  :root {
+    --bg: #faf9f5;
+    --surface: #ffffff;
+    --ink: #1f1e1c;
+    --ink-soft: #5a5751;
+    --ink-faint: #8a857c;
+    --rule: #e6e2d4;
+    --rule-soft: #efece1;
+    --code-bg: #f3f0e6;
+    --accent: #d97757;
+    --accent-soft: #f4e2d6;
+    --good: #4f8a5c;
+    --warn: #b6711c;
+    --bad: #b14338;
+    --serif: "Tiempos", "Source Serif Pro", "Iowan Old Style", Georgia, serif;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Monaco, "Cascadia Code", monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .container {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 80px 40px 120px;
+  }
+
+  header.hero { margin-bottom: 56px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin-bottom: 18px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 44px;
+    line-height: 1.15;
+    margin: 0 0 20px;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+  }
+  .lede {
+    font-family: var(--serif);
+    font-size: 21px;
+    line-height: 1.5;
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: 680px;
+  }
+
+  h2 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 29px;
+    line-height: 1.25;
+    margin: 64px 0 16px;
+    letter-spacing: -0.01em;
+  }
+  h3 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 17px;
+    margin: 36px 0 10px;
+    letter-spacing: -0.005em;
+  }
+  p { margin: 0 0 16px; }
+  p, li { color: var(--ink); }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+  a:hover { border-bottom-color: var(--accent); }
+
+  ul, ol { padding-left: 24px; margin: 0 0 16px; }
+  li { margin-bottom: 8px; }
+  li code { font-size: 0.92em; }
+
+  code {
+    font-family: var(--mono);
+    background: var(--code-bg);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px 32px;
+    margin: 32px 0 48px;
+    padding: 18px 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-soft);
+  }
+  .meta-row b { color: var(--ink); font-weight: 500; margin-right: 8px; }
+
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 18px 22px;
+    margin: 28px 0;
+    border-radius: 0 6px 6px 0;
+    color: var(--ink);
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 6px;
+    display: block;
+  }
+
+  .figure {
+    margin: 36px 0;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 28px 24px 18px;
+  }
+  .figure svg { display: block; width: 100%; height: auto; }
+  .figure .caption {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--rule);
+  }
+  .figure .caption b { color: var(--ink-soft); font-weight: 600; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 24px 0 32px;
+    font-size: 14.5px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-weight: 600;
+    color: var(--ink-soft);
+    background: var(--rule-soft);
+    font-size: 13px;
+    letter-spacing: 0.01em;
+  }
+  td code { font-size: 0.88em; }
+
+  .pill {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .pill.good    { background: #e3f0e2; color: var(--good); }
+  .pill.warn    { background: #f5e7d0; color: var(--warn); }
+  .pill.bad     { background: #f5dad6; color: var(--bad); }
+  .pill.neutral { background: var(--rule-soft); color: var(--ink-soft); }
+
+  .footer {
+    margin-top: 96px;
+    padding-top: 24px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  svg text { font-family: var(--sans); font-size: 12.5px; fill: var(--ink); }
+  svg .label-mono  { font-family: var(--mono); font-size: 11px; fill: var(--ink-soft); }
+  svg .label-soft  { fill: var(--ink-soft); }
+  svg .label-faint { fill: var(--ink-faint); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header class="hero">
+  <div class="eyebrow">Architecture evaluation · TmuxGUI · 2026-07-30</div>
+  <h1>Embedding the whole of tmux as a terminal: an evaluation</h1>
+  <p class="lede">This document changed three times in one day. First, &ldquo;native scrolling cannot be built&rdquo; vetoed the embedded route; then the owner tried copy-mode scrolling for real and lifted the veto; then Frank&rsquo;s measurements overturned &ldquo;every pain has a fix inside the current architecture&rdquo; — copy mode and popups never reach control mode at all. Current position: prototype first, leaning toward embedding.</p>
+</header>
+
+<div class="meta-row">
+  <span><b>Repo</b><code>tmux-gui @ 253060a</code></span>
+  <span><b>tmux</b><code>3.6a</code></span>
+  <span><b>Nature</b><span class="pill neutral">EVALUATION</span></span>
+  <span><b>Verdict</b><span class="pill warn">PROTOTYPE FIRST · LEANING ROUTE B</span></span>
+</div>
+
+<!-- ═══════════════ §1 ═══════════════ -->
+<h2>1 · The two routes</h2>
+
+<p><strong>Route A (today)</strong>: the app connects through tmux&rsquo;s control mode (<code>tmux -C attach</code>). In that mode tmux draws nothing and speaks a plain-text protocol instead: each pane&rsquo;s raw output bytes arrive line by line, and the app parses the layout itself and places every pane on its own libghostty surface. <em>tmux does not paint; the app does.</em></p>
+
+<p><strong>Route B (the idea)</strong>: the app runs a plain <code>tmux attach</code> on a pty it manages, letting tmux draw everything itself the way it does in any ordinary terminal — split lines, every pane&rsquo;s content, its own status line. The whole picture goes into <em>one</em> libghostty surface; the app is a picture frame. The sidebar still needs a read-only control-mode side channel for the session and window lists.</p>
+
+<p>These are exactly iTerm2&rsquo;s two ways of using tmux: iTerm2&rsquo;s <code>-CC</code> integration ≈ route A; typing <code>tmux attach</code> inside iTerm2 = route B. Both are proven viable elsewhere; the question is only the trade.</p>
+
+<div class="figure">
+<svg viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg" aria-label="Architecture comparison of the two routes">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5a5751"/>
+    </marker>
+  </defs>
+
+  <!-- Lane A -->
+  <text x="0" y="20" font-weight="600" fill="#1f1e1c">Route A · today: control mode (tmux does not paint, the app does)</text>
+
+  <rect x="10" y="70" width="130" height="66" rx="8" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="75" y="98" text-anchor="middle" font-weight="600">tmux server</text>
+  <text x="75" y="118" text-anchor="middle" class="label-faint" font-size="11">sole truth</text>
+
+  <line x1="140" y1="90" x2="240" y2="90" stroke="#5a5751" stroke-width="1.2" marker-end="url(#arr)"/>
+  <text x="190" y="80" text-anchor="middle" class="label-mono" fill="#d97757">%output ×N</text>
+  <line x1="240" y1="116" x2="140" y2="116" stroke="#5a5751" stroke-width="1.2" marker-end="url(#arr)"/>
+  <text x="190" y="136" text-anchor="middle" class="label-mono">send-keys</text>
+
+  <rect x="240" y="52" width="230" height="104" rx="8" fill="#ffffff" stroke="#d97757" stroke-width="1.4"/>
+  <text x="355" y="74" text-anchor="middle" font-weight="600" fill="#d97757">app protocol layer (6+ files)</text>
+  <text x="355" y="94" text-anchor="middle" class="label-mono">layout parsing · screen replay</text>
+  <text x="355" y="112" text-anchor="middle" class="label-mono">key filtering · rename filtering</text>
+  <text x="355" y="130" text-anchor="middle" class="label-mono">byte decoding · reply pairing</text>
+  <text x="355" y="148" text-anchor="middle" class="label-faint" font-size="11">← nearly every trap lives here</text>
+
+  <line x1="470" y1="104" x2="530" y2="104" stroke="#5a5751" stroke-width="1.2" marker-end="url(#arr)"/>
+
+  <rect x="530" y="46" width="250" height="36" rx="6" fill="#ffffff" stroke="#e6e2d4"/>
+  <text x="545" y="69" class="label-mono">pane %1 · own surface + own history</text>
+  <rect x="530" y="88" width="250" height="36" rx="6" fill="#ffffff" stroke="#e6e2d4"/>
+  <text x="545" y="111" class="label-mono">pane %2 · own surface + own history</text>
+  <rect x="530" y="130" width="250" height="36" rx="6" fill="#ffffff" stroke="#e6e2d4"/>
+  <text x="545" y="153" class="label-mono">pane %3 · own surface + own history</text>
+
+  <!-- divider -->
+  <line x1="0" y1="205" x2="800" y2="205" stroke="#e6e2d4" stroke-dasharray="5 4"/>
+
+  <!-- Lane B -->
+  <text x="0" y="238" font-weight="600" fill="#1f1e1c">Route B · the idea: plain attach (tmux paints, the app is a frame)</text>
+
+  <rect x="10" y="285" width="130" height="66" rx="8" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="75" y="313" text-anchor="middle" font-weight="600">tmux server</text>
+  <text x="75" y="333" text-anchor="middle" class="label-faint" font-size="11">lays out and draws itself</text>
+
+  <line x1="140" y1="308" x2="290" y2="308" stroke="#5a5751" stroke-width="1.2" marker-end="url(#arr)"/>
+  <text x="215" y="298" text-anchor="middle" class="label-mono" fill="#d97757">pty · one full-picture byte stream</text>
+  <line x1="290" y1="330" x2="140" y2="330" stroke="#5a5751" stroke-width="1.2" marker-end="url(#arr)"/>
+  <text x="215" y="350" text-anchor="middle" class="label-mono">keyboard passed through as-is</text>
+
+  <rect x="290" y="270" width="260" height="96" rx="8" fill="#ffffff" stroke="#e6e2d4" stroke-width="1.4"/>
+  <text x="420" y="296" text-anchor="middle" font-weight="600">one surface</text>
+  <text x="420" y="316" text-anchor="middle" class="label-mono">the picture tmux painted:</text>
+  <text x="420" y="334" text-anchor="middle" class="label-mono">splitters + all panes + its status line</text>
+  <text x="420" y="354" text-anchor="middle" class="label-faint" font-size="11">protocol layer retires, traps go with it</text>
+
+  <line x1="140" y1="285" x2="618" y2="285" stroke="#8a857c" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arr)"/>
+  <rect x="620" y="270" width="160" height="60" rx="8" fill="#f3f0e6" stroke="#e6e2d4"/>
+  <text x="700" y="294" text-anchor="middle" font-weight="600">sidebar</text>
+  <text x="700" y="314" text-anchor="middle" class="label-faint" font-size="11">read-only control-mode side channel</text>
+</svg>
+<div class="caption"><b>Figure 1.</b> The difference that matters is the middle box: route A's entire complexity (and its entire trap record) concentrates in the protocol layer; route B deletes it wholesale — the price is Figure 2.</div>
+</div>
+
+<!-- ═══════════════ §2 ═══════════════ -->
+<h2>2 · Scrolling: the first version&rsquo;s veto, and why it was lifted</h2>
+
+<p>The first version of this document passed a death sentence here, and the mechanism still holds today: under a plain attach, tmux is a full-screen application. History lives in tmux&rsquo;s <em>own</em> buffer; the screen is repainted in place inside the same rectangle, so the outer surface&rsquo;s scrollback is permanently empty (Figure 2). What changed is not the mechanism but the judgment — the owner scrolled for real in other terminals and accepted the copy-mode feel.</p>
+
+<p>The &ldquo;automatic switching&rdquo; the owner saw is indeed tmux&rsquo;s behaviour, with one configuration precondition: <code>mouse on</code>. With it on, a wheel over an ordinary program (a shell, a log) enters copy mode automatically and leaves it when scrolled back to the bottom; over a TUI that handles the mouse itself (vim, htop) the wheel is passed through to the program. <strong>Checked: the owner&rsquo;s <code>~/.tmux.conf</code> has both <code>mouse on</code> and <code>set-clipboard on</code></strong> — so route B&rsquo;s scrolling should, in theory, feel exactly like attaching from any other terminal. &ldquo;In theory&rdquo; is what the prototype exists to remove: it requires our surface to report mouse events faithfully to tmux, and route A&rsquo;s <code>TerminalReply</code> deliberately intercepts exactly those reports — it must not exist on route B&rsquo;s path.</p>
+
+<div class="figure">
+<svg viewBox="0 0 800 330" xmlns="http://www.w3.org/2000/svg" aria-label="What the scroll wheel does on each route">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5a5751"/>
+    </marker>
+  </defs>
+
+  <text x="0" y="20" font-weight="600" fill="#1f1e1c">Wheel up: what happens on each route</text>
+
+  <!-- Left: Route A -->
+  <text x="30" y="56" font-weight="600" fill="#4f8a5c">Route A</text>
+  <rect x="30" y="70" width="330" height="176" rx="8" fill="#ffffff" stroke="#e6e2d4"/>
+  <rect x="46" y="86" width="298" height="66" rx="4" fill="#e3f0e2"/>
+  <text x="195" y="112" text-anchor="middle" class="label-mono" fill="#4f8a5c">history: already in the surface's own buffer</text>
+  <text x="195" y="132" text-anchor="middle" class="label-mono" fill="#4f8a5c">(a byproduct of feeding %output byte by byte)</text>
+  <rect x="46" y="160" width="298" height="70" rx="4" fill="#f3f0e6"/>
+  <text x="195" y="200" text-anchor="middle" class="label-mono">current screen</text>
+  <line x1="195" y1="158" x2="195" y2="126" stroke="#4f8a5c" stroke-width="1.6" marker-end="url(#arr2)"/>
+  <text x="195" y="275" text-anchor="middle">scrolling is local, <tspan font-weight="600">tmux never knows</tspan></text>
+  <text x="195" y="300" text-anchor="middle" class="label-faint" font-size="11.5">smooth, immediate, ordinary-terminal feel</text>
+
+  <!-- Right: Route B -->
+  <text x="440" y="56" font-weight="600" fill="#b14338">Route B</text>
+  <rect x="440" y="70" width="330" height="176" rx="8" fill="#ffffff" stroke="#e6e2d4"/>
+  <rect x="456" y="86" width="298" height="66" rx="4" fill="#f5dad6"/>
+  <text x="605" y="112" text-anchor="middle" class="label-mono" fill="#b14338">outer scrollback: permanently empty</text>
+  <text x="605" y="132" text-anchor="middle" class="label-mono" fill="#b14338">(tmux only ever sent the current screen)</text>
+  <rect x="456" y="160" width="298" height="70" rx="4" fill="#f3f0e6"/>
+  <text x="605" y="188" text-anchor="middle" class="label-mono">current screen = a rectangle tmux repaints in place</text>
+  <text x="605" y="212" text-anchor="middle" class="label-faint" font-size="11">(repainting overwrites; no history lines are produced)</text>
+  <text x="605" y="275" text-anchor="middle">the wheel can only go to tmux → <tspan font-weight="600">copy mode</tspan></text>
+  <text x="605" y="300" text-anchor="middle" class="label-faint" font-size="11.5">a different feel — tried for real and accepted</text>
+</svg>
+<div class="caption"><b>Figure 2.</b> Route A's native scrolling is not something done well — it is an architectural byproduct: history streams byte by byte into each surface's own buffer. On route B that buffer is structurally empty, and no amount of implementation effort can fill it.</div>
+</div>
+
+<p>Also lost by the same cut, recorded for completeness:</p>
+<ul>
+  <li><strong>Per-pane native interaction.</strong> Click-to-select-pane, dropping a file onto a specific pane, per-pane context menus — either they lean on <code>mouse on</code> passthrough, or the app computes which pane is under the pointer from cell arithmetic, which reinvites the layout parsing that was just deleted.</li>
+  <li><strong>tmux&rsquo;s status line cannot be hidden.</strong> It draws at the bottom, duplicating the sidebar. Checked (man tmux 3.6a): <code>status</code> is a session option with no per-client switch — turning it off would also strip it from the owner&rsquo;s plain-terminal attach to the same session, violating the project&rsquo;s founding rule that the GUI never affects tmux. (But see the grouped-session idea in §5.)</li>
+</ul>
+
+<div class="callout">
+<span class="label">Status update</span>
+<p>The first version wrote &ldquo;route B&rsquo;s only revival condition is accepting copy-mode scrolling.&rdquo; That condition was met the same day. The two remaining costs above were thereby promoted from footnotes to deciding factors — see §5.</p>
+</div>
+
+<!-- ═══════════════ §3 ═══════════════ -->
+<h2>3 · Honest accounting: what route B was going to buy</h2>
+
+<p>Vetoed or not, the attraction is real and deserves to be written down rather than denied:</p>
+
+<table>
+  <thead>
+    <tr><th>What it buys</th><th>Detail</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Most of the protocol layer retires</td>
+      <td>Layout parsing, screen replay, keystroke filtering (<code>TerminalReply</code>), rename-string filtering (<code>TmuxRenameString</code>) — the files with the longest trap records in CLAUDE.md stop being needed. In plain mode tmux digests those sequences itself and emits bytes translated for the outer terminal.</td>
+    </tr>
+    <tr>
+      <td>All of tmux&rsquo;s features for free</td>
+      <td>copy mode, search, zoom, <code>display-popup</code>, dragging splitters with the mouse — behaving exactly as in any terminal, at zero implementation cost.</td>
+    </tr>
+    <tr>
+      <td>The reply-pairing trap <em>shrinks</em> (Frank&rsquo;s correction: it does not vanish)</td>
+      <td>The main channel becomes a pty and is naturally ordered, but the sidebar side channel is still control mode — the 587-line <code>TmuxControlClient</code> (host of the <code>%begin</code>-flags trap, never independently reviewed per TODO §6) is precisely the part that stays. Compensation: the side channel can set the client flag <code>no-output</code> (checked to exist, man 3.6a), receiving no <code>%output</code> at all — so the whole 19 MB/s throughput class of problems does not exist on route B.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>But note the accounting problem: <strong>most of these traps have already been paid for</strong>. TODO §0 (four interaction defects) and §4b (the nine-item &ldquo;state the GUI reconstructed instead of asking tmux&rdquo; audit) are all closed, and the four most dangerous files each have a rerunnable regression checker (<code>LayoutCheck</code> / <code>ReplyCheck</code> / <code>ScreenReplayCheck</code> / <code>RenameStringCheck</code>). Switching to route B saves <em>future</em> traps while discarding money already spent and guardrails already built — a much worse deal today than it would have been six months ago. (§5 has Frank&rsquo;s critique of this argument.)</p>
+
+<!-- ═══════════════ §4 ═══════════════ -->
+<h2>4 · The three pains, re-examined (with Frank&rsquo;s measurements)</h2>
+
+<p>The second version titled this section &ldquo;each pain&rsquo;s fix inside the current architecture.&rdquo; Frank&rsquo;s measurements overturned the heaviest item, so it is rewritten honestly:</p>
+
+<h3>4.1 &ldquo;The protocol layer is fragile, maintenance is exhausting&rdquo; — the curve is actually converging</h3>
+<p>Read the maintenance record as a curve: the traps burst between 07-26 and 07-28, the phase that forced the truths out; each fix left a comment, a CLAUDE.md entry, and (for the four most dangerous files) a rerunnable checker. The remaining risk surface is three things: behaviour changes in future tmux versions, notification types not yet encountered, and the three pieces of code TODO §6 names as never independently reviewed (<code>TmuxControlClient</code> threading, the reply-pairing FIFO&rsquo;s error paths, closure lifetimes). <strong>Work item: do the §6 review.</strong> One payment to retire a whole class of worry — two orders of magnitude cheaper than switching architectures.</p>
+
+<h3>4.2 &ldquo;I want tmux&rsquo;s full feature set&rdquo; — Frank measured: two items are simply unreachable on route A</h3>
+<p>The second version claimed &ldquo;there is a path for each.&rdquo; Frank attached a control client to an isolated <code>-L</code> server (tmux 3.6a), recorded every byte on the stream, and validated the method with a sentinel (an ordinary-output marker did arrive as <code>%output</code>, so the zeros below are real zeros):</p>
+<ul>
+  <li><strong>copy mode is invisible to control mode.</strong> Entering it delivers a single <code>%pane-mode-changed</code>; scrolling around inside it afterwards puts <em>not one byte</em> on the control stream. So &ldquo;drive tmux&rsquo;s copy mode&rdquo; on route A can render nothing — it is not expensive, the data never arrives. The second version&rsquo;s recommendation (&ldquo;search via tmux copy mode&rdquo;) dies with it; rebuilding natively is in turn blocked by libghostty not exposing <code>TerminalSurface</code>.</li>
+  <li><strong><code>display-popup</code> is equally invisible.</strong> <code>-E</code> exits cleanly with nothing renderable on the control stream. No path on route A.</li>
+  <li><strong>zoom</strong> is unaffected: still an hour&rsquo;s work on route A (an affordance that sends <code>resize-pane -Z</code>).</li>
+</ul>
+<p>Settlement: of the features the owner asked for, two are unreachable on route A and free on route B. This is the single heaviest weight shift in the whole evaluation.</p>
+
+<h3>4.3 &ldquo;Display fidelity problems&rdquo; — needs a concrete list</h3>
+<p>The known fidelity gaps are three: the re-snapshot (<code>capture-pane</code>) keeps yielding while a pane never stops writing; copy-mode state cannot be drawn; and the <code>ESC k</code> class of &ldquo;tmux dialect vs libghostty dialect&rdquo; translation gaps may in principle have a next member. On route A these are all fixable bugs, not structural defects — but note that on route B fidelity is perfect by construction, because tmux draws itself. If the fidelity problems the owner has actually seen are outside the three above, that is new information: record the concrete scene (which program, what action, what was seen) and file it.</p>
+
+<div class="figure">
+<svg viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg" aria-label="Each pain mapped to its resolution">
+  <defs>
+    <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5a5751"/>
+    </marker>
+  </defs>
+
+  <text x="0" y="20" font-weight="600" fill="#1f1e1c">Switch architectures vs defeat in detail — after the measurements</text>
+
+  <rect x="10" y="52" width="220" height="58" rx="8" fill="#f5dad6"/>
+  <text x="120" y="77" text-anchor="middle" font-weight="600" fill="#b14338">fragile protocol layer</text>
+  <text x="120" y="97" text-anchor="middle" class="label-mono">exhausting maintenance</text>
+
+  <rect x="10" y="126" width="220" height="58" rx="8" fill="#f5dad6"/>
+  <text x="120" y="151" text-anchor="middle" font-weight="600" fill="#b14338">missing tmux features</text>
+  <text x="120" y="171" text-anchor="middle" class="label-mono">search · copy mode · popup</text>
+
+  <rect x="10" y="200" width="220" height="58" rx="8" fill="#f5dad6"/>
+  <text x="120" y="225" text-anchor="middle" font-weight="600" fill="#b14338">fidelity problems</text>
+  <text x="120" y="245" text-anchor="middle" class="label-mono">display occasionally wrong</text>
+
+  <line x1="230" y1="81" x2="320" y2="81" stroke="#5a5751" stroke-width="1.2" marker-end="url(#arr3)"/>
+  <line x1="230" y1="155" x2="320" y2="155" stroke="#5a5751" stroke-width="1.2" marker-end="url(#arr3)"/>
+  <line x1="230" y1="229" x2="320" y2="229" stroke="#5a5751" stroke-width="1.2" marker-end="url(#arr3)"/>
+
+  <rect x="322" y="52" width="458" height="58" rx="8" fill="#ffffff" stroke="#e6e2d4"/>
+  <text x="340" y="77" font-weight="600">TODO §6 independent review: threading · reply pairing · closures</text>
+  <text x="340" y="97" class="label-mono">one-time payment; retires the never-reviewed class of worry</text>
+
+  <rect x="322" y="126" width="458" height="58" rx="8" fill="#f5dad6" stroke="#b14338" stroke-width="1.2"/>
+  <text x="340" y="151" font-weight="600" fill="#b14338">Frank's measurement: copy mode &amp; popup never reach control mode</text>
+  <text x="340" y="171" class="label-mono">unreachable inside route A; zoom excepted (still an hour's work)</text>
+
+  <rect x="322" y="200" width="458" height="58" rx="8" fill="#ffffff" stroke="#e6e2d4"/>
+  <text x="340" y="225" font-weight="600">concrete scene → issue → fix one by one</text>
+  <text x="340" y="245" class="label-mono">on route A these are fixable bugs; on route B fidelity is free</text>
+</svg>
+<div class="caption"><b>Figure 3.</b> The second version's conclusion — "the shortest path for each pain is inside the current architecture" — no longer holds for the middle row. That row is Frank's measurement, and the heaviest reversal in this document.</div>
+</div>
+
+<!-- ═══════════════ §5 ═══════════════ -->
+<h2>5 · Conclusion, and the provenance of every claim</h2>
+
+<p><strong>The recommendation stands: prototype first — but after review, the scale tips clearly toward route B.</strong> Frank (independent technical consultant) read the repository, ran two sets of measurements, and recommends: prototype first, leaning B. His three core reasons: first, two of the requested features are measured-unreachable on route A (§4.2); second, the &ldquo;paid-for investment = guardrails&rdquo; argument only covers <em>known</em> trap classes, and control mode is the least-trodden path in tmux&rsquo;s user base while plain attach is the most-trodden — the expected count of unknown traps itself favours B; third, B fits this repository&rsquo;s first principle (&ldquo;tmux owns everything&rdquo;) better than A does — A is, in practice, a reimplementation of tmux&rsquo;s compositor inside the app.</p>
+
+<div class="callout">
+<span class="label">Frank&rsquo;s reservation (kept verbatim in substance)</span>
+<p>His own strongest counter-argument: a few minutes of scrolling in another terminal is not the same as permanently losing native scrolling in a daily-driver tool. If that flips back, route B returns to the first version&rsquo;s death sentence. So the prototype must not be a demo — build it to daily-usable, use it for days, then decide.</p>
+</div>
+
+<p>He also corrected the prototype&rsquo;s construction: no self-managed pty needed — the vendored package has an <code>.exec</code> backend (ghostty forks the child and owns the pty itself; mouse, wheel and resize behave exactly as in Ghostty.app). Re-verified in this session after the second version wrongly claimed &ldquo;only <code>.inMemory</code> exists&rdquo; (a search mistake): <code>TerminalSessionBackend.swift:9</code> declares <code>case exec</code>, it is the <em>default</em> in <code>TerminalSurfaceOptions.swift:23</code>, it maps to <code>GHOSTTY_SURFACE_IO_BACKEND_EXEC</code> in <code>TerminalController+Surface.swift:85</code>, and per-surface <code>envVars</code> is public. The prototype can be a window behind the existing app&rsquo;s Debug menu (same font, same theme, side-by-side with route A) — with Frank&rsquo;s warning attached: that is a prototype shape only; once decided, converge on one rendering path, no user-visible dual mode.</p>
+
+<h3>What the prototype must answer (as amended by Frank)</h3>
+<ul>
+  <li><strong>Does the attach come up at all</strong> — the first gate is terminfo: under <code>.exec</code>, <code>TERM=xterm-ghostty</code>, an entry installed by Ghostty.app and not guaranteed present; tmux refuses unknown TERMs. ghostty&rsquo;s <code>term</code> configuration key can downgrade it (inferred, untested).</li>
+  <li><strong>Scrolling feel</strong> — consistent with what the owner felt in other terminals. The foundation of the whole trade.</li>
+  <li><strong>Actually use copy-mode search and <code>display-popup</code></strong> inside the embedded surface — these two are the motive itself, and must be used by hand, not merely shown to render.</li>
+  <li><strong>Sidebar ↔ embedded-client linkage</strong> — click a row → <code>select-window</code> → the picture follows; and the reverse, a <code>prefix</code> switch → the rail follows. All of route B&rsquo;s new seams live on this edge.</li>
+  <li><strong>Status-line experiment: grouped sessions</strong> — Frank&rsquo;s third path (<code>new-session -t</code> creates a shadow session in the same group: windows shared, session options independent, so <code>status off</code> on the shadow does not touch the owner&rsquo;s original session; side effects: visible in <code>tmux ls</code>, needs cleanup on exit; mechanism inferred from man, unmeasured). If it holds, TODO §5&rsquo;s multiple-windows item actually becomes <em>easier</em> on route B, since each app window gets its own current window.</li>
+  <li><strong>Select &amp; copy</strong> — copy-mode selection landing on the system clipboard via OSC 52. Demoted to a quick confirmation: the clipboard callback already exists in the package (code-read), so this will most likely just pass.</li>
+  <li><strong>Attach a second, real terminal at the same time</strong> — feel the resize behaviour with two clients of different sizes.</li>
+</ul>
+<p>All of it on an isolated <code>-L</code> server; nothing touches real sessions until the owner chooses to point the window at one. Two milestones: scrolling within minutes, then hanging off the Debug menu for daily use.</p>
+
+<p>Per this repository&rsquo;s convention, the provenance of every load-bearing claim:</p>
+
+<table>
+  <thead>
+    <tr><th>Claim</th><th>Grade</th><th>Basis</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Route B&rsquo;s outer scrollback is permanently empty</td>
+      <td><span class="pill warn">not measured here</span></td>
+      <td>The accepted working model of tmux as a full-screen app; one minute to verify — attach in any terminal and scroll</td>
+    </tr>
+    <tr>
+      <td><code>status</code> is a session option, no per-client switch</td>
+      <td><span class="pill good">checked</span></td>
+      <td>man tmux 3.6a, &ldquo;Available session options&rdquo;, checked on this machine 2026-07-30</td>
+    </tr>
+    <tr>
+      <td>Route B needs no self-managed pty: <code>.exec</code> backend exists and is the default</td>
+      <td><span class="pill good">re-verified</span></td>
+      <td>The second version&rsquo;s &ldquo;only .inMemory&rdquo; was a search mistake; after Frank flagged it: <code>TerminalSessionBackend.swift:9</code>, <code>TerminalSurfaceOptions.swift:23</code> (default), <code>TerminalController+Surface.swift:85</code> (maps to <code>GHOSTTY_SURFACE_IO_BACKEND_EXEC</code>), per-surface <code>envVars</code> public</td>
+    </tr>
+    <tr>
+      <td>Protocol traps paid for and guarded by regression tools</td>
+      <td><span class="pill good">repo record</span></td>
+      <td>TODO §0 / §4b all closed; the four checkers have rerunnable commands in CLAUDE.md</td>
+    </tr>
+    <tr>
+      <td>copy mode and <code>display-popup</code> put nothing on the control stream (unreachable on route A)</td>
+      <td><span class="pill good">Frank measured</span></td>
+      <td>Isolated <code>-L</code> server, tmux 3.6a, full control-stream capture with a sentinel validating the method; not re-run in this session — accepted with attribution</td>
+    </tr>
+    <tr>
+      <td>The side channel can switch off <code>%output</code> with client flag <code>no-output</code></td>
+      <td><span class="pill good">checked</span></td>
+      <td>man tmux 3.6a lists the flag (this machine, 2026-07-30); runtime behaviour not exercised</td>
+    </tr>
+    <tr>
+      <td>Route B scrolling feels identical to attaching from another terminal</td>
+      <td><span class="pill warn">inferred</span></td>
+      <td>Depends on faithful mouse reporting, which <code>.exec</code> gives for free; the prototype&rsquo;s first check</td>
+    </tr>
+    <tr>
+      <td>Grouped session gives the embedded client its own <code>status off</code>; terminfo is <code>.exec</code>&rsquo;s first gate</td>
+      <td><span class="pill warn">inferred, untested</span></td>
+      <td>Both derived from man / ghostty documentation; listed as prototype checks</td>
+    </tr>
+    <tr>
+      <td>The owner&rsquo;s tmux has <code>mouse on</code> and <code>set-clipboard on</code></td>
+      <td><span class="pill good">checked</span></td>
+      <td><code>~/.tmux.conf</code> lines 22 / 25, confirmed against the live server with a read-only <code>show-options -g</code> (2026-07-30)</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="footer">
+  <span>TmuxGUI · embedding the whole of tmux · 2026-07-30</span>
+  <span>at commit <code>253060a</code> · <code>docs/embed-tmux-evaluation.html</code></span>
+</div>
+
+</div>
+</body>
+</html>
