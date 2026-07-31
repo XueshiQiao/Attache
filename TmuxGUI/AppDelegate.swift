@@ -2,7 +2,18 @@ import Cocoa
 import GhosttyTerminal
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private let defaultContentSize = NSSize(width: 1280, height: 780)
+    /// A share of the screen rather than a fixed size in points.
+    ///
+    /// 1280×780 was dialled in on one display and is a different window on
+    /// every other one — a third of a 5K panel, most of a laptop's. These
+    /// fractions are of the screen's *visible* frame, so the menu bar and the
+    /// Dock are already out of it and the window cannot come up underneath
+    /// either.
+    private static let defaultScreenFraction = (width: 0.75, height: 0.70)
+
+    /// The fallback for a machine that reports no screen at all — headless CI,
+    /// or a session with no display attached. Never used with a screen present.
+    private let fallbackContentSize = NSSize(width: 1280, height: 780)
     private let minimumContentSize = NSSize(width: 700, height: 380)
     private var window: NSWindow?
     private var main: MainViewController?
@@ -16,11 +27,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         private var inspectorMenuItem: NSMenuItem?
     #endif
 
+    /// The window's opening size, as a share of the screen it will open on.
+    ///
+    /// `visibleFrame` rather than `frame`: the second one includes the menu bar
+    /// and the space the Dock occupies, so a fraction of it puts part of the
+    /// window under both. `window.screen` is nil before the window is placed,
+    /// so this falls back to the main screen — which is where `center()` puts
+    /// it anyway.
+    ///
+    /// Clamped to the minimum, because a fraction of a very small display can
+    /// be smaller than the window is allowed to be, and `setContentSize` with
+    /// something below `contentMinSize` is silently ignored.
+    private func defaultContentSize(for window: NSWindow) -> NSSize {
+        guard let screen = window.screen ?? NSScreen.main else { return fallbackContentSize }
+        let visible = screen.visibleFrame
+        return NSSize(
+            width: max(visible.width * Self.defaultScreenFraction.width, minimumContentSize.width),
+            height: max(visible.height * Self.defaultScreenFraction.height, minimumContentSize.height)
+        )
+    }
+
     func applicationDidFinishLaunching(_: Notification) {
         // Before anything draws: pin the process appearance if the user asked
         // for one, then derive the chrome colours from whichever half of the
         // theme that leaves showing. Both are read-only with respect to the
         // stored settings, so a launch cannot rewrite them.
+        // Before any setting is read: move them out of the plist if this is the
+        // first run of a build that keeps them in a file. See `SettingsFile`.
+        SettingsFile.migrateFromUserDefaultsIfNeeded(keys: AppSettings.plistKeys)
         AppSettings.applyAppearanceOverride()
         ChromeTheme.reload()
 
@@ -99,7 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         #endif
 
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: defaultContentSize),
+            contentRect: NSRect(origin: .zero, size: fallbackContentSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -157,8 +191,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Assigning a content view controller resizes the window to fit that
         // view, and an empty container has no intrinsic size — so the window
         // collapses to `contentMinSize` unless the size is restated here.
-        window.setContentSize(defaultContentSize)
-        window.center()
+        window.setContentSize(defaultContentSize(for: window))
+        // Not `center()`. AppKit's centre is deliberately *not* the middle: it
+        // puts the window a third of the way down, which is the right answer
+        // for a dialog and reads as "sitting high" for a window this size.
+        // Measured on this machine before the change — 73pt left of centre and
+        // 45pt above it.
+        if let visible = (window.screen ?? NSScreen.main)?.visibleFrame {
+            let frame = window.frame
+            window.setFrameOrigin(NSPoint(
+                x: visible.minX + (visible.width - frame.width) / 2,
+                y: visible.minY + (visible.height - frame.height) / 2
+            ))
+        } else {
+            window.center()
+        }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.window = window

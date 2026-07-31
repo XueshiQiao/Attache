@@ -25,36 +25,76 @@ import GhosttyTheme
 ///   setting with this build's idea of the legal range.
 enum AppSettings {
 
+    /// The name each setting has in `~/.config/tmux-gui.toml`.
+    ///
+    /// Written for a person to read, because the file is one a person edits.
+    /// The plist names these replaced are in `plistKeys` below, which exists
+    /// only so the one-time migration can find them.
     enum Key {
-        static let fontFamily           = "TmuxGUIFontFamily"
-        static let fontSize             = "TmuxGUIFontSize"
-        static let appearance           = "TmuxGUIAppearance"
-        static let lightTheme           = "TmuxGUILightTheme"
-        static let darkTheme            = "TmuxGUIDarkTheme"
-        static let scrollbackPrimeLines = "TmuxGUIScrollbackPrimeLines"
-        static let sidebarWidth         = "TmuxGUISidebarWidth"
-        static let closingTabKills      = "TmuxGUIClosingTabKills"
-        static let paneFocusRing        = "TmuxGUIPaneFocusRing"
-        static let copyOnSelect         = "TmuxGUICopyOnSelect"
-        static let quickActions         = "TmuxGUIQuickActions"
-        static let windowOpacity        = "TmuxGUIWindowOpacity"
-        static let backgroundBlur       = "TmuxGUIBackgroundBlur"
-        static let chromeMaterial       = "TmuxGUIChromeMaterial"
-        static let frostiness           = "TmuxGUIFrostiness"
-        static let blurRadius           = "TmuxGUIBlurRadius"
-        static let railExtraTint        = "TmuxGUIRailExtraTint"
-        static let glassStyle           = "TmuxGUIGlassStyle"
-        static let sidebarShowsGit      = "TmuxGUISidebarShowsGit"
-        static let sidebarShowsAgent    = "TmuxGUISidebarShowsAgent"
-        static let sidebarShowsAgentText = "TmuxGUISidebarShowsAgentText"
-        static let sidebarShowsAgentStats = "TmuxGUISidebarShowsAgentStats"
-        static let sidebarShowsUsage    = "TmuxGUISidebarShowsUsage"
-        static let agentStateSource     = "TmuxGUIAgentStateSource"
-        static let logsAgentTransitions = "TmuxGUILogsAgentTransitions"
-        static let gitAutoFetch         = "TmuxGUIGitAutoFetch"
-        static let gitAutoFetchMinutes  = "TmuxGUIGitAutoFetchMinutes"
-        static let liquidGlassClear     = "TmuxGUILiquidGlassClear"
+        static let fontFamily             = "font_family"
+        static let fontSize               = "font_size"
+        static let appearance             = "appearance"
+        static let lightTheme             = "light_theme"
+        static let darkTheme              = "dark_theme"
+        static let scrollbackPrimeLines   = "scrollback_prime_lines"
+        static let sidebarWidth           = "sidebar_width"
+        static let closingTabKills        = "closing_tab_kills_window"
+        static let paneFocusRing          = "pane_focus_ring"
+        static let copyOnSelect           = "copy_on_select"
+        static let quickActions           = "quick_actions"
+        static let windowOpacity          = "window_opacity"
+        static let backgroundBlur         = "background_blur"
+        static let chromeMaterial         = "chrome_material"
+        static let frostiness             = "frostiness"
+        static let blurRadius             = "blur_radius"
+        static let railExtraTint          = "rail_extra_tint"
+        static let glassStyle             = "glass_style"
+        static let sidebarShowsGit        = "sidebar_shows_git"
+        static let sidebarShowsAgent      = "sidebar_shows_agent"
+        static let sidebarShowsAgentText  = "sidebar_shows_agent_text"
+        static let sidebarShowsAgentStats = "sidebar_shows_agent_stats"
+        static let sidebarShowsUsage      = "sidebar_shows_usage"
+        static let agentStateSource       = "agent_state_source"
+        static let logsAgentTransitions   = "logs_agent_transitions"
+        static let gitAutoFetch           = "git_auto_fetch"
+        static let gitAutoFetchMinutes    = "git_auto_fetch_minutes"
+        static let liquidGlassClear       = "liquid_glass_clear"
     }
+
+    /// The old `UserDefaults` name for each key, for the migration and nothing
+    /// else. Deleting an entry here does not remove a setting — it strands
+    /// whatever the user had stored under it, so entries stay until the
+    /// migration itself is retired.
+    static let plistKeys: [String: String] = [
+        "TmuxGUIFontFamily": "font_family",
+        "TmuxGUIFontSize": "font_size",
+        "TmuxGUIAppearance": "appearance",
+        "TmuxGUILightTheme": "light_theme",
+        "TmuxGUIDarkTheme": "dark_theme",
+        "TmuxGUIScrollbackPrimeLines": "scrollback_prime_lines",
+        "TmuxGUISidebarWidth": "sidebar_width",
+        "TmuxGUIClosingTabKills": "closing_tab_kills_window",
+        "TmuxGUIPaneFocusRing": "pane_focus_ring",
+        "TmuxGUICopyOnSelect": "copy_on_select",
+        "TmuxGUIQuickActions": "quick_actions",
+        "TmuxGUIWindowOpacity": "window_opacity",
+        "TmuxGUIBackgroundBlur": "background_blur",
+        "TmuxGUIChromeMaterial": "chrome_material",
+        "TmuxGUIFrostiness": "frostiness",
+        "TmuxGUIBlurRadius": "blur_radius",
+        "TmuxGUIRailExtraTint": "rail_extra_tint",
+        "TmuxGUIGlassStyle": "glass_style",
+        "TmuxGUISidebarShowsGit": "sidebar_shows_git",
+        "TmuxGUISidebarShowsAgent": "sidebar_shows_agent",
+        "TmuxGUISidebarShowsAgentText": "sidebar_shows_agent_text",
+        "TmuxGUISidebarShowsAgentStats": "sidebar_shows_agent_stats",
+        "TmuxGUISidebarShowsUsage": "sidebar_shows_usage",
+        "TmuxGUIAgentStateSource": "agent_state_source",
+        "TmuxGUILogsAgentTransitions": "logs_agent_transitions",
+        "TmuxGUIGitAutoFetch": "git_auto_fetch",
+        "TmuxGUIGitAutoFetchMinutes": "git_auto_fetch_minutes",
+        "TmuxGUILiquidGlassClear": "liquid_glass_clear",
+    ]
 
     /// Posted after any setting changes, with `ChromeTheme.current` already
     /// rebuilt. Open surfaces re-read what they need instead of relaunching.
@@ -161,7 +201,7 @@ enum AppSettings {
 
     // ─── Accessors ───────────────────────────────────────────────────────────
 
-    private static var store: UserDefaults { .standard }
+    private static var store: SettingsFile { .shared }
 
     /// Empty means "whatever libghostty picks", which is what the app used
     /// before there was a setting.
@@ -595,18 +635,16 @@ enum AppSettings {
     /// Unreadable stored data falls back to the installed list rather than
     /// throwing the menu away, because the alternative is a menu that silently
     /// empties itself after an upgrade.
+    /// The user's Quick Actions menu.
+    ///
+    /// `nil` from the store means "never edited" and yields the installed list;
+    /// an empty *array* is a list the user emptied on purpose and stays empty.
+    /// The two have to be told apart or clearing the table would put the
+    /// default entry straight back, which reads as the app refusing to be
+    /// edited.
     static var quickActions: [QuickAction] {
-        get {
-            guard let data = store.data(forKey: Key.quickActions) else {
-                return QuickAction.installed
-            }
-            return (try? JSONDecoder().decode([QuickAction].self, from: data))
-                ?? QuickAction.installed
-        }
-        set {
-            guard let data = try? JSONEncoder().encode(newValue) else { return }
-            store.set(data, forKey: Key.quickActions)
-        }
+        get { store.storedQuickActions ?? QuickAction.installed }
+        set { store.setQuickActions(newValue) }
     }
 
     // ─── Derived values ──────────────────────────────────────────────────────
