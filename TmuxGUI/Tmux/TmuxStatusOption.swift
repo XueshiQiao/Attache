@@ -28,11 +28,23 @@ enum TmuxStatusOption {
     /// `#{status_lines}` would be the obvious format and does not exist on
     /// 3.6a — measured, it expands to nothing — so the option itself is read.
     static func lines(tmuxPath: String, sessionID: String) -> Int {
-        switch value(tmuxPath: tmuxPath, sessionID: sessionID) {
+        switch value(tmuxPath: tmuxPath, sessionID: sessionID, option: "status") {
         case "off": 0
         case "on": 1
         case let other: Int(other) ?? 1
         }
+    }
+
+    /// Whether the status line sits above the window's rows rather than below.
+    ///
+    /// It decides what a click's row *means*. `pane_top` counts from the top of
+    /// the window, and the window starts below a top-positioned status line —
+    /// so on `status-position top` with two status rows, screen row 5 is window
+    /// row 3, and reading it as row 5 lands past a horizontal divider and in
+    /// the pane underneath. Which then answers with its own directory, and a
+    /// relative link opens the wrong file rather than failing to open.
+    static func isAtTop(tmuxPath: String, sessionID: String) -> Bool {
+        value(tmuxPath: tmuxPath, sessionID: sessionID, option: "status-position") == "top"
     }
 
     /// The effective value, session first and then global.
@@ -43,11 +55,10 @@ enum TmuxStatusOption {
     /// session answered empty while the global value was `on`. Reading that as
     /// "on" happens to be right until somebody's `.tmux.conf` says
     /// `set -g status 2`.
-    private static func value(tmuxPath: String, sessionID: String) -> String {
-        let session = run(tmuxPath, ["show-options", "-v", "-t", sessionID, "status"])
+    private static func value(tmuxPath: String, sessionID: String, option: String) -> String {
+        let session = run(tmuxPath, ["show-options", "-v", "-t", sessionID, option])
         guard session.isEmpty else { return session }
-        let global = run(tmuxPath, ["show-options", "-gv", "status"])
-        return global.isEmpty ? "on" : global
+        return run(tmuxPath, ["show-options", "-gv", option])
     }
 
     private static func run(_ tmuxPath: String, _ arguments: [String]) -> String {

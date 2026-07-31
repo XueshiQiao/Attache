@@ -922,6 +922,116 @@ final class TmuxSessionConnection {
     /// - Parameter historyLines: how far back to read, or nil for the visible
     ///   screen alone. tmux clamps to what the pane actually has, so asking for
     ///   more than it has is free.
+    /// The directory of the pane covering one cell of the window on screen.
+    ///
+    /// The one thing that can resolve a relative path clicked inside a pane:
+    /// `src/main.swift` means nothing without it.
+    ///
+    /// **Asked of tmux by coordinate rather than worked out from the cached
+    /// model, and that is the whole point of it.** `windows` on this object is
+    /// refreshed by a control-mode notification followed by a `list-windows`
+    /// round trip, so in the moment after the user switches windows in the
+    /// embedded client the screen already shows the new window while this side
+    /// still holds the old one's layout. A click resolved against that names a
+    /// pane which is not under the pointer any more, and hands a relative path
+    /// some other directory entirely. `list-panes -t <session>` reports the
+    /// *current* window — the one being drawn — and gives the geometry and the
+    /// directory in the same reply.
+    ///
+    /// `pane_right` and `pane_bottom` are inclusive. Measured on tmux 3.6a: an
+    /// 80-column window split left/right gives panes at 0...39 and 41...79, and
+    /// the missing column is the divider, which belongs to no pane and
+    /// correctly answers nil here.
+    ///
+    /// **Known limitation: a `display-popup` is not accounted for.** A popup is
+    /// drawn *over* the panes and is not one of them, so a click inside it
+    /// resolves to whichever pane lies underneath, and a relative link clicked
+    /// in a popup opens against that pane's directory instead of the popup's.
+    /// Absolute paths and URLs are unaffected, since they never ask this
+    /// question. It is left standing because nothing on 3.6a reports a popup's
+    /// own directory, and refusing every relative link that *might* be in a
+    /// popup would mean refusing all of them.
+    func workingDirectory(
+        atColumn column: Int,
+        row: Int,
+        completion: @escaping (String?) -> Void
+    ) {
+        // The zoom flag and the active flag travel together as two characters,
+        // because **a zoomed window still reports every pane's old rectangle**.
+        // Measured on tmux 3.6a: zoom the right-hand pane of an 80-column split
+        // and the hidden left pane goes on claiming 0...39 while the zoomed one
+        // claims 0...79. They overlap, the hidden pane is listed first, and
+        // taking the first match would answer a click on the left half of a
+        // zoomed pane with the directory of a pane that is not on screen at all.
+        let format = "#{pane_left} #{pane_top} #{pane_right} #{pane_bottom}"
+            + " #{window_zoomed_flag}#{pane_active} #{pane_current_path}"
+        client.run("list-panes -t \(sessionTarget) -F '\(format)'") { reply, failed in
+            guard !failed else {
+                completion(nil)
+                return
+            }
+            for line in reply {
+                // A path can hold spaces, so only the five fields ahead of it
+                // are split off.
+                let parts = line.split(
+                    separator: " ", maxSplits: 5, omittingEmptySubsequences: false
+                )
+                guard parts.count == 6,
+                      let left = Int(parts[0]), let top = Int(parts[1]),
+                      let right = Int(parts[2]), let bottom = Int(parts[3]),
+                      // Zoomed, and not the pane being shown: it is off screen.
+                      parts[4] != "10",
+                      column >= left, column <= right, row >= top, row <= bottom
+                else { continue }
+                let path = parts[5].trimmingCharacters(in: .whitespaces)
+                completion(path.isEmpty ? nil : path)
+                return
+            }
+            completion(nil)
+        }
+    }
+
+    /// Put one line on tmux's own status line, where the user can actually see
+    /// it. Used to say that a link led nowhere.
+    ///
+    /// Two things here are not obvious, and the first version got both wrong.
+    ///
+    /// **`-c`, because this connection is not the client on screen.** Every
+    /// session here has two clients: this one, a `tmux -C attach` control
+    /// client with no tty, and the plain `tmux attach` libghostty runs, which
+    /// is the one being drawn. `display-message` with no `-c` goes to the
+    /// *current* client — the control one — which draws no status line at all,
+    /// so the message was sent, logged, and invisible. That is exactly the
+    /// shape of mistake to distrust: the log said it happened. Verified
+    /// against the running app on 2026-07-31, where `list-clients` showed
+    /// `client-48395 control=1` beside `/dev/ttys027 control=0` for one
+    /// session. All the non-control clients get it, because a person watching
+    /// the same session from their own terminal is watching the same thing.
+    ///
+    /// **`-l`, because the message is expanded as a tmux format otherwise.**
+    /// `TmuxCommand.quote` settles how tmux's *command parser* reads the
+    /// argument and stops there; format expansion happens afterwards, on the
+    /// text. The text is a path that came off the screen, and a pane can print
+    /// anything — an OSC 8 hyperlink's target never has to look like a path to
+    /// begin with. Measured on tmux 3.6a: `display-message -p "A#{pane_id}B"`
+    /// prints `A%0B`, so `#{...}` is substituted, while `-l` prints it
+    /// literally. `#(shell-command)` did *not* execute in that same test — two
+    /// runs, no file created — but leaving it to a version's behaviour when
+    /// there is a flag that means "literal" is not a trade worth making.
+    func showStatusMessage(_ text: String) {
+        client.run("list-clients -t \(sessionTarget) -F '#{client_control_mode}#{client_name}'") {
+            [weak self] reply, failed in
+            guard let self, !failed else { return }
+            for line in reply where line.hasPrefix("0") {
+                let name = String(line.dropFirst())
+                guard !name.isEmpty else { continue }
+                self.client.send(
+                    "display-message -l -c \(TmuxCommand.quote(name)) \(TmuxCommand.quote(text))"
+                )
+            }
+        }
+    }
+
     func capturePane(
         paneID: String,
         historyLines: Int?,

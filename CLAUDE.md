@@ -203,6 +203,20 @@ It splits every case at every byte boundary and again one byte per chunk,
 because tmux cuts `%output` wherever its own buffer ends — including between the
 `ESC` and the `k`.
 
+**`TerminalLinkTarget` has one, and it decides what a click opens on the user's
+machine.** libghostty matches the link and draws the underline; this turns the
+matched string into a file, a directory, a URL or nothing. The two directions
+fail differently — refusing a real path is a click that does nothing, while
+accepting the wrong string hands a run of screen text to the system opener,
+which is why schemes are an allow-list rather than "anything with a colon".
+The file system is injected, so every case runs with no disk and no screen:
+
+```sh
+swiftc -O -o /tmp/linktargetcheck TmuxGUI/UI/TerminalLinkTarget.swift \
+  Tools/LinkTargetCheck/main.swift
+/tmp/linktargetcheck
+```
+
 **Screenshots need an awake display, and there is no way to wake one from
 here.** `screencapture` answers `could not create image from display` and the
 inspector's `/shot` composites the window to plain white — both of which read
@@ -340,6 +354,23 @@ one of them presents as "the code is obviously correct and yet".
 - **libghostty claims ⌘ keys.** Its terminal view treats them as candidates for
   its own keybinds before the main menu is consulted. `TmuxTerminalView`
   overrides `performKeyEquivalent` to give the menu first refusal.
+- **libghostty already matches file paths, and `mouse on` hides that
+  completely.** Its default matcher has three branches — schemed URLs, absolute
+  and `./ ../` paths, and bare relative paths like `src/config/url.zig` — and
+  the comment on it in Ghostty's source reads "detect URLs and file paths in
+  terminal output". None of it is visible here, because link detection is
+  skipped *entirely* while the program in the terminal has mouse reporting on,
+  and tmux runs with `mouse on`. ⌘-hover therefore does nothing at all and
+  reads exactly like a feature that was never implemented. The one exception
+  Ghostty allows is ⇧, and it then strips ⇧ back off before comparing against
+  the configured ⌘ (`mouseModsWithCapture`) — so ⇧⌘ works out of the box and
+  `TerminalLinkGesture` rewrites any other gesture into it. Two things follow.
+  **Do not read the local ghostty checkout to decide what libghostty supports**:
+  it is a different commit from the pinned submodule, and this was called
+  unsupported on that basis before `strings` on the actual `libghostty.a`
+  settled it. And **do not turn `link-url` off** to stop it competing with
+  hand-written detection — that key deletes the whole default matcher, paths
+  included. Measured 2026-07-31 against the linked binary.
 - **tmux answers a control client with reply blocks it never asked for, and the
   `%begin` flags field is the only thing that says so.** `%begin <time> <number>
   <flags>`: flags is 1 when the block is the reply to a command *this* client
@@ -396,6 +427,25 @@ one of them presents as "the code is obviously correct and yet".
   prompt. `TerminalReply` filters them out on the bytes. It cannot be done on
   provenance: a keystroke's write callback arrives asynchronously on the same
   queue as a mouse report, so the call stack carries nothing to key off.
+  **That filter is not in the path any more.** It was on the write callback the
+  pane renderer owned, and deleting the renderer on 2026-07-31 took its last
+  call site with it: `TerminalReply.swift` and its check tool are still here and
+  still correct, but nothing calls them. Everything libghostty writes now goes
+  straight down the pty that `tmux attach` is reading.
+- **Mouse input reaches tmux now, and the note that said otherwise was true of
+  a version that no longer exists.** The comment at `rightMouseDown` recorded,
+  on 2026-07-29, that neither a right-click nor a left click produced a single
+  outbound byte — measured against the pane renderer, where the app sat in the
+  middle. On the `tmux attach` surface it is the opposite: **clicking a window's
+  name in tmux's own status line switches windows**, measured 2026-07-31 by
+  clicking one and watching `#{window_id}` change from `@124` to `@101`.
+  Two things follow, and both are load-bearing for `TerminalLinkGesture`.
+  Any NSEvent this app synthesises and hands to libghostty is real input as far
+  as the program in the pane is concerned — a fabricated mouse move on a
+  modifier press would send motion the user never made to whatever is tracking
+  the mouse. And a press-drag-release sequence has to be rewritten as a whole or
+  not at all, because libghostty decides *per event* whether ⇧ keeps it local,
+  so rewriting only the press hands tmux motion with no press under it.
 - **`%output` is written for a terminal we are not.** tmux's wiki says it is
   "exactly what the application running in the pane sent to tmux", carrying
   escape sequences "as expected by tmux (so for `TERM=screen` or `TERM=tmux`)" —

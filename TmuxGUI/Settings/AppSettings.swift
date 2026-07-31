@@ -59,6 +59,8 @@ enum AppSettings {
         static let gitAutoFetch           = "git_auto_fetch"
         static let gitAutoFetchMinutes    = "git_auto_fetch_minutes"
         static let liquidGlassClear       = "liquid_glass_clear"
+        static let linkClick              = "link_click"
+        static let linkModifier           = "link_modifier"
     }
 
     /// The old `UserDefaults` name for each key, for the migration and nothing
@@ -495,6 +497,29 @@ enum AppSettings {
     static var closingTabKillsWindow: Bool {
         get { store.object(forKey: Key.closingTabKills) as? Bool ?? false }
         set { store.set(newValue, forKey: Key.closingTabKills) }
+    }
+
+    /// Whether a modifier turns a path or URL under the pointer into a link.
+    ///
+    /// On by default: the matching and the underline are libghostty's own and
+    /// cost nothing to leave on, and with this off the gesture is simply an
+    /// ordinary click.
+    static var linkClickEnabled: Bool {
+        get { store.object(forKey: Key.linkClick) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.linkClick) }
+    }
+
+    /// Which modifier that is.
+    ///
+    /// A stored value that is not a gesture resolves to the default without
+    /// the key being rewritten, the same way a missing theme name does, so a
+    /// gesture added by a newer build survives being opened by an older one.
+    static var linkModifier: TerminalLinkGesture {
+        get {
+            (store.object(forKey: Key.linkModifier) as? String)
+                .flatMap(TerminalLinkGesture.init(rawValue:)) ?? .command
+        }
+        set { store.set(newValue.rawValue, forKey: Key.linkModifier) }
     }
 
     /// Whether a window row carries a second line with its repository's state.

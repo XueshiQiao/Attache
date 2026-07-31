@@ -120,10 +120,157 @@ final class TmuxTerminalView: TerminalView {
     /// `AppDelegate`: anything that owns a gesture has to say so here.
     override var mouseDownCanMoveWindow: Bool { false }
 
-    // There is deliberately no `mouseUp` here. Copy-on-select is libghostty's,
-    // through the `copy-on-select` key in the terminal configuration — see
+    // Nothing here copies a selection. Copy-on-select is libghostty's, through
+    // the `copy-on-select` key in the terminal configuration — see
     // `AppSettings.terminalConfiguration`. A copy made here as well is what made
-    // the setting do the opposite of what it said.
+    // the setting do the opposite of what it said. The mouse overrides below
+    // rewrite modifiers and hand the event straight on; none of them acts on a
+    // selection.
+
+    // MARK: - Links under the pointer
+
+    /// The gesture that makes a path or URL under the pointer clickable, or nil
+    /// when the feature is off. Set by whoever reads the settings; the view
+    /// deliberately does not, the same arrangement `onDropText` uses.
+    ///
+    /// Why the event is rewritten at all is on `TerminalLinkGesture`.
+    var linkGesture: (() -> TerminalLinkGesture?)?
+
+    /// Where the last press carrying the configured gesture landed, in this
+    /// view's coordinates, and nil for a press that did not carry it.
+    ///
+    /// Two jobs, and the second one is a guard. libghostty's open-URL callback
+    /// carries the matched string and nothing else — no pane, no point — so a
+    /// *relative* match like `src/main.swift` has no directory to resolve
+    /// against without this. And nil is what tells the controller to ignore an
+    /// open it never asked for: ⇧⌘ reaches Ghostty's own link handling
+    /// whatever this app does, so with the feature switched off — or with a
+    /// different gesture configured — a ⇧⌘-click would still open things
+    /// unless the acting end checks that the press was one of ours.
+    private(set) var lastLinkPress: NSPoint?
+
+    /// Only a real move is rewritten here, and the type check is the whole
+    /// point of the guard.
+    ///
+    /// libghostty's own `mouseDragged` ends by calling `mouseMoved(with:)` —
+    /// a virtual call, so it lands in this override carrying a
+    /// `.leftMouseDragged` event. Without the check, a plain drag that the
+    /// press did *not* rewrite would start being rewritten the moment the user
+    /// pressed the modifier mid-drag, which is exactly the split sequence
+    /// `pressWasRewritten` exists to prevent: tmux would have the press and the
+    /// release while libghostty quietly kept the motion in between.
+    override func mouseMoved(with event: NSEvent) {
+        guard event.type == .mouseMoved else {
+            super.mouseMoved(with: event)
+            return
+        }
+        super.mouseMoved(with: linkMouseEvent(from: event) ?? event)
+    }
+
+    /// Whether the press that is currently down was rewritten.
+    ///
+    /// A press, the drags that follow it and its release are one gesture and
+    /// have to arrive at one consumer. libghostty decides *per event* whether
+    /// ⇧ takes that event away from the program in the terminal, so rewriting
+    /// only the press splits the sequence in two: the press is handled locally
+    /// while an unrewritten drag is still eligible to be reported onward, and
+    /// the program is then sent motion with no button-press under it.
+    ///
+    /// That mouse input reaches tmux at all is measured rather than assumed —
+    /// clicking a window's name in tmux's own status line switches windows in
+    /// this app, 2026-07-31. The note in CLAUDE.md saying no mouse button
+    /// reaches a pane was true of the pane renderer and is not true now.
+    private var pressWasRewritten = false
+
+    override func mouseDown(with event: NSEvent) {
+        let translated = linkMouseEvent(from: event)
+        pressWasRewritten = translated != nil
+        lastLinkPress = translated == nil ? nil : convert(event.locationInWindow, from: nil)
+        super.mouseDown(with: translated ?? event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        super.mouseDragged(with: pressWasRewritten ? forcedLinkEvent(from: event) : event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let continuing = pressWasRewritten
+        pressWasRewritten = false
+        super.mouseUp(with: continuing ? forcedLinkEvent(from: event) : event)
+    }
+
+    // There is deliberately no `flagsChanged` override, and getting here took
+    // two wrong turns worth recording.
+    //
+    // Rewriting the modifier event was the first. The synthesised event keeps
+    // the physical key's `keyCode` while carrying different flags, and
+    // libghostty reads press-versus-release off whether that key is in the
+    // flags — so a press can arrive as the release of a key that is still
+    // held, and a program using a keyboard protocol that reports modifiers is
+    // told about an event that never happened.
+    //
+    // Synthesising a *mouse move* on a modifier change was the second, and it
+    // is no better: libghostty passes a move to its cursor-position API, which
+    // is the same path that reports the pointer to the program. Pressing ⌘
+    // while a mouse-reporting program sits under the pointer would send it
+    // motion the user never made — the same class of defect as the 705
+    // unrequested mouse reports recorded in CLAUDE.md, and there is no filter
+    // left in the way, because `TerminalReply` lost its call sites when the
+    // pane renderer was deleted.
+    //
+    // So neither exists, and the cost is one honest limitation: holding the
+    // modifier without moving the pointer does not light up the link under it
+    // until the pointer moves a pixel.
+
+    private func linkModifiers(for event: NSEvent) -> NSEvent.ModifierFlags? {
+        // `mouseMoved` is the hottest path in the app — it fires for every
+        // pixel of pointer travel across a pane — and a bare move carries no
+        // modifier at all. Testing the flags first means the ordinary case
+        // costs one mask-and-compare and never reaches the settings store,
+        // which is two dictionary lookups and a string-to-enum away.
+        guard !event.modifierFlags.intersection(TerminalLinkGesture.considered).isEmpty,
+              let gesture = linkGesture?()
+        else { return nil }
+        return gesture.ghosttyFlags(for: event.modifierFlags)
+    }
+
+    private func linkMouseEvent(from event: NSEvent) -> NSEvent? {
+        guard let flags = linkModifiers(for: event) else { return nil }
+        return mouseEvent(from: event, flags: flags)
+    }
+
+    /// Carry on a rewritten sequence whatever is being held *now*: the modifier
+    /// can be let go mid-drag, and the release still has to reach the consumer
+    /// its press went to.
+    private func forcedLinkEvent(from event: NSEvent) -> NSEvent {
+        mouseEvent(from: event, flags: TerminalLinkGesture.ghosttyEquivalent) ?? event
+    }
+
+    private func mouseEvent(from event: NSEvent, flags: NSEvent.ModifierFlags) -> NSEvent? {
+        // `clickCount` raises on an event that has none — a bare move is not a
+        // click — so it is read only for the types that carry one.
+        let clicks: Int
+        switch event.type {
+        case .leftMouseDown, .leftMouseUp, .leftMouseDragged,
+             .rightMouseDown, .rightMouseUp, .rightMouseDragged,
+             .otherMouseDown, .otherMouseUp, .otherMouseDragged:
+            clicks = event.clickCount
+        default:
+            clicks = 0
+        }
+        return NSEvent.mouseEvent(
+            with: event.type,
+            location: event.locationInWindow,
+            modifierFlags: flags,
+            timestamp: event.timestamp,
+            windowNumber: event.windowNumber,
+            context: nil,
+            eventNumber: event.eventNumber,
+            clickCount: clicks,
+            pressure: event.pressure
+        )
+    }
+
 
     // MARK: - Right-click
 
@@ -144,14 +291,17 @@ final class TmuxTerminalView: TerminalView {
     /// button presses are deliberate acts. Reading that, it looks as though a
     /// program with mouse tracking on receives right-clicks today.
     ///
-    /// **It does not.** Measured 2026-07-29 with htop running in a pane and the
-    /// surface's write callback logged: neither a right-click nor a plain left
-    /// click produced a single outbound byte. Nothing about mouse buttons
-    /// reaches a pane in this app at present, so the menu is not taking a
-    /// working mechanism away from anyone.
+    /// **That was true and is not any more.** Measured 2026-07-29 with htop in
+    /// a pane and the surface's write callback logged, neither a right-click
+    /// nor a left click produced a single outbound byte — but that was the pane
+    /// renderer, where this app sat between the surface and tmux. On the
+    /// `tmux attach` surface mouse input arrives: clicking a window's name in
+    /// tmux's own status line switches windows, measured 2026-07-31. So this
+    /// menu *is* taking a right-click away from the program in the pane, which
+    /// is what ⌥ right-click exists to give back.
     ///
-    /// ⌥ is kept anyway, at the cost of one condition. If pane mouse input is
-    /// ever wired up, the gesture that reaches it already exists and nothing
+    /// ⌥ is kept for that reason rather than as a road left open, at the cost
+    /// of one condition. The gesture that reaches the pane already exists and nothing
     /// here has to be renegotiated; and a right-click a user wants delivered
     /// rather than answered has somewhere to go.
     ///

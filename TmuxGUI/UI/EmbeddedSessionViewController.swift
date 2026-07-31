@@ -72,11 +72,20 @@ final class EmbeddedSessionViewController: NSViewController {
     /// `off`, `on`, or a count up to 5.
     private let statusRows: Int
 
+    /// Whether those rows sit above the window instead of below it, which
+    /// shifts every pane down the screen by that many rows. Only `cell(at:)`
+    /// cares.
+    private let statusAtTop: Bool
+
     /// Set from the surface's own resize callback, which is the only place a
     /// cell height can be had — it is font-derived, so it does not move unless
     /// the font does, and the overhang constraint below can safely depend on
     /// it.
     private var cellHeight: CGFloat = 0
+
+    /// The other half of the same measurement, kept only so a click's position
+    /// can be turned into the pane it landed in — see `paneID(at:)`.
+    private var cellWidth: CGFloat = 0
     private var overhang: NSLayoutConstraint?
 
 
@@ -84,6 +93,7 @@ final class EmbeddedSessionViewController: NSViewController {
         self.model = model
         let connection = model.connection
         statusRows = TmuxStatusOption.lines(tmuxPath: tmuxPath, sessionID: connection.sessionID)
+        statusAtTop = TmuxStatusOption.isAtTop(tmuxPath: tmuxPath, sessionID: connection.sessionID)
 
         let base = TerminalConfiguration(startingFrom: .default) { builder in
             builder.withBackgroundOpacity(0)
@@ -185,6 +195,11 @@ final class EmbeddedSessionViewController: NSViewController {
         terminalView.onDropText = { [weak self] text in
             guard let self, let paneID = model.activePaneID else { return false }
             return connection.paste(text: text, into: paneID)
+        }
+        // Read on every event rather than captured, so changing the gesture in
+        // the settings file takes effect without rebuilding the surface.
+        terminalView.linkGesture = {
+            AppSettings.linkClickEnabled ? AppSettings.linkModifier : nil
         }
 
         view = root
@@ -317,6 +332,11 @@ final class EmbeddedSessionViewController: NSViewController {
         // Device pixels on the way in — the same unit `PaneGridView` counts in,
         // and the same conversion back to points.
         let scale = max(view.window?.backingScaleFactor ?? 1, 1)
+        // Assigned before the early return below, which only guards the
+        // overhang constraint: the width has its own reader and a resize that
+        // changes the width without changing the height would otherwise leave
+        // it stale.
+        cellWidth = CGFloat(metrics.cellWidthPixels) / scale
         let height = CGFloat(metrics.cellHeightPixels) / scale
         guard height > 0, height != cellHeight else { return }
         cellHeight = height
@@ -333,15 +353,125 @@ final class EmbeddedSessionViewController: NSViewController {
         )
     }
 
+    // MARK: - Opening a link
+
+    /// Act on a link libghostty matched and the user clicked.
+    ///
+    /// The matching, the underline and the pointing-hand cursor are all
+    /// libghostty's; this is the other end of it, and until it existed the
+    /// gesture highlighted a path and then did nothing at all.
+    ///
+    /// Off the main thread because deciding what the string *is* means asking
+    /// the file system, and a path on a network volume that has gone away
+    /// blocks for as long as the mount takes to give up.
+    private func openLink(_ raw: String) {
+        // `lastLinkPress` being nil means the click was not the gesture this app
+        // offers — ⇧⌘ reaches libghostty's own link handling whatever the
+        // settings say, so without this `link_click = false` would not actually
+        // switch anything off.
+        guard AppSettings.linkClickEnabled, let press = terminalView.lastLinkPress else { return }
+        // The *cell* is what gets carried, not a pane id. Which pane covers a
+        // cell is tmux's to answer and it is asked below, because this side's
+        // window list lags the screen by a notification and a round trip.
+        let cell = cell(at: press)
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let direct = TerminalLinkTarget.resolve(raw, cwd: nil, existence: Self.existence)
+            // A URL or an absolute path is already answerable, so it opens
+            // without a round trip to tmux. Only a relative match has to ask
+            // which directory it belongs to.
+            guard direct == .unsupported else {
+                DispatchQueue.main.async { self?.perform(direct, raw: raw) }
+                return
+            }
+            guard let cell else {
+                DispatchQueue.main.async { self?.perform(.unsupported, raw: raw) }
+                return
+            }
+            DispatchQueue.main.async {
+                // A cell no pane covers — a divider, or a window that changed
+                // shape in between — answers nil and the click is dropped,
+                // which is the right end for it.
+                self?.connection.workingDirectory(atColumn: cell.column, row: cell.row) { cwd in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let target = TerminalLinkTarget.resolve(
+                            raw, cwd: cwd, existence: Self.existence
+                        )
+                        DispatchQueue.main.async { self?.perform(target, raw: raw) }
+                    }
+                }
+            }
+        }
+    }
+
+    private static func existence(_ path: String) -> TerminalLinkTarget.Existence {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else {
+            return .absent
+        }
+        return isDirectory.boolValue ? .directory : .file
+    }
+
+    /// A file reveals rather than opens: what a click means is "show me this",
+    /// and opening by extension would start an installer for a `.pkg` and a
+    /// disk image for a `.dmg` on a gesture the user meant as navigation.
+    private func perform(_ target: TerminalLinkTarget, raw: String) {
+        switch target {
+        case let .url(url):
+            NSWorkspace.shared.open(url)
+        case let .directory(path):
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        case let .file(path):
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        case let .missing(path):
+            // Said out loud on purpose. libghostty matches on shape and never
+            // asks the disk, so it underlines paths that are not there — and a
+            // click that silently does nothing reads as the app being broken.
+            connection.showStatusMessage("tmux-gui: no such path — \(path)")
+        case .unsupported:
+            connection.showStatusMessage("tmux-gui: not a path this app can open — \(raw)")
+        }
+    }
+
+    /// Which cell of tmux's grid a remembered click landed on.
+    ///
+    /// libghostty's open-URL callback carries the matched string and no
+    /// position at all, so the press has to be remembered by the view and read
+    /// back here. Answering in cells rather than in panes is deliberate: the
+    /// pane covering a cell is a question only tmux can answer without going
+    /// stale, and `TmuxSessionConnection.workingDirectory(atColumn:row:)` asks
+    /// it at the moment it matters.
+    private func cell(at point: NSPoint) -> (column: Int, row: Int)? {
+        guard cellWidth > 0, cellHeight > 0 else { return nil }
+        // The view's origin is bottom-left and tmux counts rows from the top.
+        let screenRow = Int((terminalView.bounds.height - point.y) / cellHeight)
+        // A status line above the window is not part of the window, so it has
+        // to come off before the row means anything to `pane_top`. Without
+        // this, `status-position top` with two rows reads a click two rows
+        // lower than it was — past a horizontal divider and into the pane
+        // below, which then answers with its own directory and opens the wrong
+        // file rather than nothing at all.
+        let row = screenRow - (statusAtTop ? statusRows : 0)
+        // Negative means the click was on the status line itself.
+        guard row >= 0 else { return nil }
+        return (column: Int(point.x / cellWidth), row: row)
+    }
+
     /// libghostty holds its delegate unowned-unsafe, so the conformance lives
     /// on an object this controller owns rather than on the controller itself —
     /// the same arrangement `TmuxPaneSurface` uses and for the same reason.
-    private final class DelegateBox: NSObject, TerminalSurfaceGridResizeDelegate {
+    private final class DelegateBox: NSObject, TerminalSurfaceGridResizeDelegate,
+        TerminalSurfaceOpenURLDelegate
+    {
         weak var owner: EmbeddedSessionViewController?
         init(owner: EmbeddedSessionViewController) { self.owner = owner }
 
         func terminalDidResize(_ size: TerminalGridMetrics) {
             owner?.gridDidResize(size)
+        }
+
+        func terminalDidRequestOpenURL(_ url: String, kind _: TerminalOpenURLKind) {
+            owner?.openLink(url)
         }
     }
 }
