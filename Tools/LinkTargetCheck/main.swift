@@ -189,6 +189,74 @@ let cases: [Case] = [
         expect: .file("/Users/tester/My Notes/a.txt")
     ),
 
+    // MARK: - A command line is not a path, but the matcher cannot tell
+
+    // libghostty allows spaces inside a path so that "My Notes" works, which
+    // means a whole shell command line matches too. These pin the recovery:
+    // trim a word at a time from the right, and only ever answer with a prefix
+    // that exists.
+
+    Case(
+        name: "a shell command line falls back to the directory it starts with",
+        raw: "/Users/tester/Code/proj && xcodebuild -project X.xcodeproj -scheme X",
+        fs: ["/Users/tester/Code/proj": .directory],
+        expect: .directory("/Users/tester/Code/proj")
+    ),
+    Case(
+        name: "trailing prose comes off a word at a time",
+        raw: "/Users/tester/Code/proj for details",
+        fs: ["/Users/tester/Code/proj": .directory],
+        expect: .directory("/Users/tester/Code/proj")
+    ),
+    Case(
+        // The case the spaces are allowed *for*. The whole thing is there, so
+        // nothing is trimmed.
+        name: "a real path containing spaces is never trimmed",
+        raw: "/Users/tester/My Notes/todo.txt",
+        fs: ["/Users/tester/My Notes/todo.txt": .file],
+        expect: .file("/Users/tester/My Notes/todo.txt")
+    ),
+    Case(
+        // Both exist. The whole match has to win, or a directory called "My"
+        // would swallow every path under it that has a space.
+        name: "the whole match wins over a shorter prefix that also exists",
+        raw: "/Users/tester/My Notes/todo.txt",
+        fs: [
+            "/Users/tester/My Notes/todo.txt": .file,
+            "/Users/tester/My": .directory,
+        ],
+        expect: .file("/Users/tester/My Notes/todo.txt")
+    ),
+    Case(
+        name: "the longest existing prefix wins, not the shortest",
+        raw: "/Users/tester/a/b/c one two",
+        fs: [
+            "/Users/tester/a/b/c one": .directory,
+            "/Users/tester/a/b/c": .directory,
+        ],
+        expect: .directory("/Users/tester/a/b/c one")
+    ),
+    Case(
+        name: "the recovered prefix can be a file rather than a directory",
+        raw: "/Users/tester/a.txt and then some",
+        fs: ["/Users/tester/a.txt": .file],
+        expect: .file("/Users/tester/a.txt")
+    ),
+    Case(
+        name: "a relative match is trimmed the same way",
+        raw: "src/main.swift and more",
+        cwd: "/Users/tester/proj",
+        fs: ["/Users/tester/proj/src/main.swift": .file],
+        expect: .file("/Users/tester/proj/src/main.swift")
+    ),
+    Case(
+        // Nothing at any length. The whole match is what gets reported, so the
+        // message names what was actually clicked.
+        name: "nothing exists at any length, so the whole match is reported",
+        raw: "/Users/tester/nope && ls",
+        expect: .missing("/Users/tester/nope && ls")
+    ),
+
     // MARK: - Things that look like schemes and are not
 
     Case(

@@ -92,8 +92,51 @@ extension TerminalLinkTarget {
         switch existence(path) {
         case .file: return .file(path)
         case .directory: return .directory(path)
-        case .absent: return .missing(path)
+        case .absent:
+            return longestExistingPrefix(of: path, existence: existence) ?? .missing(path)
         }
+    }
+
+    /// When the whole match is not there, the longest prefix of it that is.
+    ///
+    /// libghostty's matcher lets spaces sit *inside* a path, so that
+    /// `/Users/joey/My Notes/todo.txt` comes through as one link. The price is
+    /// that a shell command line is also, to it, one path with spaces in it:
+    /// `&&`, `xcodebuild` and `-project` are built entirely out of characters a
+    /// path is allowed to contain, so
+    /// `/Users/joey/Code/tmux-gui && xcodebuild -project …` matches whole.
+    /// Measured by running the regex dumped out of the linked `libghostty.a`.
+    /// It is worse for a path with no dot in it — a directory name — because
+    /// the matcher's stricter branch, the one that requires each space-joined
+    /// piece to end in `/` or `.`, only applies when the match contains a dot.
+    /// That is why `…/a.swift then stop` stops at the file and
+    /// `…/tmux-gui && ls` does not stop at the directory.
+    ///
+    /// Trimming a word at a time off the right recovers what the user meant.
+    /// It cannot invent anything: every answer is a prefix of what libghostty
+    /// matched, cut at a space, and it still has to exist on disk. A path that
+    /// really does contain spaces never reaches here, because the whole match
+    /// was found first.
+    ///
+    /// The underline stays as long as it was — libghostty draws it and this
+    /// app has no say — so the visible highlight can still cover more than what
+    /// opens. Opening the right thing is the half worth having.
+    private static func longestExistingPrefix(
+        of path: String,
+        existence: (String) -> Existence
+    ) -> TerminalLinkTarget? {
+        var candidate = path
+        while let space = candidate.lastIndex(of: " ") {
+            candidate = String(candidate[candidate.startIndex ..< space])
+            let cleaned = trimmed(candidate)
+            guard !cleaned.isEmpty else { return nil }
+            switch existence(cleaned) {
+            case .file: return .file(cleaned)
+            case .directory: return .directory(cleaned)
+            case .absent: continue
+            }
+        }
+        return nil
     }
 
     /// Expand `~`, and resolve a relative match against the pane's directory.
