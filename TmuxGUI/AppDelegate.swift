@@ -479,7 +479,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         edit.target = self
         menu.addItem(edit)
+
+        #if DEBUG
+            // A section of its own, and Debug-only: editing the file by hand is
+            // a thing to do while working *on* the app, and the settings window
+            // is the answer for using it. It is here rather than in the Debug
+            // menu because this is where a person is already standing when they
+            // wonder where these actions are stored.
+            menu.addItem(.separator())
+            let open = NSMenuItem(
+                title: "Open \(SettingsFile.url.lastPathComponent)",
+                action: #selector(openSettingsFile), keyEquivalent: ""
+            )
+            open.target = self
+            open.toolTip = SettingsFile.url.path
+            menu.addItem(open)
+        #endif
     }
+
+    #if DEBUG
+        /// Open the settings file in whatever the user edits `.toml` with.
+        ///
+        /// A file that does not exist yet is not an error and must not look
+        /// like one: nothing is written until a setting changes, so a fresh
+        /// install has no file and opening it would fail for a reason that has
+        /// nothing wrong with it. Say which case it is instead.
+        @objc private func openSettingsFile() {
+            let url = SettingsFile.url
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                report("No settings file yet at \(url.path) — change any setting and it appears")
+                return
+            }
+            if !NSWorkspace.shared.open(url) {
+                // An unopenable file is worth saying out loud: the usual cause
+                // is nothing being registered for `.toml`, and the path is what
+                // the person needs in order to open it themselves.
+                report("Nothing on this machine opens \(url.path)")
+            }
+        }
+    #endif
 
     @objc private func runQuickAction(_ sender: NSMenuItem) {
         let actions = AppSettings.quickActions.filter(\.isRunnable)
