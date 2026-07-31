@@ -410,38 +410,6 @@
             ))
         }
 
-        /// `?cellPixels=24x50` — hand a grid a cell size, the way a surface
-        /// would after a font change. See
-        /// `SessionViewController.debugAdoptCellSize`.
-        ///
-        /// `&session=name` aims it at a session that is *not* on screen, which
-        /// is the case worth being able to reach: a font change reaches every
-        /// session controller, and an off-screen one's view has no window, no
-        /// current bounds and no honest grid to report.
-        static func gridBody(query: String) -> Data {
-            let parameters = parseQuery(query)
-            let target = parameters["session"].flatMap { main?.debugSessionController(named: $0) }
-                ?? main?.currentSession
-            if let raw = parameters["cellPixels"] {
-                let parts = raw.lowercased().split(separator: "x")
-                if parts.count == 2, let width = UInt32(parts[0]), let height = UInt32(parts[1]),
-                   // Bounded, and not as tidiness. The cell size divides the
-                   // view to produce the grid this app *sends to tmux*: an
-                   // absurd cell floors that division to zero, `gridSize`
-                   // clamps it to one, and the session on screen is told
-                   // `refresh-client -C 1x1` — every window in it reflowed to a
-                   // single cell, with whatever was running inside. A debug
-                   // route that can do that unattended has no business
-                   // existing. The range spans every plausible font size at
-                   // every plausible scale factor.
-                   (2 ... 400).contains(width), (2 ... 400).contains(height)
-                {
-                    target?.debugAdoptCellSize(widthPixels: width, heightPixels: height)
-                }
-            }
-            return encode(tmuxOnly())
-        }
-
         private static func firstView(in root: NSView, named name: String) -> NSView? {
             if String(describing: type(of: root)) == name { return root }
             for subview in root.subviews {
@@ -952,18 +920,18 @@
     }
 
     extension DebugInspector.SessionReport {
-        /// A session that is connected but has never been shown. It has no
-        /// surfaces and no grid of its own — everything here comes from tmux,
-        /// which is the half worth diffing anyway.
-        init(connection: TmuxSessionConnection) {
+        /// Everything here comes from tmux, which is the half worth diffing.
+        /// The app authors exactly one thing about a session — which windows
+        /// the user hid from the rail — and that is the only argument.
+        init(connection: TmuxSessionConnection, hiddenWindowIDs: Set<String>, isShown: Bool) {
             self.init(
                 name: connection.sessionName,
                 sessionID: connection.debugSessionID,
-                isShown: false,
+                isShown: isShown,
                 hasSurfaces: false,
                 activeWindowID: connection.activeWindowID,
-                hiddenWindowIDs: [],
-                focusedPaneID: nil,
+                hiddenWindowIDs: hiddenWindowIDs.sorted(),
+                focusedPaneID: connection.activeWindow?.activePaneID,
                 reportedGrid: connection.debugLastReportedGrid.map {
                     DebugInspector.GridSize(columns: $0.columns, rows: $0.rows)
                 },
@@ -971,7 +939,7 @@
                 windows: connection.windows.map {
                     DebugInspector.WindowReport(
                         window: $0,
-                        isHiddenFromSidebar: false,
+                        isHiddenFromSidebar: hiddenWindowIDs.contains($0.id),
                         currentPath: connection.pathByWindow[$0.id],
                         agent: connection.agentBadge(forWindow: $0.id)
                     )

@@ -349,36 +349,6 @@ struct BehaviourPage: View {
 
             Section {
                 Toggle(isOn: Binding(
-                    get: { store.tmuxDrawsItself },
-                    set: { store.setTmuxDrawsItself($0) }
-                )) {
-                    iconLabel(
-                        "square.on.square.dashed",
-                        store.tmuxDrawsItself ? .blue : .gray,
-                        "Let tmux draw the panes"
-                    )
-                }
-            } header: {
-                Text("Rendering")
-            } footer: {
-                Text(
-                    "Off, this app reads tmux's output stream and draws every pane itself — one "
-                        + "terminal surface per pane, with its own scrollback you can scroll "
-                        + "natively.\n\nOn, the whole content area is one terminal running a plain "
-                        + "tmux attach, and tmux draws the splitters and every pane itself, exactly "
-                        + "as it does in any other terminal. That brings copy mode, search and "
-                        + "popups — which put nothing at all on the stream this app reads, so they "
-                        + "cannot be drawn with the switch off — and costs native scrolling: the "
-                        + "wheel goes to tmux's copy mode instead. The sidebar, the shortcuts and "
-                        + "everything else are the same either way.\n\nSwitching takes effect for "
-                        + "each session the next time you open it."
-                )
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Section {
-                Toggle(isOn: Binding(
                     get: { store.copyOnSelect },
                     set: { store.setCopyOnSelect($0) }
                 )) {

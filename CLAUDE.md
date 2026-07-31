@@ -22,21 +22,40 @@ deliberate exception is the set of hidden window ids in
 
 ## Layers
 
+**tmux draws the panes.** The content half is one terminal running a plain
+`tmux attach` on a pty ghostty owns, so the splitters, every pane and the
+cursor are tmux's own drawing — the app supplies a rectangle and nothing else.
+The rail beside it is still driven by a control-mode connection, which is what
+the app reads session and window lists from and what every click turns into.
+
+The app used to render each pane itself from the `%output` stream, on a grid it
+placed against tmux's layout. That half was removed on 2026-07-31 after
+measurement settled it: copy mode and `display-popup` put *nothing at all* on
+the control-mode stream, so they could not be drawn at any price.
+[docs/embed-tmux-evaluation.html](docs/embed-tmux-evaluation.html) is the
+evaluation, and `git log` before that date is where the pane renderer lives if
+it is ever wanted again.
+
 ```
 TmuxServer            one connection per tmux session
  └─ TmuxSessionConnection    control mode client + window list for one session
      ├─ TmuxControlClient    child process, read loop, command/reply pairing
-     ├─ TmuxOutputRouter     pane id → surface, thread-safe, off the main queue
      └─ TmuxMetrics          throughput and stall measurement
 
-MainViewController     the two-level rail + the current session's panes
+MainViewController     the two-level rail + the current session's content
  ├─ SessionSidebarView       both levels: sessions, and the windows of any open one
  │   └─ SidebarRows          the heading / window / hidden-count row views
- └─ SessionViewController    one session's content half
-     ├─ TitleBandView        28pt drag band over the panes; draws nothing
-     └─ PaneGridView         panes placed on tmux's character grid
-         └─ TmuxPaneSurface  one pane ↔ one libghostty surface
+ ├─ SessionModel             one session's state and commands; no view at all
+ └─ EmbeddedSessionViewController   one session's content half
+     ├─ TitleBandView        28pt drag band over the terminal; draws nothing
+     └─ TmuxTerminalView     the surface tmux draws the whole session into
 ```
+
+`SessionModel` and the controller beside it are split on one line: the model
+holds what the rail reads and the commands anything can send, the controller
+holds the window. Anything that has to ask *is the user looking at this* — ⌘V,
+⌘Z, split, zoom — belongs to the controller, because a window keeps naming a
+first responder while another window has the keyboard.
 
 The rail draws the window level but does not own it: it outlives every session
 it displays, so hiding, killing and the hidden-window set live in
@@ -61,24 +80,6 @@ user text interpolated into a command line; ids match `[$@%]\d+` and cannot
 carry a quote, a space, or a newline. This removes command injection as a
 category rather than escaping around it. `TmuxCommand.quote` exists for the one
 place real text has to be sent — renaming — and nothing else should need it.
-
-**Decode `%output` on bytes.** tmux escapes control characters and backslash as
-`\ooo` but passes bytes above 0x7f through raw, so a payload is not necessarily
-valid UTF-8 on its own. Round-tripping it through `String` replaces those bytes
-with U+FFFD and corrupts the stream. `TmuxOctal.decode` takes `[UInt8]` for
-this reason; do not "simplify" it.
-
-**Keep `%output` off the main thread.** It arrives on the pipe reader queue and
-goes straight into `TmuxOutputRouter`, which is why the app survives 19 MB/s.
-`InMemoryTerminalSession.receive` already serialises internally. Hopping to main
-to do a dictionary lookup would put every byte behind whatever the UI is doing.
-
-**The GUI and tmux must agree on the column count exactly.** One column of
-disagreement makes every wrapped line break in the wrong place, and the damage
-accumulates into unreadable overdraw wherever a TUI rewrites a region.
-`PaneGridView` counts in device pixels and *measures* the overhead a surface
-adds beyond `columns × cellWidth` rather than assuming it. Do not replace that
-measurement with a constant.
 
 **Anything destructive needs a confirmation and separate wording.** Hiding a
 window takes its row out of the rail and sends tmux nothing; killing is a

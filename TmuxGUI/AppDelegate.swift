@@ -335,7 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// field is a real `NSTextField` and its ⌘V is a text field's paste with
     /// nothing to do with tmux; so is every field in the settings window.
     @objc private func pasteIntoPaneOrResponder(_ sender: Any?) {
-        if main?.currentSession?.pasteIntoFocusedPane() == true { return }
+        if main?.currentEmbedded?.pasteIntoFocusedPane() == true { return }
         NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: sender)
     }
 
@@ -352,7 +352,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// window's fields want. Before this existed ⌘Z did nothing anywhere in the
     /// app: there was no Edit-menu item for it at all.
     @objc private func undoInPaneOrResponder(_ sender: Any?) {
-        if main?.currentSession?.sendUndoToFocusedPane() == true { return }
         if main?.currentEmbedded?.sendUndo() == true { return }
         NSApp.sendAction(Selector(("undo:")), to: nil, from: sender)
     }
@@ -363,19 +362,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // with the settings window in front, and the shortcut then does nothing
     // rather than addressing whichever pane was last touched.
     @objc private func splitRight() {
-        _ = main?.currentSession?.splitFocusedPane(.right)
+        _ = main?.currentEmbedded?.splitFocusedPane(.right)
     }
 
     @objc private func splitDown() {
-        _ = main?.currentSession?.splitFocusedPane(.down)
+        _ = main?.currentEmbedded?.splitFocusedPane(.down)
     }
 
     @objc private func toggleZoomPane() {
-        _ = main?.currentSession?.toggleZoomOnFocusedPane()
+        _ = main?.currentEmbedded?.toggleZoomOnFocusedPane()
     }
 
     @objc private func killPane() {
-        _ = main?.currentSession?.confirmKillFocusedPane()
+        _ = main?.currentEmbedded?.confirmKillFocusedPane()
     }
 
     @objc private func newWindow() { main?.currentSession?.newWindow() }
@@ -500,39 +499,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(toggle)
             inspectorMenuItem = toggle
 
-            menu.addItem(.separator())
-            entry(
-                menu, "Embedded tmux Window (Route B Prototype)…", "", [],
-                #selector(openEmbeddedTmuxWindow)
-            )
-
             item.submenu = menu
             return item
-        }
-
-        /// Route B of docs/embed-tmux-evaluation.html: tmux drawn by tmux, in
-        /// one surface on a ghostty-owned pty. A prompt rather than a fixed
-        /// command because the evaluation's checklist needs different targets —
-        /// an isolated `-L` server for tests, the real one for daily use, a
-        /// grouped session for the status-line experiment.
-        @objc private func openEmbeddedTmuxWindow() {
-            let alert = NSAlert()
-            alert.messageText = "Embedded tmux — route B prototype"
-            alert.informativeText =
-                "Runs the command on a ghostty-owned pty in a new window; tmux draws itself."
-                + " See docs/embed-tmux-evaluation.html."
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
-            field.stringValue = "\(TmuxControlClient.locateTmux() ?? "tmux") attach"
-            alert.accessoryView = field
-            alert.addButton(withTitle: "Open")
-            alert.addButton(withTitle: "Cancel")
-            alert.window.initialFirstResponder = field
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-            let command = field.stringValue.trimmingCharacters(in: .whitespaces)
-            guard !command.isEmpty else { return }
-            if !EmbeddedTmuxWindowController.open(command: command) {
-                report("Embedded tmux refused the command: control characters cannot ride a ghostty config line")
-            }
         }
 
         @objc private func writeInspectorSnapshot() {

@@ -36,7 +36,6 @@ enum AppSettings {
         static let closingTabKills      = "TmuxGUIClosingTabKills"
         static let paneFocusRing        = "TmuxGUIPaneFocusRing"
         static let copyOnSelect         = "TmuxGUICopyOnSelect"
-        static let tmuxDrawsItself      = "TmuxGUITmuxDrawsItself"
         static let quickActions         = "TmuxGUIQuickActions"
         static let windowOpacity        = "TmuxGUIWindowOpacity"
         static let backgroundBlur       = "TmuxGUIBackgroundBlur"
@@ -584,18 +583,6 @@ enum AppSettings {
     static var copyOnSelect: Bool {
         get { store.object(forKey: Key.copyOnSelect) as? Bool ?? false }
         set { store.set(newValue, forKey: Key.copyOnSelect) }
-    }
-
-    /// Which of the two content halves a session is shown in.
-    ///
-    /// `false` is route A, this app's own rendering, and stays the default while
-    /// route B is being judged — see `docs/embed-tmux-evaluation.html`. It is a
-    /// switch rather than a replacement because the two are worth comparing
-    /// side by side for days, not minutes; the intent is still to converge on
-    /// one of them and delete the other.
-    static var tmuxDrawsItself: Bool {
-        get { store.object(forKey: Key.tmuxDrawsItself) as? Bool ?? false }
-        set { store.set(newValue, forKey: Key.tmuxDrawsItself) }
     }
 
     /// The user's Quick Actions menu.

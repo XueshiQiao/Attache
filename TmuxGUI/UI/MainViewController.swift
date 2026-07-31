@@ -39,7 +39,7 @@ final class MainViewController: NSSplitViewController {
     /// Keyed by tmux's `$N`, like `TmuxServer.connections`. Keyed by name, a
     /// rename read as "that session is gone" and threw the controller away —
     /// GPU surfaces, primed scrollback and the hidden-window set with it.
-    private var controllers = [String: SessionViewController]()
+    private var models = [String: SessionModel]()
     /// The route B content halves, one per session, made only while
     /// `tmuxDrawsItself` is on. Keyed the same way and for the same reason.
     ///
@@ -64,9 +64,6 @@ final class MainViewController: NSSplitViewController {
     /// The rail width this controller last placed the divider at. Not the
     /// rail's current width, which the user is free to drag.
     private var appliedSidebarWidth: CGFloat?
-    /// The rendering setting as it stood when a session was last shown, so a
-    /// change to it can be told from every other settings change.
-    private var appliedTmuxDrawsItself = AppSettings.tmuxDrawsItself
     private var settingsObserver: NSObjectProtocol?
     private var occlusionObserver: NSObjectProtocol?
     private var appearanceObservation: NSKeyValueObservation?
@@ -81,9 +78,10 @@ final class MainViewController: NSSplitViewController {
     @available(*, unavailable)
     required init?(coder _: NSCoder) { fatalError("not supported") }
 
-    var currentSession: SessionViewController? {
+    /// The session on screen, as state and commands rather than as a view.
+    var currentSession: SessionModel? {
         guard let currentSessionID else { return nil }
-        return controllers[currentSessionID]
+        return models[currentSessionID]
     }
 
     /// The content half the user is actually looking at, for the shortcuts that
@@ -91,7 +89,7 @@ final class MainViewController: NSSplitViewController {
     /// half that holds the model, which under `tmuxDrawsItself` is not the one
     /// on screen — the difference is why ⌘Z stopped working after the switch.
     var currentEmbedded: EmbeddedSessionViewController? {
-        guard AppSettings.tmuxDrawsItself, let currentSessionID else { return nil }
+        guard let currentSessionID else { return nil }
         return embedded[currentSessionID]
     }
 
@@ -265,11 +263,7 @@ final class MainViewController: NSSplitViewController {
     /// stronger version of that for this trigger: the terminal window being
     /// *attached* is not the same as it being the window that just came forward.
     private func reclaimWindowSizeForShownSession() {
-        guard let controller = currentSession,
-              controller.isViewLoaded,
-              let window = controller.view.window,
-              window.isKeyWindow
-        else { return }
+        guard let controller = currentSession, view.window?.isKeyWindow == true else { return }
         controller.connection.reclaimWindowSizeIfTaken(isUserReturning: true)
     }
 
@@ -489,8 +483,8 @@ final class MainViewController: NSSplitViewController {
     /// session killed from another terminal between the rail drawing its rows
     /// and the user clicking one. It can no longer miss because of a *rename* —
     /// `$17` is what everything here is keyed by, and tmux never reuses one.
-    private func inSession(_ id: String, _ action: (SessionViewController) -> Void) {
-        guard let controller = controller(forSessionID: id) else {
+    private func inSession(_ id: String, _ action: (SessionModel) -> Void) {
+        guard let controller = model(forSessionID: id) else {
             TmuxLog.lifecycle(
                 "dropping a window action aimed at \(id) — the server has no connection"
                     + " for it, so the session is gone",
@@ -503,18 +497,18 @@ final class MainViewController: NSSplitViewController {
 
     /// This session's controller, made on demand. One per session for the life
     /// of the session, because it holds the pane surfaces and the hidden set.
-    private func controller(forSessionID id: String) -> SessionViewController? {
-        if let existing = controllers[id] { return existing }
+    private func model(forSessionID id: String) -> SessionModel? {
+        if let existing = models[id] { return existing }
         guard let connection = server.connection(id: id) else { return nil }
 
-        let controller = SessionViewController(connection: connection)
+        let controller = SessionModel(connection: connection)
         controller.onStatusChange = { [weak self] status in self?.onStatusChange?(status) }
         // Hiding and restoring never reach tmux, so `server.onChange` — which is
         // fed by connection notifications — cannot see them. Without this the
         // row a user just hid would stay in the rail until tmux happened to say
         // something else.
         controller.onWindowsChanged = { [weak self] in self?.refreshSidebar() }
-        controllers[id] = controller
+        models[id] = controller
         return controller
     }
 
@@ -526,17 +520,8 @@ final class MainViewController: NSSplitViewController {
     private func embeddedController(forSessionID id: String) -> EmbeddedSessionViewController? {
         if let existing = embedded[id] { return existing }
         guard let connection = server.connection(id: id) else { return nil }
-        let controller = EmbeddedSessionViewController(
-            connection: connection, tmuxPath: server.tmuxPath
-        )
-        // The pane menu is built by the controller that still holds the model,
-        // so there is one menu rather than two that have to be kept in step.
-        // Only the copy has to come from here, because the selection lives
-        // inside this half's libghostty surface.
-        controller.contextMenu = { [weak self, weak controller] in
-            guard let model = self?.controller(forSessionID: id), let controller else { return nil }
-            return model.activePaneContextMenu { controller.copySelection() }
-        }
+        guard let model = model(forSessionID: id) else { return nil }
+        let controller = EmbeddedSessionViewController(model: model, tmuxPath: server.tmuxPath)
         embedded[id] = controller
         return controller
     }
@@ -823,7 +808,7 @@ final class MainViewController: NSSplitViewController {
         // moves the cell size. If the app and tmux ever disagree on a column
         // again, the first question is how many times this ran and why.
         TmuxLog.lifecycle(
-            "applying settings to \(controllers.count) session controller(s) —"
+            "applying settings to \(embedded.count) session controller(s) —"
                 + " theme \(ChromeTheme.current.sourceName), font"
                 + " \(AppSettings.fontFamily.isEmpty ? "default" : AppSettings.fontFamily)"
                 + " \(Int(AppSettings.fontSize))pt"
@@ -845,9 +830,8 @@ final class MainViewController: NSSplitViewController {
         // Each connection decides for itself whether to start capturing panes.
         for id in server.sessionIDs { server.connection(id: id)?.applyAgentStateSource() }
         sidebar.applyChromeTheme()
-        for controller in controllers.values { controller.applySettings() }
+        for controller in embedded.values { controller.applySettings() }
         for controller in embedded.values { controller.applyChromeTheme() }
-        applyRenderingSetting()
         // The row height itself is a setting now, so a change to it is a
         // relayout and not only a repaint.
         refreshSidebar()
@@ -870,7 +854,7 @@ final class MainViewController: NSSplitViewController {
 
         let entries = server.sessionIDs.compactMap { id -> SessionSidebarView.Entry? in
             guard let connection = server.connection(id: id) else { return nil }
-            let hidden = controllers[id]?.hiddenWindowIDs ?? []
+            let hidden = models[id]?.hiddenWindowIDs ?? []
             var decorations = [String: WindowDecoration]()
             for window in connection.windows where !hidden.contains(window.id) {
                 var decoration = WindowDecoration()
@@ -955,7 +939,7 @@ final class MainViewController: NSSplitViewController {
     /// session into a teardown of a session that was working perfectly.
     private func discardControllersForVanishedSessions() {
         let live = Set(server.sessionIDs)
-        for (id, controller) in controllers where !live.contains(id) {
+        for (id, controller) in models where !live.contains(id) {
             // The name comes off the controller's own connection, not from
             // `describe`: `TmuxServer` has already dropped the connection this
             // id would be looked up through by the time this runs, so the
@@ -966,10 +950,7 @@ final class MainViewController: NSSplitViewController {
                     + " from the server",
                 session: name
             )
-            controller.releaseSurfaces()
-            controller.view.removeFromSuperview()
-            if controller.parent != nil { controller.removeFromParent() }
-            controllers.removeValue(forKey: id)
+            models.removeValue(forKey: id)
             // Its `tmux attach` child goes with it. A session that is gone
             // cannot be attached to, so the client is already dying; this is
             // what stops the view and the surface outliving it.
@@ -979,71 +960,24 @@ final class MainViewController: NSSplitViewController {
         }
     }
 
-    /// Which half draws, applied after the setting may have changed.
-    ///
-    /// The switch is only meaningful at the moment a session is shown, so a
-    /// change has to re-show the one on screen — and, going back to route A,
-    /// tear down every embedded client rather than leave it attached. An
-    /// attached client keeps a claim on the session's size, so one left running
-    /// argues with the pane grid about the column count with nothing on screen
-    /// to explain it.
-    private func applyRenderingSetting() {
-        let draws = AppSettings.tmuxDrawsItself
-        guard draws != appliedTmuxDrawsItself else { return }
-        appliedTmuxDrawsItself = draws
-
-        if !draws {
-            for controller in embedded.values { controller.detach() }
-            embedded.removeAll()
-            for controller in controllers.values { controller.resumeRendering() }
-        }
-        guard let id = currentSessionID else { return }
-        // `show` returns early for the session already on screen, which is
-        // exactly the one that has to move to the other half.
-        currentSessionID = nil
-        show(sessionID: id)
-    }
-
     func show(sessionID id: String) {
         guard currentSessionID != id, let connection = server.connection(id: id),
-              let controller = controller(forSessionID: id) else { return }
+              let model = model(forSessionID: id),
+              let embedded = embeddedController(forSessionID: id) else { return }
 
         currentSessionID = id
-        if AppSettings.tmuxDrawsItself, let embedded = embeddedController(forSessionID: id) {
-            // The model half stays with the `SessionViewController` above; it
-            // just stops drawing. See `embedded` and `stopRendering`.
-            controller.stopRendering()
-            content.show(embedded)
-            embedded.syncWithModel()
-            // Only here. See `takeKeyboard`: doing it on every model change is
-            // what took the rail's rename field away mid-word.
-            embedded.takeKeyboard()
-            controller.syncWithModel()
-            connection.announceStatus()
-            refreshSidebar()
-            return
-        }
-        content.show(controller)
+        content.show(embedded)
 
-        // Draw what tmux has already said, rather than waiting to be told
-        // again. A controller learns its session from notifications, and the
-        // ones that describe an existing session arrived when the connection
-        // attached — long before there was a controller to hear them. What has
-        // been masking that is the grid report this show triggers:
-        // `refresh-client -C` resizes the session's windows and a resize comes
-        // back as `%layout-change`. Verified on tmux 3.6a that tmux sends that
-        // notification even when the size did not change — but
-        // `TmuxSessionConnection` drops one whose layout text is identical,
-        // correctly, because nothing changed. So a session whose windows tmux
-        // will not resize renders nothing at all and gets no second chance: a
-        // window put on `window-size manual` (which `resize-window` does
-        // permanently), or a `window-size smallest` session with a smaller
-        // client attached somewhere else.
-        //
-        // After `content.show`, not inside the controller's `viewDidLoad`: the
-        // sync also hands first responder to the focused pane, and at
-        // `viewDidLoad` the view is not in a window yet.
-        controller.syncWithModel()
+        // Render what tmux has already said rather than waiting to be told
+        // again. A session learns its windows from notifications, and the ones
+        // describing an existing session arrived when the connection attached —
+        // long before this controller was on screen to hear them.
+        model.syncWithModel()
+        embedded.syncWithModel()
+        // Only here, and never out of a text field. See `takeKeyboard`: doing
+        // this on every model change is what took the rail's rename field away
+        // mid-word.
+        embedded.takeKeyboard()
 
         connection.announceStatus()
         refreshSidebar()
@@ -1084,7 +1018,6 @@ final class MainViewController: NSSplitViewController {
     /// to break, but a teardown that runs twice is a teardown whose order
     /// nobody can reason about.
     func stop() {
-        for controller in controllers.values { controller.releaseSurfaces() }
         for controller in embedded.values { controller.detach() }
         server.stop()
     }
@@ -1106,23 +1039,21 @@ final class MainViewController: NSSplitViewController {
         /// id because that is the leak's identity — a controller left behind
         /// has no name to look up any more.
         var debugSessionControllerNames: [String] {
-            controllers.keys.sorted().map { describe($0) }
+            models.keys.sorted().map { describe($0) }
         }
 
-        /// A session's controller by name, on screen or not. The off-screen
-        /// ones are the interesting half: a font change reaches every one of
-        /// them, and their views have no window.
+        /// A session's model by name, on screen or not.
         ///
         /// By name because the inspector's routes are typed by a person; the
         /// name is resolved to an id here and nowhere else.
-        func debugSessionController(named name: String) -> SessionViewController? {
+        func debugSessionController(named name: String) -> SessionModel? {
             // Made on demand rather than looked up. A session that has never
             // been shown is exactly what a test wants to aim at: driving one
             // without first putting it on screen is the only way to run a
             // check that does not take over the display of whoever is at the
             // machine. Same reasoning as `inSession` — acting on a session is
             // not conditional on having looked at it.
-            server.sessionID(named: name).flatMap { controller(forSessionID: $0) }
+            server.sessionID(named: name).flatMap { model(forSessionID: $0) }
         }
 
         /// Show a session the inspector named. Same reasoning as above.
@@ -1137,10 +1068,11 @@ final class MainViewController: NSSplitViewController {
         func debugSessionReports() -> [DebugInspector.SessionReport] {
             server.sessionIDs.compactMap { id in
                 guard let connection = server.connection(id: id) else { return nil }
-                if let controller = controllers[id] {
-                    return controller.debugReport(isShown: id == currentSessionID)
-                }
-                return DebugInspector.SessionReport(connection: connection)
+                return DebugInspector.SessionReport(
+                    connection: connection,
+                    hiddenWindowIDs: models[id]?.hiddenWindowIDs ?? [],
+                    isShown: id == currentSessionID
+                )
             }
         }
     }

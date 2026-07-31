@@ -24,7 +24,8 @@ import GhosttyTerminal
 /// middle.
 @MainActor
 final class EmbeddedSessionViewController: NSViewController {
-    let connection: TmuxSessionConnection
+    let model: SessionModel
+    var connection: TmuxSessionConnection { model.connection }
 
     private let titleBand = TitleBandView(frame: .zero)
     /// `TmuxTerminalView`, not a second class of its own.
@@ -35,9 +36,6 @@ final class EmbeddedSessionViewController: NSViewController {
     /// pane menu is gone". Two views that must behave identically are one view.
     private let terminalView: TmuxTerminalView
 
-    /// Builds the pane menu for a right-click. Set by whoever knows which
-    /// controller holds the model; this half deliberately does not.
-    var contextMenu: (() -> NSMenu?)?
     private let terminalController: TerminalController
     private var delegateBox: DelegateBox?
 
@@ -55,6 +53,11 @@ final class EmbeddedSessionViewController: NSViewController {
     /// it was solving is real, and the plan is to answer it by reworking this
     /// app's own tab bar. When that lands, flipping this back is one line.
     private static let hidesStatusRow = false
+
+    /// The band's height, and the reason it exists at all: without it the
+    /// window's rounded top corners would clip terminal text, and there would
+    /// be nothing on this side of the window to drag it by.
+    static let titleBandHeight: CGFloat = 28
 
     /// How many rows tmux's status line occupies for this session.
     ///
@@ -77,9 +80,10 @@ final class EmbeddedSessionViewController: NSViewController {
     private var overhang: NSLayoutConstraint?
 
 
-    init(connection: TmuxSessionConnection, tmuxPath: String) {
-        self.connection = connection
-        statusRows = Self.statusLines(tmuxPath: tmuxPath, sessionID: connection.sessionID)
+    init(model: SessionModel, tmuxPath: String) {
+        self.model = model
+        let connection = model.connection
+        statusRows = TmuxStatusOption.lines(tmuxPath: tmuxPath, sessionID: connection.sessionID)
 
         let base = TerminalConfiguration(startingFrom: .default) { builder in
             builder.withBackgroundOpacity(0)
@@ -152,7 +156,7 @@ final class EmbeddedSessionViewController: NSViewController {
             titleBand.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             titleBand.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             titleBand.heightAnchor.constraint(
-                equalToConstant: SessionViewController.titleBandHeight
+                equalToConstant: Self.titleBandHeight
             ),
 
             terminalView.topAnchor.constraint(equalTo: titleBand.bottomAnchor),
@@ -168,7 +172,10 @@ final class EmbeddedSessionViewController: NSViewController {
         terminalView.configuration = TerminalSurfaceOptions(backend: .exec)
         terminalView.setAccessibilityElement(true)
         terminalView.setAccessibilityLabel("tmux session \(connection.sessionID), drawn by tmux")
-        terminalView.onContextMenu = { [weak self] in self?.contextMenu?() }
+        terminalView.onContextMenu = { [weak self] in
+            guard let self else { return nil }
+            return model.activePaneContextMenu { [weak self] in self?.copySelection() }
+        }
         // Dropping a file was refused outright until this was wired: the view
         // registers for the drag types and then asks its owner what to do with
         // what it caught, and this half was not answering. Reported as
@@ -176,7 +183,7 @@ final class EmbeddedSessionViewController: NSViewController {
         // worked, because that has libghostty's own paste to fall through to
         // and a drop has nothing at all.
         terminalView.onDropText = { [weak self] text in
-            guard let self, let paneID = connection.activeWindow?.activePaneID else { return false }
+            guard let self, let paneID = model.activePaneID else { return false }
             return connection.paste(text: text, into: paneID)
         }
 
@@ -230,25 +237,54 @@ final class EmbeddedSessionViewController: NSViewController {
         window.makeFirstResponder(terminalView)
     }
 
-    /// ⌘Z, for the half with no pane surfaces to find the keyboard in.
+    /// The pane commands the menu bar drives, which have no pointer to take a
+    /// pane from and use the one tmux says is active.
     ///
-    /// Reported not working after the switch, and ⌘V reported working — which
-    /// is the whole diagnosis in one pair. Both start by asking the pane half
-    /// "which pane has the keyboard", both get nothing, and then they part
-    /// company: paste falls through the responder chain to libghostty's own,
-    /// which writes to the pty, so it survived; undo has no such fallback,
-    /// because a terminal has no undo of its own. So it has to be sent, and
-    /// what to send was measured long ago — `0x1f`, Ctrl+`_`, which readline
-    /// and Claude Code's input box both read as undo. See
-    /// `SessionViewController.sendUndoToFocusedPane` for that measurement.
+    /// They live here rather than on `SessionModel` for one reason: each has to
+    /// answer "is the user actually looking at this" first. A window keeps
+    /// naming a first responder while some other window has the keyboard, so
+    /// without the `isKeyWindow` test, editing a text field in the settings
+    /// window and pressing ⌘V would put the clipboard into a terminal pane.
     ///
-    /// tmux's active pane rather than a focus ring of the app's own: in this
-    /// half the app does not know where the panes are, and tmux does.
+    /// Each answers whether it found a pane, so `AppDelegate` can tell "there
+    /// was nothing to do" from "done" and fall through to the responder chain.
+    private var addressablePane: String? {
+        guard view.window?.isKeyWindow == true else { return nil }
+        return model.activePaneID
+    }
+
+    func pasteIntoFocusedPane() -> Bool {
+        guard let paneID = addressablePane else { return false }
+        return model.pastePasteboard(into: paneID)
+    }
+
+    /// ⌘Z. Reported not working after tmux took over the drawing, and ⌘V
+    /// reported working — which is the whole diagnosis in one pair. Both ask
+    /// which pane has the keyboard; paste then falls through the responder
+    /// chain to libghostty's own, which writes to the pty, so it survived.
+    /// Undo has no such fallback, because a terminal has no undo of its own.
+    /// See `SessionModel.sendUndo` for the byte and how it was measured.
     func sendUndo() -> Bool {
-        guard view.window?.isKeyWindow == true,
-              let paneID = connection.activeWindow?.activePaneID
-        else { return false }
-        connection.sendKeys(paneID: paneID, data: Data([0x1f]))
+        guard let paneID = addressablePane else { return false }
+        model.sendUndo(to: paneID)
+        return true
+    }
+
+    func splitFocusedPane(_ direction: SessionModel.PaneSplit) -> Bool {
+        guard let paneID = addressablePane else { return false }
+        model.splitPane(paneID, direction)
+        return true
+    }
+
+    func toggleZoomOnFocusedPane() -> Bool {
+        guard let paneID = addressablePane else { return false }
+        model.toggleZoom(paneID)
+        return true
+    }
+
+    func confirmKillFocusedPane() -> Bool {
+        guard let paneID = addressablePane else { return false }
+        model.confirmKillPane(paneID)
         return true
     }
 
@@ -261,37 +297,20 @@ final class EmbeddedSessionViewController: NSViewController {
         terminalView.copySelectedTextToPasteboard()
     }
 
-    func applyChromeTheme() {
+    /// A settings change that can move a glyph or a colour.
+    ///
+    /// One terminal controller per session, so every session has to be told —
+    /// not just the one on screen. The font half matters more here than it did
+    /// under the pane grid: ghostty sizes the pty from its own grid, so a font
+    /// change is what tells tmux the session got wider.
+    func applySettings() {
+        _ = terminalController.setTheme(AppSettings.terminalTheme())
+        _ = terminalController.setTerminalConfiguration(AppSettings.terminalConfiguration())
         titleBand.applyChromeTheme()
     }
 
-    /// Asks tmux how many rows its status line occupies for this session.
-    ///
-    /// Synchronous and one-shot, on purpose: it runs once per session
-    /// controller, and the answer has to be in hand before the first frame or
-    /// the status line shows through. `#{status_lines}` would be the obvious
-    /// format and does not exist on 3.6a — measured, it expands to nothing —
-    /// so the option itself is read. It answers `off`, `on`, or a count.
-    private static func statusLines(tmuxPath: String, sessionID: String) -> Int {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: tmuxPath)
-        process.arguments = ["show-options", "-v", "-t", sessionID, "status"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return 1
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let value = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        switch value {
-        case "off": return 0
-        case "on", "": return 1
-        default: return Int(value) ?? 1
-        }
+    func applyChromeTheme() {
+        titleBand.applyChromeTheme()
     }
 
     private func gridDidResize(_ metrics: TerminalGridMetrics) {
