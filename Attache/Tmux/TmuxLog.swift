@@ -52,7 +52,7 @@ enum TmuxLog {
     ///
     /// `caller` defaults to the calling function, which is the whole point: it
     /// turns "a kill-window went out" into "`killWindow(id:)` sent it" or
-    /// "`runThroughputProbe` sent it", and those are different bugs.
+    /// "a background sync sent it", and those are different bugs.
     static func command(
         _ command: String,
         session: String,

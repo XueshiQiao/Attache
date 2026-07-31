@@ -195,7 +195,7 @@ final class TmuxControlClient {
     ///
     /// `caller` is captured by the compiler at the call site and carried into
     /// the log. It resolves to the *immediate* caller, so it distinguishes
-    /// `killWindow(id:)` from `runThroughputProbe` — two very different reasons
+    /// `killWindow(id:)` from a background sweep — two very different reasons
     /// for a `kill-window` to go out. It does not distinguish which UI reached
     /// `killWindow`, because the tab strip and the menu both route through it.
     func send(_ command: String, caller: StaticString = #function) {

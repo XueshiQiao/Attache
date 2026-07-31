@@ -428,7 +428,7 @@
         static func settingsWindowBody(query: String) -> Data {
             let requested = parseQuery(query)["page"] ?? ""
             let page = SettingsPage.allCases.first { $0.axID == requested } ?? .terminal
-            let controller = SettingsWindowController { $0("not run from the inspector") }
+            let controller = SettingsWindowController()
             let root = controller.debugBuildOffScreen(page: page)
             root.layoutSubtreeIfNeeded()
             return encode(ViewsReport(

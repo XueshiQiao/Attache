@@ -12,7 +12,7 @@ import Foundation
 /// so a single connection would go blind to every session but the current one.
 /// Six pipes is a cheap price for switching that is instant and for activity
 /// dots that stay live while you are looking somewhere else — and the
-/// throughput probe showed the wire is nowhere near saturated.
+/// one pipe per session is not the bottleneck it looks like.
 ///
 /// Pane surfaces are still built lazily, when a session is first shown. A
 /// connection costs a pipe; a surface costs GPU memory.

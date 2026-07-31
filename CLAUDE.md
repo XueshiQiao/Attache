@@ -39,8 +39,7 @@ it is ever wanted again.
 ```
 TmuxServer            one connection per tmux session
  └─ TmuxSessionConnection    control mode client + window list for one session
-     ├─ TmuxControlClient    child process, read loop, command/reply pairing
-     └─ TmuxMetrics          throughput and stall measurement
+     └─ TmuxControlClient    child process, read loop, command/reply pairing
 
 MainViewController     the two-level rail + the current session's content
  ├─ SessionSidebarView       both levels: sessions, and the windows of any open one

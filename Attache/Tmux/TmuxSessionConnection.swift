@@ -34,7 +34,6 @@ final class TmuxSessionConnection {
     private(set) var sessionName: String
 
     let router = TmuxOutputRouter()
-    let metrics = TmuxMetrics()
 
     private(set) var windows = [TmuxWindow]()
     private(set) var activeWindowID: String?
@@ -80,11 +79,6 @@ final class TmuxSessionConnection {
     /// anything.
     private var renameStrings = TmuxRenameString()
 
-    /// Pane whose arrival gaps the metrics track. Normally the focused pane;
-    /// the throughput probe points it at a synthetic heartbeat instead.
-    private var measuredPane: String?
-    private let measuredPaneLock = NSLock()
-    private var probeInFlight = false
 
     init(tmuxPath: String, sessionID: String, sessionName: String) {
         self.sessionID = sessionID
@@ -93,20 +87,23 @@ final class TmuxSessionConnection {
             tmuxPath: tmuxPath, sessionID: sessionID, sessionName: sessionName
         )
 
-        client.onPaneOutput = { [weak self] pane, data in
-            guard let self else { return }
-            self.measuredPaneLock.lock()
-            let measured = self.measuredPane
-            self.measuredPaneLock.unlock()
-            // Measured on what tmux sent, filtered on what Ghostty is shown:
-            // the throughput number should stay comparable to tmux's own.
-            self.metrics.record(pane: pane, watched: pane == measured, byteCount: data.count)
-            // Delivered even when the filter emptied it. `deliveryCounts` means
-            // "tmux sent a chunk for this pane", which is still true, and the
-            // repaint pass reads it — changing what it counts is a different
-            // question from what the pane draws.
-            self.router.deliver(paneID: pane, data: self.renameStrings.strip(paneID: pane, from: data))
-        }
+        // Deliberately empty, and it is the shortest way to say what changed.
+        //
+        // This used to decode, scan and store every byte of every pane. Nothing
+        // read any of it: the pane renderer was removed on 2026-07-31 and tmux
+        // draws the panes itself now, so `TmuxOutputRouter.register` has had no
+        // call site since, and the bytes went into a per-pane backlog nothing
+        // drains. `subscribeToActivity` now sends `refresh-client -f no-output`,
+        // so tmux stops sending them at all and this closure barely fires —
+        // only in the window between attach and that command landing, which is
+        // why it must not accumulate anything.
+        //
+        // Left in place rather than deleted because it is the one seam a pane
+        // renderer would reattach at, and because `TmuxRenameString` and
+        // `TmuxOutputRouter` are kept for the same reason `TerminalReply` is:
+        // correct, checked against a table, and with no caller since that
+        // deletion. See CLAUDE.md.
+        client.onPaneOutput = { _, _ in }
         client.onNotification = { [weak self] notification in
             self?.handle(notification)
         }
@@ -136,6 +133,20 @@ final class TmuxSessionConnection {
         for url in pasteFilesInFlight { try? FileManager.default.removeItem(at: url) }
         pasteFilesInFlight.removeAll()
         router.removeAll()
+
+        // Reset with the rest of the state, and this line is insurance rather
+        // than a fix for anything that happens today. A connection is
+        // single-use — one construction site, one `start()`, and a Foundation
+        // `Process` that cannot be launched twice — so a client that dies is
+        // always replaced by a *new* connection whose guard is already false.
+        //
+        // The moment somebody adds an in-place reconnect, leaving this set
+        // silently skips every command in `subscribeToActivity`: not only the
+        // `no-output` flag, but all three `-B` subscriptions. Activity dots,
+        // pane paths and agent state would go dark at once, with no error
+        // anywhere, on a connection that otherwise looks healthy.
+        subscribedToActivity = false
+
         client.stop()
     }
 
@@ -529,6 +540,33 @@ final class TmuxSessionConnection {
     private func subscribeToActivity() {
         guard !subscribedToActivity else { return }
         subscribedToActivity = true
+
+        // First, and it is the cheapest line in the file. tmux sends a control
+        // client every byte every pane in the session produces, and this app has
+        // not drawn a pane from that stream since the renderer was removed —
+        // tmux draws them, on a pty of its own. So every one of those bytes was
+        // being unescaped, scanned for `ESC k`, counted under a lock, and then
+        // appended to a per-pane backlog that nothing drains, up to 256 KB each.
+        // `no-output` stops tmux sending them at all, which is the only fix that
+        // costs nothing rather than throwing the bytes away more cheaply.
+        //
+        // Measured on tmux 3.6a against an isolated `-L` server, because the
+        // flag's blast radius is the whole question and the name does not settle
+        // it. It is **per client**: a second control client attached to the same
+        // session still received all 35 `%output` lines and the marker while
+        // this one received none — so the `tmux attach` that actually draws the
+        // panes is untouched. And it suppresses only pane output: commands still
+        // run, `%begin` reply blocks still come back with real data, and
+        // `%subscription-changed` still arrives, which is what the rail's
+        // activity, path and agent state are all read from.
+        //
+        // What it cost was `TmuxMetrics`, whose only input was `onPaneOutput`.
+        // With nothing feeding it and nothing reading it, the type and the
+        // sidebar footer's byte rate were both removed rather than left to read
+        // "idle" for ever — a meter that cannot tell a live idle connection from
+        // a dead one is worse than no meter.
+        client.send("refresh-client -f no-output")
+
         client.send(
             "refresh-client -B '\(Self.activitySubscription):@*:#{window_activity_flag}'"
         )
@@ -654,9 +692,6 @@ final class TmuxSessionConnection {
     /// point is to move the active pane now ends with tmux being asked what the
     /// active pane is.
     func focus(paneID: String) {
-        measuredPaneLock.lock()
-        measuredPane = paneID
-        measuredPaneLock.unlock()
         client.run("select-pane -t \(paneID)") { [weak self] _, _ in
             self?.refreshWindows()
         }
@@ -1415,128 +1450,6 @@ final class TmuxSessionConnection {
     }
 }
 
-// MARK: - Throughput probe
-
-extension TmuxSessionConnection {
-    /// Measure whether one busy pane starves the others.
-    ///
-    /// Control mode multiplexes every pane in the session onto one pipe, so
-    /// the risk is not raw bandwidth — it is that an AI agent redrawing at
-    /// full speed in one window makes another feel laggy. Byte counters cannot
-    /// see that, so this runs an A/B against a synthetic heartbeat:
-    ///
-    ///   A — a pane printing one byte every 50ms, alone.
-    ///   B — the same pane, while a second pane floods the pipe.
-    ///
-    /// Both helper windows are created detached and killed afterwards, so
-    /// nothing the user is looking at is disturbed.
-    func runThroughputProbe(phaseSeconds: TimeInterval = 8, completion: @escaping (String) -> Void) {
-        let target = sessionTarget
-        guard !probeInFlight else {
-            completion("A probe is already running.")
-            return
-        }
-        probeInFlight = true
-        onStatusChange?("Probing: phase A — heartbeat alone…")
-
-        let heartbeat = "while :; do printf .; sleep 0.05; done"
-        client.run("new-window -d -P -F '#{window_id}\u{01}#{pane_id}' -t \(target) -n attache-probe '\(heartbeat)'") { [weak self] lines, failed in
-            guard let self else { return }
-            let ids = (lines.first ?? "").components(separatedBy: "\u{01}")
-            guard !failed, ids.count == 2 else {
-                self.finishProbe(completion, "Could not create the heartbeat window: \(lines.joined(separator: " "))")
-                return
-            }
-            let probeWindow = ids[0]
-            self.measuredPaneLock.lock()
-            let restore = self.measuredPane
-            self.measuredPane = ids[1]
-            self.measuredPaneLock.unlock()
-
-            // Let the new pane's shell finish starting; its startup output
-            // would otherwise be counted as heartbeat.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                self.metrics.reset()
-                DispatchQueue.main.asyncAfter(deadline: .now() + phaseSeconds) {
-                    let baseline = self.metrics.snapshot()
-                    self.runFloodPhase(
-                        target: target,
-                        phaseSeconds: phaseSeconds,
-                        probeWindow: probeWindow,
-                        restoreMeasured: restore,
-                        baseline: baseline,
-                        completion: completion
-                    )
-                }
-            }
-        }
-    }
-
-    private func runFloodPhase(
-        target: String,
-        phaseSeconds: TimeInterval,
-        probeWindow: String,
-        restoreMeasured: String?,
-        baseline: TmuxMetrics.Snapshot,
-        completion: @escaping (String) -> Void
-    ) {
-        onStatusChange?("Probing: phase B — heartbeat plus a flooding pane…")
-        let filler = String(repeating: "0123456789ABCDEF", count: 4)
-
-        client.run("new-window -d -P -F '#{window_id}' -t \(target) -n attache-flood 'yes \(filler)'") { [weak self] lines, failed in
-            guard let self else { return }
-            guard !failed, let floodWindow = lines.first?.trimmingCharacters(in: .whitespaces),
-                  !floodWindow.isEmpty
-            else {
-                self.client.send("kill-window -t \(probeWindow)")
-                self.measuredPane = restoreMeasured
-                self.finishProbe(completion, "Could not create the flood window: \(lines.joined(separator: " "))")
-                return
-            }
-
-            self.metrics.reset()
-            DispatchQueue.main.asyncAfter(deadline: .now() + phaseSeconds) {
-                let loaded = self.metrics.snapshot()
-                self.client.send("kill-window -t \(floodWindow)")
-                self.client.send("kill-window -t \(probeWindow)")
-                self.measuredPaneLock.lock()
-                self.measuredPane = restoreMeasured
-                self.measuredPaneLock.unlock()
-                self.finishProbe(completion, Self.compare(baseline: baseline, loaded: loaded))
-            }
-        }
-    }
-
-    private func finishProbe(_ completion: @escaping (String) -> Void, _ text: String) {
-        probeInFlight = false
-        metrics.reset()
-        onStatusChange?(describeActive())
-        completion(text)
-    }
-
-    private static func compare(baseline: TmuxMetrics.Snapshot, loaded: TmuxMetrics.Snapshot) -> String {
-        let ms = { (value: TimeInterval) in String(format: "%.0f", value * 1000) }
-        let degradation = baseline.p99Gap > 0 ? loaded.p99Gap / baseline.p99Gap : 0
-        let floodRate = Double(loaded.otherBytes) / max(loaded.elapsed, 0.001) / 1_048_576
-
-        return """
-        A · heartbeat alone (one byte every 50ms)
-            arrival gaps  median \(ms(baseline.medianGap))ms · p99 \(ms(baseline.p99Gap))ms · worst \(ms(baseline.worstGap))ms
-            samples       \(baseline.watchedChunks)
-
-        B · heartbeat plus another pane flooding
-            arrival gaps  median \(ms(loaded.medianGap))ms · p99 \(ms(loaded.p99Gap))ms · worst \(ms(loaded.worstGap))ms
-            samples       \(loaded.watchedChunks)
-            flood output  \(loaded.otherBytes) bytes (\(String(format: "%.1f", floodRate)) MB/s)
-
-        Result
-            p99 went from \(ms(baseline.p99Gap))ms to \(ms(loaded.p99Gap))ms, \
-        \(degradation > 0 ? String(format: "a factor of %.1f", degradation) : "not comparable").
-            The heartbeat is constant by construction, so whatever B drifts by
-            is the delay the flood adds by sharing the pipe.
-        """
-    }
-}
 
 #if DEBUG
 

@@ -6,9 +6,7 @@
 import AppKit
 import SwiftUI
 
-// The app hero, and the home of the control-mode throughput probe — which used
-// to live in a top-level menu called "Measure" that gave no hint of what it
-// measured or that it takes the better part of a minute.
+// The app hero.
 
 struct AboutPage: View {
     @EnvironmentObject var store: SettingsStore
@@ -40,35 +38,6 @@ struct AboutPage: View {
                 .padding(.vertical, 12)
             }
 
-            Section {
-                HStack {
-                    featureLabel(
-                        "speedometer", .green,
-                        "Throughput probe",
-                        "Floods a scratch pane for about 18 seconds and reports what actually arrived."
-                    )
-                    Spacer(minLength: 8)
-                    Button(store.isProbing ? "Running…" : "Run") { store.runThroughputProbe() }
-                        .disabled(store.isProbing)
-                }
-
-                if let report = store.probeReport {
-                    // In the page rather than an alert: the old report was a
-                    // modal, and main-queue work — including the surfaces
-                    // rendering the panes being measured — queues up behind a
-                    // modal run loop for as long as it is open.
-                    Text(report)
-                        .font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            } header: {
-                Text("Diagnostics")
-            } footer: {
-                Text("Runs against the session currently on screen.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
         .navigationTitle("About")

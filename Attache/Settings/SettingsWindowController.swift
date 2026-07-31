@@ -174,16 +174,7 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var glassStyle: AppSettings.GlassStyle
     @Published private(set) var liquidGlassIsClear: Bool
 
-    // ─── Throughput probe (About page) ───────────────────────────────────────
-    @Published private(set) var isProbing = false
-    @Published private(set) var probeReport: String?
-
-    /// Runs the control-mode probe against whichever session is on screen.
-    /// Injected so the settings layer never reaches into the tmux layer.
-    private let probe: (@escaping (String) -> Void) -> Void
-
-    init(probe: @escaping (@escaping (String) -> Void) -> Void) {
-        self.probe = probe
+    init() {
         fontFamily = AppSettings.fontFamily
         fontSize = AppSettings.fontSize
         appearance = AppSettings.appearance
@@ -437,24 +428,6 @@ final class SettingsStore: ObservableObject {
         AppSettings.notifyChanged()
     }
 
-    // MARK: Throughput probe
-
-    func runThroughputProbe() {
-        guard !isProbing else { return }
-        isProbing = true
-        probeReport = nil
-        // The probe's own completion is not guaranteed to land on the main
-        // thread — the control client delivers replies on its reader queue and
-        // only the success path detours through a main-queue timer — so the
-        // hop is made here rather than assumed anywhere upstream.
-        probe { [weak self] report in
-            Task { @MainActor in
-                guard let self else { return }
-                self.isProbing = false
-                self.probeReport = report
-            }
-        }
-    }
 }
 
 // MARK: - SettingsWindowController
@@ -469,8 +442,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let window: NSWindow
     private let store: SettingsStore
 
-    init(probe: @escaping (@escaping (String) -> Void) -> Void) {
-        store = SettingsStore(probe: probe)
+    override init() {
+        store = SettingsStore()
 
         // An AppKit split view controller rather than SwiftUI's
         // `NavigationSplitView`. On macOS 26 the SwiftUI one draws the sidebar

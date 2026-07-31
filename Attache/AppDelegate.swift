@@ -234,8 +234,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// it even when it is not drawn.
     private func refreshTitle() {
         window?.title = status
-        let throughput = main?.currentSession?.connection.metrics.snapshot().titleSummary
-        main?.showStatus(status, detail: throughput ?? "")
+        // The detail line used to carry a byte rate for the pane on screen and
+        // for the session. It is gone because its input is: the connection now
+        // attaches with `refresh-client -f no-output`, so tmux sends no pane
+        // bytes down it. Under that flag a healthy connection is legitimately
+        // near-silent, so the meter would read the same for a live idle
+        // connection and a dead one — an indicator that cannot tell those apart
+        // is an anti-signal. Liveness here is event-shaped instead: the client's
+        // `onExit` reaches `scheduleSessionRefresh` and the rail reconciles.
+        main?.showStatus(status, detail: "")
     }
 
     // MARK: - Menu
@@ -269,11 +276,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mainMenu.addItem(makeWindowMenuItem())
         mainMenu.addItem(makeSessionMenuItem())
         mainMenu.addItem(makeQuickActionsMenuItem())
-
-        // The throughput probe used to be a top-level menu called "Measure",
-        // which said nothing about what it measured or that it runs for the
-        // better part of a minute. It lives on the settings window's About
-        // page now, where it can show its report without a modal.
 
         #if DEBUG
             mainMenu.addItem(makeDebugMenuItem())
@@ -531,7 +533,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Opens the settings window on the page that edits this menu.
     ///
     /// Through `showSettings` rather than a second construction site, so the
-    /// probe callback the window is built with keeps being wired exactly once.
+    /// window is built exactly once however it is reached.
     @objc private func openQuickActionsSettings() {
         showSettings()
         settings?.select(page: .quickActions)
@@ -547,22 +549,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Settings
 
     @objc private func showSettings() {
-        if settings == nil {
-            settings = SettingsWindowController { [weak self] completion in
-                guard let connection = self?.main?.currentSession?.connection else {
-                    completion("No session is on screen, so there is nothing to measure.")
-                    return
-                }
-                connection.runThroughputProbe { report in
-                    // Through TmuxLog, not print: the probe runs for the better
-                    // part of a minute and its result is the one number this
-                    // project trusts about throughput. stdout alone loses it
-                    // when the app quits; the log file keeps it.
-                    TmuxLog.lifecycle(report)
-                    completion(report)
-                }
-            }
-        }
+        if settings == nil { settings = SettingsWindowController() }
         settings?.show()
     }
 
