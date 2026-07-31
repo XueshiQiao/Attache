@@ -81,6 +81,15 @@ carry a quote, a space, or a newline. This removes command injection as a
 category rather than escaping around it. `TmuxCommand.quote` exists for the one
 place real text has to be sent — renaming — and nothing else should need it.
 
+**Every preference goes in `SettingsFile`, never in `UserDefaults`.** The store
+is `~/.config/tmux-gui.toml`: a file the person who owns these settings can
+read, edit, diff, put in a dotfiles repository and restore by hand. Reaching for
+`UserDefaults` for "just this one flag" puts a setting somewhere they cannot see
+and cannot get back — which is exactly how the settings were lost that prompted
+the move. The app's plist still exists and holds one thing: the window frames
+AppKit writes through `setFrameAutosaveName`, which are not ours and have no
+supported redirect.
+
 **Anything destructive needs a confirmation and separate wording.** Hiding a
 window takes its row out of the rail and sends tmux nothing; killing is a
 different menu item, worded as what it is, and asks first. A window may have an

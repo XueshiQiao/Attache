@@ -247,10 +247,31 @@ final class SettingsFile {
             output.append(line)
         }
         if !replaced, let value {
-            if !output.isEmpty, output.last?.trimmingCharacters(in: .whitespaces).isEmpty == false {
-                output.append("")
+            // **Before the first table header, not at the end**, and that is
+            // correctness rather than tidiness: in TOML a `key = value` written
+            // after `[[quick_action]]` belongs to *that table*, not to the top
+            // level. Appending was also self-defeating — the scan above treats
+            // everything after a header as part of it, so a key appended past
+            // the blocks could never be found again and a second copy was
+            // written on every change. Observed: two `debug_inspector_server`
+            // lines after two clicks of one menu item.
+            let firstHeader = output.firstIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }
+            if var at = firstHeader {
+                // Back up over the comment lines directly above the header, so
+                // a new key cannot land between somebody's note and the block
+                // it was written about. Observed once: a flag inserted itself
+                // between `# 我手写的动作` and the `[[quick_action]]` it
+                // labelled, which leaves the comment pointing at nothing.
+                while at > 0, output[at - 1].trimmingCharacters(in: .whitespaces).hasPrefix("#") {
+                    at -= 1
+                }
+                output.insert("\(key) = \(value)", at: at)
+            } else {
+                if !output.isEmpty, output.last?.trimmingCharacters(in: .whitespaces).isEmpty == false {
+                    output.append("")
+                }
+                output.append("\(key) = \(value)")
             }
-            output.append("\(key) = \(value)")
         }
         lines = output
         flush()

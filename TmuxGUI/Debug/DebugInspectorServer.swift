@@ -45,7 +45,11 @@
         static let shared = DebugInspectorServer()
 
         static let defaultPort: UInt16 = 47623
-        private static let enabledKey = "debug.inspector.enabled"
+        /// In `~/.config/tmux-gui.toml` like every other preference, not in the
+        /// plist. It is a setting the user changes from a menu, so it belongs
+        /// where the settings are — and "no app setting goes in the plist" is
+        /// worth being able to state without an exception.
+        private static let enabledKey = "debug_inspector_server"
 
         private var listener: NWListener?
         private(set) var port: UInt16?
@@ -58,12 +62,12 @@
             if let raw = ProcessInfo.processInfo.environment["TMUXGUI_INSPECT"] {
                 return raw == "1" || raw.lowercased() == "true"
             }
-            return UserDefaults.standard.bool(forKey: enabledKey)
+            return SettingsFile.shared.object(forKey: enabledKey) as? Bool ?? false
         }
 
         static var isRememberedOn: Bool {
-            get { UserDefaults.standard.bool(forKey: enabledKey) }
-            set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
+            get { SettingsFile.shared.object(forKey: enabledKey) as? Bool ?? false }
+            set { SettingsFile.shared.set(newValue, forKey: enabledKey) }
         }
 
         var isRunning: Bool { listener != nil }
