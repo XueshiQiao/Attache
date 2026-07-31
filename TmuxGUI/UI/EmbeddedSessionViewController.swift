@@ -169,6 +169,16 @@ final class EmbeddedSessionViewController: NSViewController {
         terminalView.setAccessibilityElement(true)
         terminalView.setAccessibilityLabel("tmux session \(connection.sessionID), drawn by tmux")
         terminalView.onContextMenu = { [weak self] in self?.contextMenu?() }
+        // Dropping a file was refused outright until this was wired: the view
+        // registers for the drag types and then asks its owner what to do with
+        // what it caught, and this half was not answering. Reported as
+        // "dragging an image in still does not work" — ⌘V of the same image
+        // worked, because that has libghostty's own paste to fall through to
+        // and a drop has nothing at all.
+        terminalView.onDropText = { [weak self] text in
+            guard let self, let paneID = connection.activeWindow?.activePaneID else { return false }
+            return connection.paste(text: text, into: paneID)
+        }
 
         view = root
         // The same channel the pane controller uses. tmux still announces
@@ -218,6 +228,28 @@ final class EmbeddedSessionViewController: NSViewController {
         // should ever pull the keyboard out of one.
         guard !(window.firstResponder is NSText) else { return }
         window.makeFirstResponder(terminalView)
+    }
+
+    /// ⌘Z, for the half with no pane surfaces to find the keyboard in.
+    ///
+    /// Reported not working after the switch, and ⌘V reported working — which
+    /// is the whole diagnosis in one pair. Both start by asking the pane half
+    /// "which pane has the keyboard", both get nothing, and then they part
+    /// company: paste falls through the responder chain to libghostty's own,
+    /// which writes to the pty, so it survived; undo has no such fallback,
+    /// because a terminal has no undo of its own. So it has to be sent, and
+    /// what to send was measured long ago — `0x1f`, Ctrl+`_`, which readline
+    /// and Claude Code's input box both read as undo. See
+    /// `SessionViewController.sendUndoToFocusedPane` for that measurement.
+    ///
+    /// tmux's active pane rather than a focus ring of the app's own: in this
+    /// half the app does not know where the panes are, and tmux does.
+    func sendUndo() -> Bool {
+        guard view.window?.isKeyWindow == true,
+              let paneID = connection.activeWindow?.activePaneID
+        else { return false }
+        connection.sendKeys(paneID: paneID, data: Data([0x1f]))
+        return true
     }
 
     /// Copy whatever is selected in the embedded terminal.

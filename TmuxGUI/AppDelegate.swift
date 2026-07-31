@@ -353,6 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// app: there was no Edit-menu item for it at all.
     @objc private func undoInPaneOrResponder(_ sender: Any?) {
         if main?.currentSession?.sendUndoToFocusedPane() == true { return }
+        if main?.currentEmbedded?.sendUndo() == true { return }
         NSApp.sendAction(Selector(("undo:")), to: nil, from: sender)
     }
 

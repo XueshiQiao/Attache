@@ -86,6 +86,15 @@ final class MainViewController: NSSplitViewController {
         return controllers[currentSessionID]
     }
 
+    /// The content half the user is actually looking at, for the shortcuts that
+    /// address "the pane with the keyboard". `currentSession` answers with the
+    /// half that holds the model, which under `tmuxDrawsItself` is not the one
+    /// on screen — the difference is why ⌘Z stopped working after the switch.
+    var currentEmbedded: EmbeddedSessionViewController? {
+        guard AppSettings.tmuxDrawsItself, let currentSessionID else { return nil }
+        return embedded[currentSessionID]
+    }
+
     /// Run a Quick Action against the session on screen.
     ///
     /// The connection rather than `currentSession`: that one is a *view*
