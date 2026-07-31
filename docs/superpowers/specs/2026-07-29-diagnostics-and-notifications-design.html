@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Noticing that nothing happened — TmuxGUI diagnostics &amp; notifications</title>
+<title>Noticing that nothing happened — Attaché diagnostics &amp; notifications</title>
 <style>
   :root {
     --bg: #faf9f5;
@@ -203,13 +203,13 @@
 <div class="container">
 
 <header class="hero">
-  <div class="eyebrow">Design note · TmuxGUI · 2026-07-29</div>
+  <div class="eyebrow">Design note · Attaché · 2026-07-29</div>
   <h1>Noticing that nothing happened</h1>
   <p class="lede">Every failure this app had today was silent. It sent the command, drew the old picture, and waited — and only a person staring at it could tell. This adds the missing half: the app checks that what it asked for actually happened.</p>
 </header>
 
 <div class="meta-row">
-  <span><b>Adds</b><code>TmuxGUI/Diagnostics/</code>, <code>TmuxGUI/UI/Notifications/</code></span>
+  <span><b>Adds</b><code>Attache/Diagnostics/</code>, <code>Attache/UI/Notifications/</code></span>
   <span><b>After</b><code>359fa0b</code></span>
   <span><b>Status</b><span class="pill neutral">DESIGN</span></span>
 </div>
@@ -420,11 +420,11 @@
 
 <p>Two sinks, because they answer different questions. The line is for “did this ever happen”; the snapshot is for “why”.</p>
 
-<pre><code><span class="tok-comment">// ~/Library/Logs/TmuxGUI/anomalies.log — one line, greppable</span>
+<pre><code><span class="tok-comment">// ~/Library/Logs/Attache/anomalies.log — one line, greppable</span>
 [2026-07-29 21:58:04.311] [EXPECT] [dev] select-window -t @13 unmet after 312ms
     (active window still @9) snapshot=21-58-04-311-expect-window.json
 
-<span class="tok-comment">// ~/Library/Logs/TmuxGUI/anomalies/&lt;stamp&gt;-&lt;kind&gt;.json — the scene</span>
+<span class="tok-comment">// ~/Library/Logs/Attache/anomalies/&lt;stamp&gt;-&lt;kind&gt;.json — the scene</span>
 {
   <span class="tok-string">"tmuxTruth"</span>:   { <span class="tok-comment">/* list-windows / list-panes, asked at this instant */</span> },
   <span class="tok-string">"appModel"</span>:    { <span class="tok-comment">/* what the app believed */</span> },
@@ -466,7 +466,7 @@
 
 <div class="footer">
   <span>2026-07-29 · design note</span>
-  <span>after 359fa0b · TmuxGUI</span>
+  <span>after 359fa0b · Attaché</span>
 </div>
 
 </div>

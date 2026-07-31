@@ -11,7 +11,7 @@
 //  row where nothing is running. A false negative only costs a missing dot.
 //  So the cases lean on things that look like versions and are not.
 //
-//  swiftc -O -o /tmp/agentcheck TmuxGUI/Status/AgentState.swift \
+//  swiftc -O -o /tmp/agentcheck Attache/Status/AgentState.swift \
 //      Tools/AgentStateCheck/main.swift && /tmp/agentcheck
 //
 

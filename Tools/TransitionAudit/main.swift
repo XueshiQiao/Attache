@@ -2,7 +2,7 @@
 //  main.swift
 //  TransitionAudit
 //
-//  Reads what the app actually did — `~/Library/Logs/TmuxGUI/agent-state/` —
+//  Reads what the app actually did — `~/Library/Logs/Attache/agent-state/` —
 //  and checks it against the state machine it is supposed to implement.
 //
 //  Every other check tool in this project takes fixtures and asks whether the
@@ -37,7 +37,7 @@ struct Transition {
 }
 
 let directory = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("Library/Logs/TmuxGUI/agent-state")
+    .appendingPathComponent("Library/Logs/Attache/agent-state")
 
 let parser: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()

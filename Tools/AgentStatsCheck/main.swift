@@ -15,7 +15,7 @@
 //  The captured payload from a fresh session carries `"used_percentage": null`,
 //  and the obvious reading of that key — is it present — yields 0.
 //
-//  swiftc -O -o /tmp/statscheck TmuxGUI/Status/AgentStats.swift \
+//  swiftc -O -o /tmp/statscheck Attache/Status/AgentStats.swift \
 //      Tools/AgentStatsCheck/main.swift && /tmp/statscheck
 //
 

@@ -17,7 +17,7 @@
 //  neither is distinguishable by command line at all. They are why the record
 //  carries a start time.
 //
-//    swiftc -O -o /tmp/childregistrycheck TmuxGUI/Tmux/TmuxChildRecord.swift \
+//    swiftc -O -o /tmp/childregistrycheck Attache/Tmux/TmuxChildRecord.swift \
 //      Tools/ChildRegistryCheck/main.swift
 //    /tmp/childregistrycheck
 //

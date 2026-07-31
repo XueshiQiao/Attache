@@ -5,7 +5,7 @@
 //  Cross-check for `TerminalReply`, in the same spirit as `Tools/LayoutCheck`.
 //
 //      swiftc -O -o /tmp/replycheck \
-//          TmuxGUI/Tmux/TerminalReply.swift Tools/ReplyCheck/main.swift
+//          Attache/Tmux/TerminalReply.swift Tools/ReplyCheck/main.swift
 //      /tmp/replycheck
 //
 //  The half that matters is `keystrokes`. `TerminalReply` decides what never

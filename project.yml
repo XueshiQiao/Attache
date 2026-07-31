@@ -1,7 +1,7 @@
-name: TmuxGUI
+name: Attache
 
 options:
-  bundleIdPrefix: dev.xueshi
+  bundleIdPrefix: me.xueshi
   deploymentTarget:
     macOS: "13.0"
   # Both of these are here to match what the hand-maintained project had, and
@@ -23,21 +23,21 @@ packages:
     path: Vendor/libghostty-spm
 
 schemes:
-  TmuxGUI:
+  Attache:
     build:
       targets:
-        TmuxGUI: all
+        Attache: all
         # `[test]` is buildForTesting and nothing else, so `xcodebuild build`
         # does not drag the test bundle in — only `build-for-testing` and `test`
         # do. This is what the hand-maintained scheme had.
-        TmuxGUIUITests: [test]
+        AttacheUITests: [test]
     test:
       config: Debug
       targets:
-        - TmuxGUIUITests
+        - AttacheUITests
 
 targets:
-  TmuxGUI:
+  Attache:
     type: application
     platform: macOS
     sources:
@@ -46,7 +46,7 @@ targets:
       # it without anything here changing. Do not expand this into a file list —
       # that is the churn this migration exists to remove. AppIcon.icon stays
       # whole for the same reason.
-      - path: TmuxGUI
+      - path: Attache
         type: syncedFolder
     dependencies:
       # The package vends four libraries and the app links all four. `product:`
@@ -68,19 +68,40 @@ targets:
         basedOnDependencyAnalysis: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.xueshi.TmuxGUI
+        PRODUCT_BUNDLE_IDENTIFIER: me.xueshi.attache
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
-        # TmuxGUI/Entitlement.entitlements is an empty <dict/>. The sandbox is
+        # Where the accent lives, and where it deliberately does not.
+        #
+        # The bold app-menu title comes from `CFBundleName`, and `CFBundleName`
+        # is always `$(PRODUCT_NAME)` under `GENERATE_INFOPLIST_FILE` — there is
+        # no `INFOPLIST_KEY_CFBundleName` to override it with. Measured on
+        # macOS 26: setting `CFBundleDisplayName` alone leaves that title
+        # reading `Attache` while the Hide and Quit items directly beneath it
+        # read `Attaché`, because this app builds its menu by hand with no nib
+        # and spells them out in `AppDelegate`. One menu, two spellings, which
+        # reads as a typo rather than a decision.
+        #
+        # So the product carries the accent and the executable does not.
+        # `EXECUTABLE_NAME` is the one knob that separates them: the bundle is
+        # `Attaché.app` and Finder and the menu bar agree with the README, while
+        # the binary inside stays `Attache` — which is what a build command, a
+        # `pgrep`, an `osascript … process "…"` and a crash log all handle
+        # without anyone thinking about encodings.
+        PRODUCT_NAME: Attaché
+        EXECUTABLE_NAME: Attache
+        INFOPLIST_KEY_CFBundleDisplayName: Attaché
+
+        # Attache/Entitlement.entitlements is an empty <dict/>. The sandbox is
         # off because of ENABLE_APP_SANDBOX alone, and it has to stay off: a
         # sandboxed process can neither spawn tmux nor reach its socket under
         # /private/tmp/tmux-<uid>/. Dropping this setting fails at launch, not
         # at build, so a green build does not catch it.
-        CODE_SIGN_ENTITLEMENTS: TmuxGUI/Entitlement.entitlements
+        CODE_SIGN_ENTITLEMENTS: Attache/Entitlement.entitlements
         ENABLE_APP_SANDBOX: NO
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_STYLE: Automatic
@@ -109,19 +130,19 @@ targets:
           # thing script sandboxing exists to stop.
           ENABLE_USER_SCRIPT_SANDBOXING: NO
 
-  TmuxGUIUITests:
+  AttacheUITests:
     type: bundle.ui-testing
     platform: macOS
     sources:
-      - path: TmuxGUIUITests
+      - path: AttacheUITests
         type: syncedFolder
     dependencies:
       # On a ui-testing target this is what makes XcodeGen write
-      # TEST_TARGET_NAME = TmuxGUI, which is how the runner knows what to launch.
-      - target: TmuxGUI
+      # TEST_TARGET_NAME = Attache, which is how the runner knows what to launch.
+      - target: Attache
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.xueshi.TmuxGUIUITests
+        PRODUCT_BUNDLE_IDENTIFIER: me.xueshi.attacheUITests
         # There is no Info.plist on disk for this bundle, so without this the
         # .xctest is built with no Info.plist inside it at all — the build still
         # succeeds and XCTest then has nothing to load.
@@ -139,7 +160,7 @@ settings:
     CLANG_CXX_LANGUAGE_STANDARD: "gnu++20"
   configs:
     Debug:
-      # Guards TmuxGUI/Debug/, the inspector, and every #if DEBUG path in
+      # Guards Attache/Debug/, the inspector, and every #if DEBUG path in
       # TmuxLog and TmuxPaneSurface. Lose it and all of that compiles to
       # nothing, with no error.
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG $(inherited)"

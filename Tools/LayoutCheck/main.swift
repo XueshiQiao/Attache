@@ -19,7 +19,7 @@
 //
 //  Build and run:
 //      swiftc -O -o /tmp/layoutcheck \
-//          TmuxGUI/Tmux/TmuxLayout.swift Tools/LayoutCheck/main.swift
+//          Attache/Tmux/TmuxLayout.swift Tools/LayoutCheck/main.swift
 //      /tmp/layoutcheck
 //
 

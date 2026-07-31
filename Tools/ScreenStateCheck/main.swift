@@ -14,8 +14,8 @@
 //  looks busy; a pane wrongly called `done` says "your turn" about an agent that
 //  is still going, and that is the mistake this feature exists to prevent.
 //
-//  swiftc -O -o /tmp/screenstatecheck TmuxGUI/Status/AgentState.swift \
-//      TmuxGUI/Status/AgentStateStrategy.swift Tools/ScreenStateCheck/main.swift \
+//  swiftc -O -o /tmp/screenstatecheck Attache/Status/AgentState.swift \
+//      Attache/Status/AgentStateStrategy.swift Tools/ScreenStateCheck/main.swift \
 //      && /tmp/screenstatecheck
 //
 

@@ -5,7 +5,7 @@
 //  Cross-check for `TmuxRenameString`, in the same spirit as `Tools/ReplyCheck`.
 //
 //      swiftc -O -o /tmp/renamestringcheck \
-//          TmuxGUI/Tmux/TmuxRenameString.swift Tools/RenameStringCheck/main.swift
+//          Attache/Tmux/TmuxRenameString.swift Tools/RenameStringCheck/main.swift
 //      /tmp/renamestringcheck
 //
 //  The half that matters is `passthrough`. This decides what never reaches the

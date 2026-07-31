@@ -2,7 +2,7 @@
 //  ExpectationCheck — the table in the design note, executed.
 //
 //  Compile with the one file it checks:
-//    swiftc -O -o /tmp/expectationcheck TmuxGUI/Diagnostics/CommandExpectation.swift \
+//    swiftc -O -o /tmp/expectationcheck Attache/Diagnostics/CommandExpectation.swift \
 //      Tools/ExpectationCheck/main.swift
 //    /tmp/expectationcheck
 //

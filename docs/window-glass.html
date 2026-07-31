@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>窗口毛玻璃 · TmuxGUI 设计笔记</title>
+<title>窗口毛玻璃 · Attaché 设计笔记</title>
 <style>
   :root {
     --bg: #faf9f5;
@@ -233,14 +233,14 @@
 <div class="container">
 
 <header class="hero">
-  <div class="eyebrow">Engineering note · TmuxGUI · 2026-07-28</div>
+  <div class="eyebrow">Engineering note · Attaché · 2026-07-28</div>
   <h1>窗口毛玻璃：三种做法，<br>以及公开 API 为什么只能给你一半</h1>
   <p class="lede">「半径可调」和「Metal 图层底下也有效」是两件事。macOS 的公开接口每次只给一件，
   而一个终端两件都需要——这份笔记记录三种实现各自是什么、差在哪，以及最后为什么落在一个私有符号上。</p>
 </header>
 
 <div class="meta-row">
-  <span><b>代码</b><code>TmuxGUI/UI/WindowGlass.swift</code></span>
+  <span><b>代码</b><code>Attache/UI/WindowGlass.swift</code></span>
   <span><b>私有调用</b><code>WindowServerBlur.swift</code></span>
   <span><b>提交</b><code>f0c2baf … fcf6450</code></span>
   <span><b>状态</b><span class="pill good">已上线</span></span>
@@ -518,7 +518,7 @@ inspector 的 <code>/settings</code> 路由能全部实时驱动（Debug 版、�
 </table>
 
 <pre><code><span class="tok-comment"># 实时切换，不用重启（Debug 版）</span>
-curl -s -X POST -H <span class="tok-string">'x-tmuxgui-inspect: 1'</span> \
+curl -s -X POST -H <span class="tok-string">'x-attache-inspect: 1'</span> \
   <span class="tok-string">'http://127.0.0.1:47623/settings?style=blur&amp;blur=40&amp;windowOpacity=0.35&amp;rail=0.10'</span></code></pre>
 
 <h2>8 · 拿掉任何一块会怎样</h2>
@@ -575,7 +575,7 @@ curl -s -X POST -H <span class="tok-string">'x-tmuxgui-inspect: 1'</span> \
 「好不好看」这一项，只有人能签字。</p>
 
 <div class="footer">
-  <span>TmuxGUI · docs/window-glass.html</span>
+  <span>Attaché · docs/window-glass.html</span>
   <span>2026-07-28 · f0c2baf…fcf6450</span>
 </div>
 

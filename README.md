@@ -1,8 +1,12 @@
-# TmuxGUI
+# Attaché
 
 A native macOS window over a real tmux server. Attach to the same session from
 any ordinary terminal and you get the ordinary tmux — the processes never
 notice this app exists.
+
+Named for the verb you already type. An attaché is someone assigned to follow
+along and carry things for you, which is all this window does: tmux owns every
+session, window and pane, and this is the thing attached to it.
 
 ```
 tmux session  →  a group heading in the left rail
@@ -90,7 +94,7 @@ socket, tmux 3.6a, Apple Silicon. Not yet measured over ssh.
 
 ## Layout of the code
 
-`TmuxGUI/Tmux/` — everything that has nothing to do with AppKit:
+`Attache/Tmux/` — everything that has nothing to do with AppKit:
 
 - `TmuxOctal.swift` — byte-level codec. tmux escapes control characters and
   backslash as `\ooo`, but passes bytes above 0x7f through raw, so decoding has
@@ -105,14 +109,14 @@ socket, tmux 3.6a, Apple Silicon. Not yet measured over ssh.
 - `TmuxServer.swift` — every session's connection.
 - `TmuxMetrics.swift` — throughput and stall measurement.
 
-`TmuxGUI/UI/` — the AppKit half.
+`Attache/UI/` — the AppKit half.
 
 `Tools/LayoutCheck/` — cross-checks the layout parser against a live server:
 for every window it can see, compare the geometry the parser derives for each
 pane with what `list-panes` reports.
 
 ```sh
-swiftc -O -o /tmp/layoutcheck TmuxGUI/Tmux/TmuxLayout.swift Tools/LayoutCheck/main.swift
+swiftc -O -o /tmp/layoutcheck Attache/Tmux/TmuxLayout.swift Tools/LayoutCheck/main.swift
 /tmp/layoutcheck
 ```
 
@@ -122,16 +126,16 @@ Needs Xcode, tmux, and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
 (`brew install xcodegen`).
 
 ```sh
-git clone --recurse-submodules https://github.com/XueshiQiao/tmux-gui.git && cd tmux-gui
+git clone --recurse-submodules https://github.com/XueshiQiao/Attache.git && cd Attache
 xcodegen generate
-xcodebuild -project TmuxGUI.xcodeproj -scheme TmuxGUI -configuration Debug \
+xcodebuild -project Attache.xcodeproj -scheme Attache -configuration Debug \
   -destination 'platform=macOS,arch=arm64' \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 ```
 
 Already cloned: `git submodule update --init --recursive`.
 
-`project.yml` is the project. `TmuxGUI.xcodeproj` is generated from it and is
+`project.yml` is the project. `Attache.xcodeproj` is generated from it and is
 not in git — run `xcodegen generate` after pulling, and never edit project
 settings in Xcode's UI, because the next generate throws them away.
 

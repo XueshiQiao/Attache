@@ -70,8 +70,8 @@ Two things in the UI are authored locally and nothing else is: the hidden window
 ids in `SessionViewController`, and `expandedSessions` in `SessionSidebarView`.
 tmux has no opinion about either.
 
-`TmuxGUI/Tmux/` has no AppKit imports and should stay that way.
-`TmuxGUI/UI/` is the only place that touches views.
+`Attache/Tmux/` has no AppKit imports and should stay that way.
+`Attache/UI/` is the only place that touches views.
 
 ## Rules that are not style preferences
 
@@ -82,7 +82,7 @@ category rather than escaping around it. `TmuxCommand.quote` exists for the one
 place real text has to be sent — renaming — and nothing else should need it.
 
 **Every preference goes in `SettingsFile`, never in `UserDefaults`.** The store
-is `~/.config/tmux-gui.toml`: a file the person who owns these settings can
+is `~/.config/attache.toml`: a file the person who owns these settings can
 read, edit, diff, put in a dotfiles repository and restore by hand. Reaching for
 `UserDefaults` for "just this one flag" puts a setting somewhere they cannot see
 and cannot get back — which is exactly how the settings were lost that prompted
@@ -101,15 +101,33 @@ that silently deletes a capability is worse than one that reorders a menu.
 
 ```sh
 xcodegen generate            # after a fresh clone, or any change to project.yml or Scripts/
-xcodebuild -project TmuxGUI.xcodeproj -scheme TmuxGUI -configuration Debug \
+xcodebuild -project Attache.xcodeproj -scheme Attache -configuration Debug \
   -destination 'platform=macOS,arch=arm64' -derivedDataPath /tmp/dd \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 
-/tmp/dd/Build/Products/Debug/TmuxGUI.app/Contents/MacOS/TmuxGUI
+/tmp/dd/Build/Products/Debug/Attaché.app/Contents/MacOS/Attache
 ```
 
 Run the binary directly rather than `open`-ing the bundle: stdout stays
 attached, which is where the throughput report and any `NSLog` land.
+
+**The app is `Attaché`; everything you type at it is `Attache`.** The accent is
+on the product only — `Attaché.app`, `CFBundleName`, the menu bar, Finder. The
+repository, the source folder, the target, the scheme, the bundle identifier
+(`me.xueshi.attache`) and the executable inside the bundle are all plain ASCII,
+so `pgrep`, `pkill -f`, `osascript … process "Attache"` and every path in a
+build command work without an encoding to think about. Both spellings are
+correct and they are not interchangeable: `process "Attaché"` finds nothing,
+and `Attache.app` does not exist.
+
+The accent on `PRODUCT_NAME` is load-bearing and looks like it is not.
+`CFBundleName` is what AppKit draws as the bold app-menu title, and under
+`GENERATE_INFOPLIST_FILE` it is always `$(PRODUCT_NAME)` — there is no
+`INFOPLIST_KEY_CFBundleName`. Setting `CFBundleDisplayName` instead does not
+move it: measured on macOS 26, the title stayed `Attache` above Hide and Quit
+items reading `Attaché`, because `AppDelegate` builds the menu by hand with no
+nib and spells those out. `EXECUTABLE_NAME` is what keeps the binary ASCII
+underneath.
 
 The app sandbox must stay off (`ENABLE_APP_SANDBOX = NO`). A sandboxed process
 can neither spawn tmux nor reach its socket under `/private/tmp/tmux-<uid>/`.
@@ -117,7 +135,7 @@ can neither spawn tmux nor reach its socket under `/private/tmp/tmux-<uid>/`.
 `libghostty-spm` is a submodule pinned to a known-good commit. After cloning:
 `git submodule update --init --recursive`.
 
-**`project.yml` is the project; `TmuxGUI.xcodeproj` is a build artifact.**
+**`project.yml` is the project; `Attache.xcodeproj` is a build artifact.**
 It is gitignored and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
 (`brew install xcodegen`) regenerates it. Change a build setting in `project.yml`
 and regenerate — a change made in Xcode's build-settings editor lasts until the
@@ -130,13 +148,13 @@ nothing until the project is rebuilt from `project.yml`.
 Two things in `project.yml` are load-bearing and fail at *launch* rather than at
 build, so a green build does not tell you they are still right:
 
-- `ENABLE_APP_SANDBOX: NO`. `TmuxGUI/Entitlement.entitlements` is an empty
+- `ENABLE_APP_SANDBOX: NO`. `Attache/Entitlement.entitlements` is an empty
   `<dict/>`, so this setting is the only thing keeping the sandbox off.
 - `SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG $(inherited)"` on the Debug
-  config. Without it `TmuxGUI/Debug/` and every `#if DEBUG` path compiles away
+  config. Without it `Attache/Debug/` and every `#if DEBUG` path compiles away
   silently and the inspector is simply not there.
 
-`TmuxGUI/` is listed as a `syncedFolder`, Xcode 16's synchronized group: the
+`Attache/` is listed as a `syncedFolder`, Xcode 16's synchronized group: the
 directory is the target member, so a new file compiles without editing
 `project.yml`. Do not turn it into a file list.
 
@@ -149,7 +167,7 @@ window tmux currently has and compares parsed geometry against `list-panes`.
 Run it after touching `TmuxLayout.swift`:
 
 ```sh
-swiftc -O -o /tmp/layoutcheck TmuxGUI/Tmux/TmuxLayout.swift Tools/LayoutCheck/main.swift
+swiftc -O -o /tmp/layoutcheck Attache/Tmux/TmuxLayout.swift Tools/LayoutCheck/main.swift
 /tmp/layoutcheck
 ```
 
@@ -163,7 +181,7 @@ case in this table. Run it after touching `TerminalReply.swift`, and add the
 case *before* the fix:
 
 ```sh
-swiftc -O -o /tmp/replycheck TmuxGUI/Tmux/TerminalReply.swift Tools/ReplyCheck/main.swift
+swiftc -O -o /tmp/replycheck Attache/Tmux/TerminalReply.swift Tools/ReplyCheck/main.swift
 /tmp/replycheck
 ```
 
@@ -178,8 +196,8 @@ should not have gone out, a separator that puts a blank line in the scrollback.
 Run it after touching `TmuxScreenReplay.swift`:
 
 ```sh
-swiftc -O -o /tmp/screenreplaycheck TmuxGUI/Tmux/TmuxPaneSnapshot.swift \
-  TmuxGUI/Tmux/TmuxScreenReplay.swift Tools/ScreenReplayCheck/main.swift
+swiftc -O -o /tmp/screenreplaycheck Attache/Tmux/TmuxPaneSnapshot.swift \
+  Attache/Tmux/TmuxScreenReplay.swift Tools/ScreenReplayCheck/main.swift
 /tmp/screenreplaycheck
 ```
 
@@ -194,7 +212,7 @@ unrecoverable. Run it after touching `TmuxRenameString.swift`, and put the
 stream in `passthrough` before touching anything:
 
 ```sh
-swiftc -O -o /tmp/renamestringcheck TmuxGUI/Tmux/TmuxRenameString.swift \
+swiftc -O -o /tmp/renamestringcheck Attache/Tmux/TmuxRenameString.swift \
   Tools/RenameStringCheck/main.swift
 /tmp/renamestringcheck
 ```
@@ -212,7 +230,7 @@ which is why schemes are an allow-list rather than "anything with a colon".
 The file system is injected, so every case runs with no disk and no screen:
 
 ```sh
-swiftc -O -o /tmp/linktargetcheck TmuxGUI/UI/TerminalLinkTarget.swift \
+swiftc -O -o /tmp/linktargetcheck Attache/UI/TerminalLinkTarget.swift \
   Tools/LinkTargetCheck/main.swift
 /tmp/linktargetcheck
 ```
@@ -281,7 +299,7 @@ loses front regularly during a test — anything the pointer touches that opens 
 browser tab or a text-selection popup takes it. Every stray keystroke lands
 somewhere real. `osascript -e 'tell application "System Events" to get name of
 first application process whose frontmost is true'` before, and put the
-`set frontmost of process "TmuxGUI" to true` in the *same* AppleScript as the
+`set frontmost of process "Attache" to true` in the *same* AppleScript as the
 keystroke so nothing can get between them.
 
 **Test against a throwaway tmux *server*, not a throwaway session, and reach it
@@ -289,9 +307,9 @@ with `-L` on every single command.** The user's real sessions have long-running
 agents in them, and a session-level mistake is a server-level accident.
 
 ```sh
-tmux -L tmuxgui-test -f /dev/null new-session -d -s probe   # create
-tmux -L tmuxgui-test list-windows -a                        # inspect
-tmux -L tmuxgui-test kill-server                            # clean up
+tmux -L attache-test -f /dev/null new-session -d -s probe   # create
+tmux -L attache-test list-windows -a                        # inspect
+tmux -L attache-test kill-server                            # clean up
 ```
 
 `-L` on the create, `-L` on every query, `-L` on the cleanup. The flag is what

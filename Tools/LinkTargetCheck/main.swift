@@ -6,7 +6,7 @@
 //  `Tools/RenameStringCheck`.
 //
 //      swiftc -O -o /tmp/linktargetcheck \
-//          TmuxGUI/UI/TerminalLinkTarget.swift Tools/LinkTargetCheck/main.swift
+//          Attache/UI/TerminalLinkTarget.swift Tools/LinkTargetCheck/main.swift
 //      /tmp/linktargetcheck
 //
 //  This file decides what a ⌘-click on the terminal actually opens. libghostty

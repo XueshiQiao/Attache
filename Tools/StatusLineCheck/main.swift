@@ -17,7 +17,7 @@
 //  findings this table was written for came from a review rather than from use,
 //  and both are in here as the cases that used to pass wrongly.
 //
-//  swiftc -O -o /tmp/statuslinecheck TmuxGUI/Status/StatusLineRecovery.swift \
+//  swiftc -O -o /tmp/statuslinecheck Attache/Status/StatusLineRecovery.swift \
 //      Tools/StatusLineCheck/main.swift && /tmp/statuslinecheck
 //
 

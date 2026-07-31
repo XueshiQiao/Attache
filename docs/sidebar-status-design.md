@@ -143,14 +143,14 @@ which is what keeps the state visible to every tmux client instead of one app.
 Three new units, each with one job, none of them touching AppKit except the last.
 
 ```
-TmuxGUI/Tmux/
+Attache/Tmux/
   TmuxSubscriptions.swift   register/parse subscriptions; no policy
-TmuxGUI/Status/
+Attache/Status/
   GitStatus.swift           run git, parse porcelain v2 → GitSummary
   GitStatusService.swift    cache, scheduling, backoff, optional fetch
   AgentState.swift          @agent_state + sniffing → AgentBadge
   AgentHookInstaller.swift  merge our hook into ~/.claude/settings.json
-TmuxGUI/UI/
+Attache/UI/
   SidebarRows.swift         SidebarWindowRow grows a second line
 ```
 
@@ -366,7 +366,7 @@ because it runs on every hook event and the user should be able to audit it.
 
 ```sh
 #!/bin/sh
-# TmuxGUI — reports agent state into tmux, where the GUI can see it.
+# Attaché — reports agent state into tmux, where the GUI can see it.
 # $1 = working | needs-input | done | clear
 [ -n "$TMUX_PANE" ] || exit 0        # not in tmux; nothing to report to
 

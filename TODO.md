@@ -272,7 +272,7 @@ own warning is the only thing it produces without one.
 
 ## 1 · Settings — done
 
-`TmuxGUI/Settings/` holds the store, the chrome theme, and the window.
+`Attache/Settings/` holds the store, the chrome theme, and the window.
 
 Deliberately not done, and still worth doing:
 
@@ -311,19 +311,19 @@ That is the combination this project keeps finding bugs in.
 
 ## 2 · Generate the Xcode project from `project.yml` — done
 
-`project.yml` is the project now; `TmuxGUI.xcodeproj` is gitignored and
+`project.yml` is the project now; `Attache.xcodeproj` is gitignored and
 `xcodegen generate` rebuilds it. Everything the hand-maintained pbxproj carried
 came across: the "Normalize libghostty Framework" post-build script (its body
 now lives in `Scripts/normalize-libghostty.sh`, which `project.yml` names by
 path and XcodeGen inlines into the generated phase), `ENABLE_APP_SANDBOX = NO`,
-the local package reference with all four of its products, and `TmuxGUI/` as a
-synchronized folder rather than a file list. `TmuxGUIUITests` came across too —
+the local package reference with all four of its products, and `Attache/` as a
+synchronized folder rather than a file list. `AttacheUITests` came across too —
 an earlier draft of this section called it the sample's placeholder, which
 stopped being true in 885633c. Checked by diffing `xcodebuild -showBuildSettings`
 for Debug and Release against the old project, then building a fresh clone and
 launching it.
 
-The one test in `TmuxGUIUITests` is a launch smoke test: the app starts, gets a
+The one test in `AttacheUITests` is a launch smoke test: the app starts, gets a
 window, and draws the session rail from live tmux state. It is in the scheme's
 test action only, so a plain build does not build it. It has never been run
 here, and running it is not free — it launches the app for real, which takes the
@@ -335,7 +335,7 @@ Two things left deliberately different, noted here so they are not mistaken for
 oversights:
 
 - [ ] **The SwiftPM lock file is no longer in git.**
-      `TmuxGUI.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
+      `Attache.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`
       used to be committed with the project and pinned MSDisplayLink — the one
       transitive dependency, which `libghostty-spm`'s `Package.swift` takes as
       `from: "2.1.0"` and can therefore float across the whole 2.x range. It
@@ -357,8 +357,8 @@ oversights:
 
 ## 3 · Make the UI inspectable by an agent — done
 
-`TmuxGUI/Debug/` holds it. A debug-only HTTP endpoint on 127.0.0.1:47623,
-off unless `TMUXGUI_INSPECT=1` or the Debug menu turns it on, serving the
+`Attache/Debug/` holds it. A debug-only HTTP endpoint on 127.0.0.1:47623,
+off unless `ATTACHE_INSPECT=1` or the Debug menu turns it on, serving the
 view hierarchy (`/views` — including each layer's overhang, the field that
 explains a correct-looking view rendering nothing) and the app's tmux state
 (`/tmux`, shaped to diff against `list-windows`, plus `sessionControllers` for
@@ -377,6 +377,30 @@ not read it, which made it pure cost here.
 carries `activePaneID` from `#{pane_id}` in the window list, and a click reaches
 tmux through `select-pane` rather than moving the ring locally. What it was an
 instance *of* is the subject of the next section, which is the current work.
+
+### 4.1 What the app installs into `~/.claude` is still called `tmuxgui`
+
+The app was renamed to Attaché on 2026-07-31 and four filenames were left
+behind: `~/.claude/hooks/tmuxgui-agent-state.sh`, `tmuxgui-statusline.sh`,
+`tmuxgui-statusline-minimal.sh` and `tmuxgui-statusline.conf`, plus the
+`TMUXGUI_WRAPPED=` / `TMUXGUI_ORIGINAL=` keys in the status line's recovery
+record and the `settings.json.tmuxgui-backup-*` prefix.
+
+They are not cosmetic leftovers. **The path is the installed state.**
+`AgentHookInstaller.isOurs` decides whether an entry in *another program's*
+settings belongs to this app by comparing that exact path, and
+`AgentStatusLineInstaller.installedCommand` is written verbatim into
+`statusLine.command`. Rename the file and every already-installed hook stops
+being recognised: the app can no longer remove what it put there, a second
+install lands beside the first, an already-wrapped status line can never be
+unwrapped, and none of it reports an error.
+
+Doing it properly means rewriting `~/.claude/settings.json` in place — moving
+the files, then rewriting nine hook commands and the status line to match, with
+the existing backup-and-atomic-write machinery, and a way to recognise both
+spellings while the two coexist. That is its own change with its own way of
+going wrong, which is why it did not ride along with the rename. Until then the
+names are correct as they stand and the sites say so.
 
 ---
 

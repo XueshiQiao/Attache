@@ -119,7 +119,7 @@ see has changed. No timestamp is written; liveness is the existing
 
 ## Compatibility
 
-| What is in `settings.json` | What TmuxGUI does |
+| What is in `settings.json` | What Attaché does |
 | --- | --- |
 | A custom statusline — coralline, ccstatusline, any script | Wrap it. Same stdin, stdout passed through byte for byte, exit status preserved. The terminal looks exactly as it did. |
 | No `statusLine` at all | Wrap nothing, and render a minimal line — see below. |
@@ -163,7 +163,7 @@ Reporting to the sidebar never needs `jq` in either case.
 
 ```sh
 #!/bin/sh
-# TmuxGUI — feeds the sidebar the numbers Claude Code publishes only here.
+# Attaché — feeds the sidebar the numbers Claude Code publishes only here.
 #
 # A wrapper. Whatever statusline was configured before is recorded in
 # tmuxgui-statusline.conf, run with the same stdin, and its output printed
@@ -173,7 +173,7 @@ Reporting to the sidebar never needs `jq` in either case.
 input=$(cat)
 
 # Report, and never let reporting affect what is drawn. Nothing is parsed here:
-# TmuxGUI reads this JSON in Swift, so this script needs jq about as much as it
+# Attaché reads this JSON in Swift, so this script needs jq about as much as it
 # needs awk, which is not at all.
 if [ -n "$TMUX_PANE" ]; then
     printf '%s' "$input" | tr -d '\n\r' | {
@@ -203,9 +203,9 @@ New:
 
 | File | What it is |
 | --- | --- |
-| `TmuxGUI/Status/AgentStats.swift` | The parsed payload and the two usage windows. Foundation only. |
-| `TmuxGUI/Status/AgentStatusLineInstaller.swift` | Install, detect, remove, restore. Reuses the backup helper. |
-| `TmuxGUI/UI/UsageGaugeView.swift` | One bar with a burn mark. |
+| `Attache/Status/AgentStats.swift` | The parsed payload and the two usage windows. Foundation only. |
+| `Attache/Status/AgentStatusLineInstaller.swift` | Install, detect, remove, restore. Reuses the backup helper. |
+| `Attache/UI/UsageGaugeView.swift` | One bar with a burn mark. |
 | `Tools/AgentStatsCheck/main.swift` | Parser cross-check. |
 
 Changed: `AgentState.swift` (format), `AgentStateStrategy.swift` (evidence

@@ -12,7 +12,7 @@
 //  swapping them makes every row in the rail wrong in a way that looks
 //  plausible.
 //
-//  swiftc -O -o /tmp/gitstatuscheck TmuxGUI/Status/GitStatus.swift \
+//  swiftc -O -o /tmp/gitstatuscheck Attache/Status/GitStatus.swift \
 //      Tools/GitStatusCheck/main.swift && /tmp/gitstatuscheck
 //
 

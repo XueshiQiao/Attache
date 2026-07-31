@@ -18,8 +18,8 @@
 //  never writes it — the merge functions are pure, which is why they exist
 //  separately from `install()`.
 //
-//  swiftc -O -o /tmp/hookcheck TmuxGUI/Tmux/TmuxLog.swift \
-//      TmuxGUI/Status/AgentHookInstaller.swift Tools/HookInstallCheck/main.swift \
+//  swiftc -O -o /tmp/hookcheck Attache/Tmux/TmuxLog.swift \
+//      Attache/Status/AgentHookInstaller.swift Tools/HookInstallCheck/main.swift \
 //      && /tmp/hookcheck
 //
 
@@ -221,7 +221,7 @@ print("\n— a settings file that is a symlink —")
 
 check("the write target resolves through a symlink", {
     let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("tmuxgui-symcheck-\(ProcessInfo.processInfo.processIdentifier)")
+        .appendingPathComponent("attache-symcheck-\(ProcessInfo.processInfo.processIdentifier)")
     try? FileManager.default.removeItem(at: tmp)
     try! FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tmp) }

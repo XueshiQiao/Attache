@@ -1,6 +1,6 @@
 # 调试检查接口（Debug Inspector）
 
-TmuxGUI 在 **Debug 构建**里可以开一个本机 HTTP 服务，把 app 内部状态以 JSON
+Attaché 在 **Debug 构建**里可以开一个本机 HTTP 服务，把 app 内部状态以 JSON
 吐出来，并允许改动少量设置。端口默认 **47623**，只绑 `127.0.0.1`。
 
 > 本仓库其余文档一律英文（见 CLAUDE.md 的 Conventions）。这一份是应要求写的
@@ -23,24 +23,24 @@ TmuxGUI 在 **Debug 构建**里可以开一个本机 HTTP 服务，把 app 内�
 
 ## 2. 怎么开、怎么关
 
-**只有 Debug 构建有这段代码。** 整个 `TmuxGUI/Debug/` 目录包在 `#if DEBUG`
+**只有 Debug 构建有这段代码。** 整个 `Attache/Debug/` 目录包在 `#if DEBUG`
 里，正式构建里不存在——不是「默认关闭」，是编译不进去。
 
 Debug 构建里，满足任一条件才会启动：
 
 ```sh
 # 方式一：启动时带环境变量（不会被记住，退出即止）
-TMUXGUI_INSPECT=1 /path/to/TmuxGUI.app/Contents/MacOS/TmuxGUI
+ATTACHE_INSPECT=1 /path/to/Attaché.app/Contents/MacOS/Attache
 
 # 方式二：菜单 Debug → Inspector Server（⌥⇧⌘I）。这个会被记住，下次自动开
 ```
 
-换端口用 `TMUXGUI_INSPECT_PORT=47624`，用于两个 Debug 构建同时跑。
+换端口用 `ATTACHE_INSPECT_PORT=47624`，用于两个 Debug 构建同时跑。
 
 关掉：再按一次 ⌥⇧⌘I。想确认「记住的开关」当前状态：
 
 ```sh
-defaults read dev.xueshi.TmuxGUI debug.inspector.enabled   # 无输出＝没记住，不会自动开
+defaults read me.xueshi.attache debug.inspector.enabled   # 无输出＝没记住，不会自动开
 ```
 
 ## 3. 安全边界
@@ -50,7 +50,7 @@ defaults read dev.xueshi.TmuxGUI debug.inspector.enabled   # 无输出＝没记�
 - **只绑回环。** `lsof -nP -iTCP:47623` 显示 `127.0.0.1:47623 (LISTEN)`，不是
   `*:47623`。从本机局域网 IP 连它连不上——局域网和外网都够不着。
 - **写操作挡住了浏览器。** 读是普通 `GET`；写必须是 `POST` 且带
-  `X-TmuxGUI-Inspect` 请求头。这一对浏览器造不出来：设自定义头会触发预检，而这个
+  `X-Attache-Inspect` 请求头。这一对浏览器造不出来：设自定义头会触发预检，而这个
   服务不回应预检。另外带 `Origin` 的请求一律拒绝，`Host` 必须是回环地址（这条堵
   DNS 重绑定）。
 
@@ -109,7 +109,7 @@ session 模型）、`tmux.tmuxPath`。
 统一格式：
 
 ```sh
-curl -s -X POST -H 'X-TmuxGUI-Inspect: 1' "http://127.0.0.1:47623/<路由>?<参数>"
+curl -s -X POST -H 'X-Attache-Inspect: 1' "http://127.0.0.1:47623/<路由>?<参数>"
 ```
 
 | 路由 | 参数 | 作用 |
@@ -149,8 +149,8 @@ curl -s -X POST -H 'X-TmuxGUI-Inspect: 1' "http://127.0.0.1:47623/<路由>?<参�
 
 代码在两个文件：
 
-- `TmuxGUI/Debug/DebugInspectorServer.swift` —— HTTP 服务、路由分发、写操作的门槛。
-- `TmuxGUI/Debug/DebugInspector.swift` —— 各路由的内容生成。
+- `Attache/Debug/DebugInspectorServer.swift` —— HTTP 服务、路由分发、写操作的门槛。
+- `Attache/Debug/DebugInspector.swift` —— 各路由的内容生成。
 
 **加一条新路由要同时改四处**，漏一处就会出现「路由存在但被 405 挡住」或者
 「本该受保护的写操作没受保护」：

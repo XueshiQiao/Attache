@@ -5,7 +5,7 @@
 //  `Tools/LayoutCheck` and `Tools/ReplyCheck`:
 //
 //      swiftc -O -o /tmp/replaycheck \
-//        TmuxGUI/Tmux/TmuxPaneSnapshot.swift TmuxGUI/Tmux/TmuxScreenReplay.swift \
+//        Attache/Tmux/TmuxPaneSnapshot.swift Attache/Tmux/TmuxScreenReplay.swift \
 //        Tools/ScreenReplayCheck/main.swift
 //      /tmp/replaycheck
 //

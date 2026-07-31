@@ -6,7 +6,7 @@
 # Debug build that copies the flat one produces an app that builds cleanly and
 # dies at launch. This moves it into the versioned shape and re-signs it.
 #
-# Run as a post-build phase on TmuxGUI. The CONFIGURATION guard is carried over
+# Run as a post-build phase on Attache. The CONFIGURATION guard is carried over
 # verbatim from the hand-maintained project, where this only ever ran in Debug;
 # Release has not been exercised. The Versions-already-exists guard makes this a
 # no-op after the first build rather than re-signing on every one.
