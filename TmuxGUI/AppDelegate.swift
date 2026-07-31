@@ -1,7 +1,7 @@
 import Cocoa
 import GhosttyTerminal
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let defaultContentSize = NSSize(width: 1280, height: 780)
     private let minimumContentSize = NSSize(width: 700, height: 380)
     private var window: NSWindow?
@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settings: SettingsWindowController?
     private var titleTimer: Timer?
     private var status = "Starting…"
+    /// Held so `menuNeedsUpdate` can tell this menu from any other the app
+    /// delegate might end up the delegate of.
+    private var quickActionsMenu: NSMenu?
     #if DEBUG
         private var inspectorMenuItem: NSMenuItem?
     #endif
@@ -215,6 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(makePaneMenuItem())
         mainMenu.addItem(makeWindowMenuItem())
         mainMenu.addItem(makeSessionMenuItem())
+        mainMenu.addItem(makeQuickActionsMenuItem())
 
         // The throughput probe used to be a top-level menu called "Measure",
         // which said nothing about what it measured or that it runs for the
@@ -381,6 +385,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main?.currentSession?.selectWindow(atIndex: sender.tag)
     }
 
+    // MARK: - Quick Actions
+
+    /// The user's own tmux commands, in the menu bar.
+    ///
+    /// Rebuilt from the stored list every time the menu is about to open rather
+    /// than once at launch, because the settings page edits that list while
+    /// this menu exists. `NSMenuDelegate` is what makes that free: no
+    /// observation, no cache, and no way for the menu to disagree with the
+    /// table that produced it.
+    private func makeQuickActionsMenuItem() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "Quick Actions")
+        menu.delegate = self
+        item.submenu = menu
+        quickActionsMenu = menu
+        return item
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === quickActionsMenu else { return }
+        menu.removeAllItems()
+        let actions = AppSettings.quickActions.filter(\.isRunnable)
+        for (index, action) in actions.enumerated() {
+            let item = NSMenuItem(
+                title: action.title, action: #selector(runQuickAction(_:)), keyEquivalent: ""
+            )
+            item.target = self
+            // The tag indexes the same filtered list this rebuild produced, so
+            // it cannot address a row that was edited away between the menu
+            // opening and the click.
+            item.tag = index
+            item.toolTip = action.command
+            menu.addItem(item)
+        }
+        if actions.isEmpty {
+            // Not an empty menu: a menu bar item that opens onto nothing reads
+            // as broken rather than as unconfigured.
+            let empty = NSMenuItem(title: "No Quick Actions", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        }
+        menu.addItem(.separator())
+        let edit = NSMenuItem(
+            title: "Edit Quick Actions…", action: #selector(openQuickActionsSettings), keyEquivalent: ""
+        )
+        edit.target = self
+        menu.addItem(edit)
+    }
+
+    @objc private func runQuickAction(_ sender: NSMenuItem) {
+        let actions = AppSettings.quickActions.filter(\.isRunnable)
+        guard actions.indices.contains(sender.tag) else { return }
+        main?.run(quickAction: actions[sender.tag])
+    }
+
+    /// Opens the settings window on the page that edits this menu.
+    ///
+    /// Through `showSettings` rather than a second construction site, so the
+    /// probe callback the window is built with keeps being wired exactly once.
+    @objc private func openQuickActionsSettings() {
+        showSettings()
+        settings?.select(page: .quickActions)
+    }
+
     @objc private func newSession() { main?.server.newSession() }
     @objc private func nextSession() { main?.selectAdjacentSession(offset: 1) }
     @objc private func previousSession() { main?.selectAdjacentSession(offset: -1) }
@@ -431,8 +499,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(toggle)
             inspectorMenuItem = toggle
 
+            menu.addItem(.separator())
+            entry(
+                menu, "Embedded tmux Window (Route B Prototype)…", "", [],
+                #selector(openEmbeddedTmuxWindow)
+            )
+
             item.submenu = menu
             return item
+        }
+
+        /// Route B of docs/embed-tmux-evaluation.html: tmux drawn by tmux, in
+        /// one surface on a ghostty-owned pty. A prompt rather than a fixed
+        /// command because the evaluation's checklist needs different targets —
+        /// an isolated `-L` server for tests, the real one for daily use, a
+        /// grouped session for the status-line experiment.
+        @objc private func openEmbeddedTmuxWindow() {
+            let alert = NSAlert()
+            alert.messageText = "Embedded tmux — route B prototype"
+            alert.informativeText =
+                "Runs the command on a ghostty-owned pty in a new window; tmux draws itself."
+                + " See docs/embed-tmux-evaluation.html."
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
+            field.stringValue = "\(TmuxControlClient.locateTmux() ?? "tmux") attach"
+            alert.accessoryView = field
+            alert.addButton(withTitle: "Open")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = field
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let command = field.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !command.isEmpty else { return }
+            if !EmbeddedTmuxWindowController.open(command: command) {
+                report("Embedded tmux refused the command: control characters cannot ride a ghostty config line")
+            }
         }
 
         @objc private func writeInspectorSnapshot() {

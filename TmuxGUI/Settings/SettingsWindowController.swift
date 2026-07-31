@@ -40,6 +40,8 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var closingTabKillsWindow: Bool
     @Published private(set) var showsPaneFocusRing: Bool
     @Published private(set) var copyOnSelect: Bool
+    @Published private(set) var tmuxDrawsItself: Bool
+    @Published private(set) var quickActions: [QuickAction]
     @Published private(set) var sidebarShowsGit: Bool
     @Published private(set) var sidebarShowsAgent: Bool
     @Published private(set) var sidebarShowsAgentText: Bool
@@ -193,6 +195,8 @@ final class SettingsStore: ObservableObject {
         closingTabKillsWindow = AppSettings.closingTabKillsWindow
         showsPaneFocusRing = AppSettings.showsPaneFocusRing
         copyOnSelect = AppSettings.copyOnSelect
+        tmuxDrawsItself = AppSettings.tmuxDrawsItself
+        quickActions = AppSettings.quickActions
         sidebarShowsGit = AppSettings.sidebarShowsGit
         sidebarShowsAgent = AppSettings.sidebarShowsAgent
         sidebarShowsAgentText = AppSettings.sidebarShowsAgentText
@@ -309,6 +313,18 @@ final class SettingsStore: ObservableObject {
     func setCopyOnSelect(_ copies: Bool) {
         AppSettings.copyOnSelect = copies
         copyOnSelect = copies
+        AppSettings.notifyChanged()
+    }
+
+    func setTmuxDrawsItself(_ draws: Bool) {
+        AppSettings.tmuxDrawsItself = draws
+        tmuxDrawsItself = draws
+        AppSettings.notifyChanged()
+    }
+
+    func setQuickActions(_ actions: [QuickAction]) {
+        AppSettings.quickActions = actions
+        quickActions = actions
         AppSettings.notifyChanged()
     }
 
@@ -495,6 +511,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         if !window.isVisible { window.center() }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Move to a page, for callers that opened this window to edit one thing.
+    func select(page: SettingsPage) {
+        store.page = page
     }
 
     func windowShouldClose(_: NSWindow) -> Bool {

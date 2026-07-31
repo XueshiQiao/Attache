@@ -133,7 +133,8 @@
                 + " /settings (?fontSize=18&darkTheme=Dracula&…),"
                 + " /window (?size=1200x800&screen=primary&position=x,y),"
                 + " /select (?session=name), /grid (?cellPixels=24x50),"
-                + " /shot (?path=….png&method=window|view&subview=Class)"
+                + " /shot (?path=….png&method=window|view&subview=Class),"
+                + " /embed (?run=1&socket=…&target=… — route B prototype)"
         }
 
         // MARK: - Requests
@@ -175,7 +176,7 @@
         /// window's frame, which session is shown, the grid's cell size. With
         /// an empty query each one only reports, so each one is still a read.
         private static let writeRoutes: Set<String> = [
-            "/settings", "/window", "/select", "/grid", "/paste",
+            "/settings", "/window", "/select", "/grid", "/paste", "/embed",
         ]
 
         /// `/shot` is the exception: it writes a PNG whether or not it was told
@@ -290,11 +291,16 @@
                      contentType: "application/json", on: connection)
                 return
             }
+            if path == "/embed" {
+                send(status: "200 OK", body: DebugInspector.embedBody(query: query),
+                     contentType: "application/json", on: connection)
+                return
+            }
 
             guard let body = DebugInspector.body(forPath: path) else {
                 send(
                     status: "404 Not Found",
-                    body: Data("no such route. read: /, /views, /tmux, /settings-window. write (POST + X-TmuxGUI-Inspect): /settings, /window, /select, /grid, /shot\n".utf8),
+                    body: Data("no such route. read: /, /views, /tmux, /settings-window. write (POST + X-TmuxGUI-Inspect): /settings, /window, /select, /grid, /shot, /embed\n".utf8),
                     contentType: "text/plain",
                     on: connection
                 )

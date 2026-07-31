@@ -105,6 +105,33 @@ final class SessionViewController: NSViewController {
     /// window 1 and window 2, because that is what it was doing.
     private var hidingActiveWindow: String?
 
+    /// This controller keeps the model and draws nothing.
+    ///
+    /// Set when `tmuxDrawsItself` is on: the content half on screen is an
+    /// `EmbeddedSessionViewController` and this instance is only here so the
+    /// rail's actions, the hidden-window set and the window shortcuts keep
+    /// working unchanged. Surfaces are given up when it is set, so a session
+    /// that had already been rendered does not go on holding them.
+    private(set) var rendersNothing = false
+
+    func stopRendering() {
+        guard !rendersNothing else { return }
+        rendersNothing = true
+        releaseSurfaces()
+    }
+
+    /// Take the drawing back, for the user switching the setting off again.
+    ///
+    /// Reversible on purpose: the first version of `stopRendering` was one-way,
+    /// which meant a session shown once under route B could never be drawn by
+    /// this app again — the switch would look broken in one direction only, and
+    /// only for sessions the user happened to have opened.
+    func resumeRendering() {
+        guard rendersNothing else { return }
+        rendersNothing = false
+        syncWithModel()
+    }
+
     /// Last geometry each pane was painted at. tmux reflows a pane when the
     /// layout changes but does not make the program inside repaint, so a pane
     /// keeps showing text wrapped for its old width until something writes to
@@ -535,6 +562,23 @@ final class SessionViewController: NSViewController {
         if isViewLoaded, view.window?.isKeyWindow == true {
             connection.reclaimWindowSizeIfTaken()
         }
+
+        // The *visible* layout, so a zoomed pane is drawn at the size tmux
+        // Everything above is model bookkeeping the rail depends on and the
+        // pane surfaces do not: the hidden set, the window list callback, the
+        // title band. Everything below builds and places surfaces.
+        //
+        // With `tmuxDrawsItself` on, an `EmbeddedSessionViewController` is what
+        // the user is looking at and this controller exists only for the half
+        // above — every rail action and every shortcut still routes through it,
+        // because those are tmux commands and are identical either way. Doing
+        // the half below as well would prime a GPU surface and a screenful of
+        // scrollback per pane for a view that is not in the window, which is
+        // the entire cost of route A paid for nothing. It cannot fight over the
+        // session's size in any case: `reportGrid` fires from the grid's layout
+        // and `reclaimWindowSizeIfTaken` needs a key window, neither of which a
+        // controller outside the view tree has.
+        guard !rendersNothing else { return }
 
         // The *visible* layout, so a zoomed pane is drawn at the size tmux
         // actually gave it. The pane *set* comes from the saved layout instead,
@@ -1097,7 +1141,23 @@ final class SessionViewController: NSViewController {
     /// Every item names its pane by id in the closure that builds it, so the
     /// menu acts on the pane the pointer was over even if focus has moved on by
     /// the time an item is chosen.
-    private func paneContextMenu(for paneID: String) -> NSMenu {
+    /// The pane menu for whichever pane tmux says is active.
+    ///
+    /// For a content half with no surfaces of its own — route B, where tmux
+    /// paints and this controller only keeps the model. The active pane rather
+    /// than the pane under the pointer, because nothing on this side knows
+    /// where tmux put the panes; every item is a tmux command either way.
+    ///
+    /// `copySelection` is passed in because the selection lives inside the
+    /// libghostty surface the *other* half owns.
+    func activePaneContextMenu(copySelection: @escaping () -> Void) -> NSMenu? {
+        guard let paneID = connection.activeWindow?.activePaneID else { return nil }
+        return paneContextMenu(for: paneID, copySelection: copySelection)
+    }
+
+    private func paneContextMenu(
+        for paneID: String, copySelection: (() -> Void)? = nil
+    ) -> NSMenu {
         let menu = NSMenu()
         // Off, or AppKit decides what is enabled by asking each item's target
         // whether it responds to the selector — which every one of these does,
@@ -1146,7 +1206,11 @@ final class SessionViewController: NSViewController {
         // decorates the standard edit selectors — indenting Copy and Paste away
         // from every other title in the menu.
         menu.addItem(paneItem("Copy", key: "c", flags: [.command]) { [weak self] in
-            self?.surfaces[paneID]?.view.copySelectedTextToPasteboard()
+            if let copySelection {
+                copySelection()
+            } else {
+                self?.surfaces[paneID]?.view.copySelectedTextToPasteboard()
+            }
         })
 
         menu.addItem(paneItem("Paste", key: "v", flags: [.command]) { [weak self] in
@@ -1229,7 +1293,9 @@ final class SessionViewController: NSViewController {
 /// band carried an override of its own that had never once been consulted. One
 /// accident was holding up the feature and the other was the bug, and they were
 /// the same accident.
-private final class ContentHalfView: NSView {
+/// Not private: both content halves are this view. `EmbeddedSessionViewController`
+/// is the other one, and the answer above is exactly as load-bearing there.
+final class ContentHalfView: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
 
     /// **Nothing is painted here, and that is the fix rather than the bug.**

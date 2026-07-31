@@ -36,6 +36,8 @@ enum AppSettings {
         static let closingTabKills      = "TmuxGUIClosingTabKills"
         static let paneFocusRing        = "TmuxGUIPaneFocusRing"
         static let copyOnSelect         = "TmuxGUICopyOnSelect"
+        static let tmuxDrawsItself      = "TmuxGUITmuxDrawsItself"
+        static let quickActions         = "TmuxGUIQuickActions"
         static let windowOpacity        = "TmuxGUIWindowOpacity"
         static let backgroundBlur       = "TmuxGUIBackgroundBlur"
         static let chromeMaterial       = "TmuxGUIChromeMaterial"
@@ -582,6 +584,42 @@ enum AppSettings {
     static var copyOnSelect: Bool {
         get { store.object(forKey: Key.copyOnSelect) as? Bool ?? false }
         set { store.set(newValue, forKey: Key.copyOnSelect) }
+    }
+
+    /// Which of the two content halves a session is shown in.
+    ///
+    /// `false` is route A, this app's own rendering, and stays the default while
+    /// route B is being judged — see `docs/embed-tmux-evaluation.html`. It is a
+    /// switch rather than a replacement because the two are worth comparing
+    /// side by side for days, not minutes; the intent is still to converge on
+    /// one of them and delete the other.
+    static var tmuxDrawsItself: Bool {
+        get { store.object(forKey: Key.tmuxDrawsItself) as? Bool ?? false }
+        set { store.set(newValue, forKey: Key.tmuxDrawsItself) }
+    }
+
+    /// The user's Quick Actions menu.
+    ///
+    /// An absent key means "never edited" and yields the installed list; an
+    /// empty *array* is a list the user emptied on purpose and stays empty. The
+    /// two have to be told apart or clearing the table would put the default
+    /// entry straight back, which reads as the app refusing to be edited.
+    ///
+    /// Unreadable stored data falls back to the installed list rather than
+    /// throwing the menu away, because the alternative is a menu that silently
+    /// empties itself after an upgrade.
+    static var quickActions: [QuickAction] {
+        get {
+            guard let data = store.data(forKey: Key.quickActions) else {
+                return QuickAction.installed
+            }
+            return (try? JSONDecoder().decode([QuickAction].self, from: data))
+                ?? QuickAction.installed
+        }
+        set {
+            guard let data = try? JSONEncoder().encode(newValue) else { return }
+            store.set(data, forKey: Key.quickActions)
+        }
     }
 
     // ─── Derived values ──────────────────────────────────────────────────────

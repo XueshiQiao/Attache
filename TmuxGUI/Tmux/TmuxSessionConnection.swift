@@ -682,6 +682,25 @@ final class TmuxSessionConnection {
         client.send("set-option -w -t \(windowID) @agent_seen \(Int(Date().timeIntervalSince1970))")
     }
 
+    /// Send a command the user wrote, verbatim.
+    ///
+    /// The one place in this app where a whole command line comes from outside
+    /// it, and it is deliberately not quoted, escaped or validated. Everywhere
+    /// else the rule is to target tmux by id precisely because names are
+    /// arbitrary user text being interpolated into a command *this app* built —
+    /// there, the app is responsible for the shape of the line. Here the user
+    /// wrote the whole line, in a settings field, on their own machine; it is
+    /// their `.tmux.conf` with a different editor, and quoting it would only
+    /// mean their command does not run.
+    ///
+    /// No target is added for the same reason: a Quick Action is meant to read
+    /// like a tmux binding, and a binding's relative target is the client's
+    /// session. This connection is attached to exactly one session, so
+    /// `set status` lands on the session the user is looking at.
+    func runUserCommand(_ command: String) {
+        client.send(command)
+    }
+
     func newWindow() {
         client.send("new-window -t \(sessionTarget)")
     }
