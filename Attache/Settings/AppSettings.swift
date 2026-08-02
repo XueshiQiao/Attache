@@ -61,6 +61,11 @@ enum AppSettings {
         static let liquidGlassClear       = "liquid_glass_clear"
         static let linkClick              = "link_click"
         static let linkModifier           = "link_modifier"
+        static let showsConversation      = "shows_conversation"
+        static let conversationWidth      = "conversation_width"
+        static let conversationFontSize   = "conversation_font_size"
+        static let startupSession         = "startup_session"
+        static let startupWindow          = "startup_window"
     }
 
     /// The old `UserDefaults` name for each key, for the migration and nothing
@@ -162,6 +167,15 @@ enum AppSettings {
     /// Zero collapses the session rail underneath the traffic lights, which
     /// float over it because the window has no title bar.
     static let sidebarWidthRange: ClosedRange<CGFloat> = 120 ... 400
+
+    /// Chosen by the owner on 2026-08-01 after seeing the panel at several
+    /// widths beside a real terminal: narrower and a table in a reply wraps
+    /// into unreadability, wider and the terminal loses columns that matter
+    /// more than the extra text does.
+    static let defaultConversationWidth: CGFloat = 400
+    static let conversationWidthRange: ClosedRange<CGFloat> = 280 ... 620
+    static let defaultConversationFontSize: CGFloat = 12.5
+    static let conversationFontSizeRange: ClosedRange<CGFloat> = 10 ... 16
 
     /// How much of what is behind the window shows through it.
     ///
@@ -285,6 +299,71 @@ enum AppSettings {
     }
 
     /// How opaque the window is, 0.3 to 1.0. See `windowOpacityRange`.
+    /// Whether the conversation rail is on the right of the window at all.
+    ///
+    /// Off by default. It costs the terminal real columns — at the default
+    /// width, about 55 of them — and a person who never runs an agent in here
+    /// would be paying that for a permanently empty panel.
+    static var showsConversation: Bool {
+        get { store.object(forKey: Key.showsConversation) as? Bool ?? false }
+        set { store.set(newValue, forKey: Key.showsConversation) }
+    }
+
+    static var conversationWidth: CGFloat {
+        get {
+            clamp(
+                (store.object(forKey: Key.conversationWidth) as? Double).map { CGFloat($0) }
+                    ?? defaultConversationWidth,
+                to: conversationWidthRange, fallback: defaultConversationWidth
+            )
+        }
+        set {
+            store.set(
+                Double(clamp(newValue, to: conversationWidthRange, fallback: defaultConversationWidth)),
+                forKey: Key.conversationWidth
+            )
+        }
+    }
+
+    static var conversationFontSize: CGFloat {
+        get {
+            clamp(
+                (store.object(forKey: Key.conversationFontSize) as? Double).map { CGFloat($0) }
+                    ?? defaultConversationFontSize,
+                to: conversationFontSizeRange, fallback: defaultConversationFontSize
+            )
+        }
+        set {
+            store.set(
+                Double(clamp(newValue, to: conversationFontSizeRange, fallback: defaultConversationFontSize)),
+                forKey: Key.conversationFontSize
+            )
+        }
+    }
+
+    /// Which session to open on, by name. Empty means "whichever comes first",
+    /// which is what the app has always done.
+    ///
+    /// A **name**, not an id: `$4` is assigned by tmux and changes every time
+    /// the server restarts, so it is useless in a file a person keeps. The
+    /// name is only ever compared against the ones tmux reports — see
+    /// `StartupTarget` for why that does not violate the id-only rule.
+    static var startupSession: String {
+        get { store.string(forKey: Key.startupSession) ?? "" }
+        set { store.set(newValue.isEmpty ? nil : newValue, forKey: Key.startupSession) }
+    }
+
+    /// Which window inside that session to select, by name. Empty leaves
+    /// whichever window tmux already has active alone.
+    ///
+    /// Ignored when `startupSession` finds nothing: selecting a window in a
+    /// session the person did not ask for would be a stranger outcome than
+    /// doing nothing.
+    static var startupWindow: String {
+        get { store.string(forKey: Key.startupWindow) ?? "" }
+        set { store.set(newValue.isEmpty ? nil : newValue, forKey: Key.startupWindow) }
+    }
+
     static var windowOpacity: CGFloat {
         get {
             clamp(

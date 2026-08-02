@@ -272,6 +272,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
 
+        let viewItem = NSMenuItem()
+        let viewMenu = NSMenu(title: "View")
+        // The only way in and the only way out. The rail's split item is
+        // collapsible, so a person who drags it shut needs a route back, and
+        // this is it — the same reason the session rail is *not* collapsible,
+        // arrived at from the other side.
+        entry(
+            viewMenu, "Show Conversation", "\\", [.command],
+            #selector(toggleConversationSidebar)
+        )
+        viewItem.submenu = viewMenu
+        mainMenu.addItem(viewItem)
+
         mainMenu.addItem(makePaneMenuItem())
         mainMenu.addItem(makeWindowMenuItem())
         mainMenu.addItem(makeSessionMenuItem())
@@ -427,6 +440,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func killPane() {
         _ = main?.currentEmbedded?.confirmKillFocusedPane()
+    }
+
+    /// Flip the conversation rail, and tick the menu item to match.
+    ///
+    /// Written through `AppSettings` rather than held here, so it survives a
+    /// relaunch and shows up in `~/.config/attache.toml` where the person can
+    /// see it — the rule the whole settings layer exists to enforce.
+    @objc private func toggleConversationSidebar(_ sender: NSMenuItem) {
+        AppSettings.showsConversation.toggle()
+        sender.state = AppSettings.showsConversation ? .on : .off
+        AppSettings.notifyChanged()
     }
 
     @objc private func newWindow() { main?.currentSession?.newWindow() }

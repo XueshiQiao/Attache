@@ -53,6 +53,16 @@ final class MainViewController: NSSplitViewController {
     private var currentSessionID: String?
     private var sidebarItem: NSSplitViewItem?
 
+    /// The right-hand rail and the thing that feeds it. Both exist whether or
+    /// not the setting is on — the split item is added once and collapsed,
+    /// because adding and removing a split view item at runtime re-runs the
+    /// whole divider layout and loses the width the person dragged to.
+    private let conversation = ConversationSidebarView(frame: .zero)
+    private let conversations = ConversationController()
+    private var conversationItem: NSSplitViewItem?
+    private var appliedConversationWidth: CGFloat?
+    private var hasPlacedConversation = false
+
     /// The repositories behind the rail's rows.
     ///
     /// Owned here rather than by a session controller because it is keyed by
@@ -290,7 +300,10 @@ final class MainViewController: NSSplitViewController {
         // pulls a row out from under the pointer.
         gitStatus.onChange = { [weak self] in self?.refreshSidebar() }
 
-        sidebar.onSelect = { [weak self] id in self?.show(sessionID: id) }
+        sidebar.onSelect = { [weak self] id in
+            self?.cancelStartupTargeting()
+            self?.show(sessionID: id)
+        }
         sidebar.onNew = { [weak self] in self?.server.newSession() }
         sidebar.onRename = { [weak self] id, new in
             self?.server.connection(id: id)?.renameSession(to: new)
@@ -298,6 +311,7 @@ final class MainViewController: NSSplitViewController {
 
         sidebar.onNewWindow = { [weak self] id in
             guard let self, let connection = server.connection(id: id) else { return }
+            cancelStartupTargeting()
             connection.newWindow()
             if currentSessionID != id { show(sessionID: id) }
         }
@@ -307,6 +321,7 @@ final class MainViewController: NSSplitViewController {
         // when only the current session had rows.
         sidebar.onSelectWindow = { [weak self] session, id in
             guard let self else { return }
+            cancelStartupTargeting()
             show(sessionID: session)
             inSession(session) { $0.selectWindow(id: id) }
         }
@@ -573,10 +588,87 @@ final class MainViewController: NSSplitViewController {
         addSplitViewItem(sidebarItem)
         addSplitViewItem(NSSplitViewItem(viewController: content))
 
+        // The conversation rail. Same material as the session rail — the whole
+        // window is one sheet of glass and a third treatment on the right would
+        // read as a separate window pasted on.
+        let conversationItem = NSSplitViewItem(
+            viewController: Hosting(view: conversation, backdrop: railBackdrop)
+        )
+        conversationItem.minimumThickness = AppSettings.conversationWidthRange.lowerBound
+        conversationItem.maximumThickness = AppSettings.conversationWidthRange.upperBound
+        // **Above the content half's 250, and this is what makes the width
+        // stick.** Holding priority decides who absorbs a window resize, and
+        // with all three items at the default the split view gave every new
+        // point to the terminal *and* squeezed this rail down to its minimum on
+        // the way. Measured: placed correctly at 400pt while the window was
+        // still 700pt wide, then 280pt — the minimum — the moment the window
+        // reached 1920. The terminal is the half that should grow with the
+        // window; a reading column has a width that is right and stays there.
+        conversationItem.holdingPriority = NSLayoutConstraint.Priority(260)
+        // Collapsible, unlike the session rail, and the difference is that this
+        // one has a way back: a menu item and a preference, neither of which
+        // the session list has.
+        conversationItem.canCollapse = true
+        conversationItem.collapseBehavior = .preferResizingSplitViewWithFixedSiblings
+        self.conversationItem = conversationItem
+        addSplitViewItem(conversationItem)
+
+        conversations.onChange = { [weak self] in self?.refreshConversation() }
+
         // No autosave name on purpose: the width is a setting, and an autosaved
         // divider position would silently outrank it after the first drag.
         appliedSidebarWidth = AppSettings.sidebarWidth
         splitView.setPosition(AppSettings.sidebarWidth, ofDividerAt: 0)
+        applyConversationVisibility()
+    }
+
+    /// Show or hide the conversation rail, and put it back at the width the
+    /// setting names.
+    ///
+    /// **The width has to be applied against a laid-out window, and that is not
+    /// a detail.** Divider 1 takes a position measured from the window's left
+    /// edge, so it is `width(window) - width(rail)` — and at `installSidebar`
+    /// time the window has not been sized yet, so that subtraction runs against
+    /// a placeholder and lands the divider somewhere arbitrary. The first
+    /// build did exactly that and shipped a 400pt setting as a ~280pt rail.
+    /// `viewDidLayout` re-runs it once the width is real.
+    private func applyConversationVisibility() {
+        guard let conversationItem else { return }
+        let wanted = AppSettings.showsConversation
+        conversationItem.isCollapsed = !wanted
+        guard wanted, view.bounds.width > 200 else { return }
+
+        let width = AppSettings.conversationWidth
+        appliedConversationWidth = width
+        splitView.setPosition(view.bounds.width - width, ofDividerAt: 1)
+
+        // **Believe the result, not the request.** `setPosition` is a request
+        // the split view is free to clamp — against the other items' minimum
+        // thicknesses, and against a window that has not reached its final
+        // size. Marking the placement done regardless is what shipped a 400pt
+        // setting as a 281pt rail: 281 is this item's own minimum, so the
+        // request had been clamped and nothing noticed. Left unset, the next
+        // layout tries again.
+        hasPlacedConversation = abs(conversation.bounds.width - width) < 2
+        // Logged because the answer disagreed with the request twice, for two
+        // different reasons, and neither showed up anywhere else. If the rail
+        // is ever the wrong width again, this line says whether the request was
+        // clamped or honoured and how wide the window was at the time.
+        TmuxLog.lifecycle(
+            "conversation rail: asked for \(Int(width))pt in a"
+                + " \(Int(view.bounds.width))pt split view, got"
+                + " \(Int(conversation.bounds.width))pt"
+                + " — \(hasPlacedConversation ? "placed" : "will retry")"
+        )
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        // Until it lands, then never again — re-running it on every layout
+        // would undo the person's own divider drag on each window resize, the
+        // mistake `appliedSidebarWidth` exists to avoid on the other side.
+        guard !hasPlacedConversation, AppSettings.showsConversation else { return }
+        applyConversationVisibility()
     }
 
     /// Put both halves on the same material, or on none.
@@ -830,6 +922,16 @@ final class MainViewController: NSSplitViewController {
         // Each connection decides for itself whether to start capturing panes.
         for id in server.sessionIDs { server.connection(id: id)?.applyAgentStateSource() }
         sidebar.applyChromeTheme()
+        conversation.applyChromeTheme()
+        // Both the switch and the width, and the width only when the *setting*
+        // moved — same rule as the session rail, so a theme change does not
+        // undo a divider the person dragged.
+        if conversationItem?.isCollapsed == AppSettings.showsConversation
+            || (AppSettings.showsConversation && appliedConversationWidth != AppSettings.conversationWidth)
+        {
+            hasPlacedConversation = false
+            applyConversationVisibility()
+        }
         for controller in embedded.values { controller.applySettings() }
         for controller in embedded.values { controller.applyChromeTheme() }
         // The row height itself is a setting now, so a change to it is a
@@ -904,6 +1006,7 @@ final class MainViewController: NSSplitViewController {
         if currentSessionID == nil || !server.sessionIDs.contains(currentSessionID!) {
             if let first = server.sessionIDs.first { show(sessionID: first) }
         }
+        applyStartupTargetIfNeeded()
 
         sidebar.update(entries: entries, selected: currentSessionID)
 
@@ -916,6 +1019,174 @@ final class MainViewController: NSSplitViewController {
                 .compactMap { server.connection(id: $0)?.accountUsage }
                 .reduce(nil) { AccountUsage.fresher($0, $1) }
         )
+
+        refreshConversation()
+    }
+
+    /// Point the conversation rail at the window on screen.
+    ///
+    /// Runs on the same reconcile as the session rail, which is what makes the
+    /// two agree: they read the same connection, the same active window and —
+    /// through `conversationEvidence(forWindow:)` — the same pane. It is called
+    /// on every tmux notification, so the no-change path has to be cheap, and
+    /// it is: `ConversationController.follow` compares two locators.
+    /// Open on the session — and optionally the window — the person named in
+    /// their settings.
+    ///
+    /// **The session and the window settle separately, and that is the whole
+    /// shape of this.** They become knowable at different times: the session
+    /// list arrives first, and a connection's *window* list is a later
+    /// notification on the same control-mode stream. Treating both as one step
+    /// meant that finding the session immediately concluded the window was
+    /// absent — `connection.windows` is still empty at that moment — so a
+    /// configured window was permanently ignored even when it existed. Found
+    /// by review 2026-08-02.
+    ///
+    /// Both stages retry across refreshes and both give up after
+    /// `startupAttemptLimit`, so a name matching nothing does not keep
+    /// searching for the life of the app.
+    private func applyStartupTargetIfNeeded() {
+        guard !hasSettledStartupSession || !hasSettledStartupWindow else { return }
+        guard !server.sessionIDs.isEmpty else { return }
+        startupAttempts += 1
+        let outOfPatience = startupAttempts >= Self.startupAttemptLimit
+
+        if !hasSettledStartupSession {
+            let wanted = AppSettings.startupSession
+            guard !wanted.isEmpty else {
+                hasSettledStartupSession = true
+                hasSettledStartupWindow = true
+                return
+            }
+            let sessions = server.sessionIDs.compactMap { id -> (id: String, name: String)? in
+                guard let connection = server.connection(id: id) else { return nil }
+                return (id, connection.sessionName)
+            }
+            if let sessionID = StartupTarget.id(matching: wanted, in: sessions) {
+                show(sessionID: sessionID)
+                // **Settle on the result, not on having asked.** `show` returns
+                // early — silently — when the session's controllers do not
+                // exist yet, and on the first refresh after launch they
+                // routinely do not. Marking this done before checking meant one
+                // failed attempt disabled the preference for the whole session,
+                // and the app sat on whatever session happened to be first
+                // while the log said it had matched. Same shape as the window
+                // stage below: asking is not the same as arriving.
+                guard currentSessionID == sessionID else {
+                    if outOfPatience {
+                        hasSettledStartupSession = true
+                        hasSettledStartupWindow = true
+                        TmuxLog.lifecycle("startup session: found it, but it never became showable")
+                    }
+                    return
+                }
+                hasSettledStartupSession = true
+                startupSessionID = sessionID
+            } else if outOfPatience {
+                hasSettledStartupSession = true
+                hasSettledStartupWindow = true
+                logStartupMiss("session", StartupTarget.miss(matching: wanted, in: sessions))
+            }
+            return
+        }
+
+        guard !hasSettledStartupWindow else { return }
+        let wanted = AppSettings.startupWindow
+        guard !wanted.isEmpty,
+              let sessionID = startupSessionID,
+              let connection = server.connection(id: sessionID)
+        else {
+            hasSettledStartupWindow = true
+            return
+        }
+        // **An empty window list means "not yet", not "no such window".** This
+        // is the distinction the first version collapsed.
+        guard !connection.windows.isEmpty else {
+            if outOfPatience {
+                hasSettledStartupWindow = true
+                TmuxLog.lifecycle("startup window: that session never reported any windows")
+            }
+            return
+        }
+
+        hasSettledStartupWindow = true
+        let windows = connection.windows.map { (id: $0.id, name: $0.name) }
+        if let windowID = StartupTarget.id(matching: wanted, in: windows) {
+            // The one part of this that changes tmux rather than only the app.
+            inSession(sessionID) { $0.selectWindow(id: windowID) }
+        } else {
+            logStartupMiss("window", StartupTarget.miss(matching: wanted, in: windows))
+        }
+    }
+
+    /// Say *why* it missed. A typo and a name shared by four windows need
+    /// different fixes from the person, and one "not found" cannot tell them
+    /// apart. The name itself is not logged — it is the person's own text.
+    private func logStartupMiss(_ what: String, _ miss: StartupTarget.Miss) {
+        switch miss {
+        case .noMatch:
+            TmuxLog.lifecycle("startup \(what): no match — staying on the default")
+        case let .ambiguous(count):
+            TmuxLog.lifecycle(
+                "startup \(what): \(count) of them share that name, so it names none of"
+                    + " them — staying on the default"
+            )
+        }
+    }
+
+    /// Stop trying to place the startup target.
+    ///
+    /// Called from every path where the person picks a session themselves. The
+    /// first version documented this behaviour and did not implement it, so a
+    /// session created or renamed after launch could still yank them away from
+    /// the row they had just clicked. Found by review 2026-08-02.
+    private func cancelStartupTargeting() {
+        hasSettledStartupSession = true
+        hasSettledStartupWindow = true
+    }
+
+    private var hasSettledStartupSession = false
+    private var hasSettledStartupWindow = false
+    private var startupSessionID: String?
+    private var startupAttempts = 0
+    private static let startupAttemptLimit = 20
+
+    private func refreshConversation() {
+        guard AppSettings.showsConversation else { return }
+
+        let connection = currentSessionID.flatMap { server.connection(id: $0) }
+        let windowID = connection?.activeWindowID
+        let evidence = (connection != nil && windowID != nil)
+            ? connection!.conversationEvidence(forWindow: windowID!)
+            : nil
+        conversations.follow(evidence)
+
+        let window = windowID.flatMap { id in connection?.windows.first { $0.id == id } }
+        let stats = windowID.flatMap { connection?.agentStats(forWindow: $0) }
+        conversation.show(
+            conversation: conversations.conversation,
+            header: ConversationSidebarView.Header(
+                windowName: window.map { "\($0.index): \($0.name)" },
+                model: stats?.shortModel,
+                cost: stats?.costText,
+                contextPercent: stats?.contextPercent
+            ),
+            // Three different nothings, said differently, because the fix is
+            // different for each: no agent at all, an agent this app cannot
+            // read, or one that has not spoken yet.
+            placeholder: placeholderForConversation(evidence: evidence)
+        )
+    }
+
+    private func placeholderForConversation(evidence: AgentPaneEvidence?) -> String {
+        guard let evidence else {
+            return "No agent is running in this window."
+        }
+        if conversations.conversation == nil {
+            let name = evidence.kind.isEmpty ? "The agent here" : evidence.kind
+            return "\(name) has not published a transcript this app can read."
+        }
+        return "Nothing said yet."
     }
 
     /// Give up the controller of a session the server no longer has.
