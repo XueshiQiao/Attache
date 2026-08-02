@@ -453,11 +453,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AppSettings.notifyChanged()
     }
 
-    @objc private func newWindow() { main?.currentSession?.newWindow() }
+    // Each of these picks a window, and picking one is a choice — so each
+    // tells the controller to stop trying to place `startup_window`. They
+    // address `SessionModel` directly and so never pass through
+    // `show(sessionID:)`, which is where every *session* choice is caught.
+    @objc private func newWindow() {
+        main?.userIsChoosingWindow()
+        main?.currentSession?.newWindow()
+    }
     @objc private func hideCurrentWindow() { main?.currentSession?.hideActiveWindow() }
-    @objc private func nextWindow() { main?.currentSession?.selectAdjacentWindow(offset: 1) }
-    @objc private func previousWindow() { main?.currentSession?.selectAdjacentWindow(offset: -1) }
+    @objc private func nextWindow() {
+        main?.userIsChoosingWindow()
+        main?.currentSession?.selectAdjacentWindow(offset: 1)
+    }
+    @objc private func previousWindow() {
+        main?.userIsChoosingWindow()
+        main?.currentSession?.selectAdjacentWindow(offset: -1)
+    }
     @objc private func selectWindowIndex(_ sender: NSMenuItem) {
+        main?.userIsChoosingWindow()
         main?.currentSession?.selectWindow(atIndex: sender.tag)
     }
 

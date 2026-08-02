@@ -300,10 +300,7 @@ final class MainViewController: NSSplitViewController {
         // pulls a row out from under the pointer.
         gitStatus.onChange = { [weak self] in self?.refreshSidebar() }
 
-        sidebar.onSelect = { [weak self] id in
-            self?.cancelStartupTargeting()
-            self?.show(sessionID: id)
-        }
+        sidebar.onSelect = { [weak self] id in self?.show(sessionID: id) }
         sidebar.onNew = { [weak self] in self?.server.newSession() }
         sidebar.onRename = { [weak self] id, new in
             self?.server.connection(id: id)?.renameSession(to: new)
@@ -311,7 +308,8 @@ final class MainViewController: NSSplitViewController {
 
         sidebar.onNewWindow = { [weak self] id in
             guard let self, let connection = server.connection(id: id) else { return }
-            cancelStartupTargeting()
+            cancelStartupTargeting()   // creating a window is a choice too, and
+            // it does not necessarily change session
             connection.newWindow()
             if currentSessionID != id { show(sessionID: id) }
         }
@@ -321,7 +319,6 @@ final class MainViewController: NSSplitViewController {
         // when only the current session had rows.
         sidebar.onSelectWindow = { [weak self] session, id in
             guard let self else { return }
-            cancelStartupTargeting()
             show(sessionID: session)
             inSession(session) { $0.selectWindow(id: id) }
         }
@@ -1004,7 +1001,7 @@ final class MainViewController: NSSplitViewController {
         // longer reaches here at all — the id is unchanged, so nothing about
         // the session the app is showing has moved.
         if currentSessionID == nil || !server.sessionIDs.contains(currentSessionID!) {
-            if let first = server.sessionIDs.first { show(sessionID: first) }
+            if let first = server.sessionIDs.first { showWithoutCancelling(sessionID: first) }
         }
         applyStartupTargetIfNeeded()
 
@@ -1048,8 +1045,16 @@ final class MainViewController: NSSplitViewController {
     private func applyStartupTargetIfNeeded() {
         guard !hasSettledStartupSession || !hasSettledStartupWindow else { return }
         guard !server.sessionIDs.isEmpty else { return }
-        startupAttempts += 1
-        let outOfPatience = startupAttempts >= Self.startupAttemptLimit
+        // **A counter each, because the phases run one after the other.** A
+        // single shared count let the session phase spend the whole budget:
+        // resolve on attempt 19 and the window phase is already out of
+        // patience on its first look, so the window list arriving one refresh
+        // later is ignored — the exact failure the two-phase split was meant to
+        // remove. Found by review 2026-08-02.
+        if !hasSettledStartupSession { startupSessionAttempts += 1 }
+        else { startupWindowAttempts += 1 }
+        let outOfPatience = (hasSettledStartupSession ? startupWindowAttempts : startupSessionAttempts)
+            >= Self.startupAttemptLimit
 
         if !hasSettledStartupSession {
             let wanted = AppSettings.startupSession
@@ -1063,7 +1068,7 @@ final class MainViewController: NSSplitViewController {
                 return (id, connection.sessionName)
             }
             if let sessionID = StartupTarget.id(matching: wanted, in: sessions) {
-                show(sessionID: sessionID)
+                showWithoutCancelling(sessionID: sessionID)
                 // **Settle on the result, not on having asked.** `show` returns
                 // early — silently — when the session's controllers do not
                 // exist yet, and on the first refresh after launch they
@@ -1140,6 +1145,15 @@ final class MainViewController: NSSplitViewController {
     /// first version documented this behaviour and did not implement it, so a
     /// session created or renamed after launch could still yank them away from
     /// the row they had just clicked. Found by review 2026-08-02.
+    /// The person is choosing a window themselves.
+    ///
+    /// The window shortcuts reach `SessionModel` directly rather than coming
+    /// through this controller, so there is no `show` for them to pass
+    /// through. Without this, ⌘1-9 during the gap between the session and
+    /// window phases picks a window that `startup_window` then replaces a
+    /// moment later.
+    func userIsChoosingWindow() { cancelStartupTargeting() }
+
     private func cancelStartupTargeting() {
         hasSettledStartupSession = true
         hasSettledStartupWindow = true
@@ -1148,7 +1162,8 @@ final class MainViewController: NSSplitViewController {
     private var hasSettledStartupSession = false
     private var hasSettledStartupWindow = false
     private var startupSessionID: String?
-    private var startupAttempts = 0
+    private var startupSessionAttempts = 0
+    private var startupWindowAttempts = 0
     private static let startupAttemptLimit = 20
 
     private func refreshConversation() {
@@ -1231,7 +1246,26 @@ final class MainViewController: NSSplitViewController {
         }
     }
 
+    /// Show a session **because the person asked for it.**
+    ///
+    /// Every path a person can reach — the rail, ⌃⌘1-9, next/previous session,
+    /// a window clicked in another session — comes through here, and all of
+    /// them cancel any startup target still waiting to be placed. Routing them
+    /// past this was the defect: cancellation lived in three rail callbacks, so
+    /// picking a session with the keyboard left the preference armed and it
+    /// could yank the person away from their own choice a moment later. Found
+    /// by review 2026-08-02, twice — the second time because the first fix only
+    /// covered the mouse.
+    ///
+    /// Automatic navigation uses `showWithoutCancelling` instead: the fallback
+    /// to the first session when the current one dies is not a choice anybody
+    /// made, and must not disarm a preference that has not had its chance yet.
     func show(sessionID id: String) {
+        cancelStartupTargeting()
+        showWithoutCancelling(sessionID: id)
+    }
+
+    private func showWithoutCancelling(sessionID id: String) {
         guard currentSessionID != id, let connection = server.connection(id: id),
               let model = model(forSessionID: id),
               let embedded = embeddedController(forSessionID: id) else { return }
