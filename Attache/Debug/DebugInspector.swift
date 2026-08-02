@@ -352,7 +352,11 @@
         /// one with the interesting layout in it. Non-destructive: it selects,
         /// exactly like the rail does.
         static func selectBody(query: String) -> Data {
-            if let name = parseQuery(query)["session"] { main?.debugShow(sessionNamed: name) }
+            let parameters = parseQuery(query)
+            if let name = parameters["session"] { main?.debugShow(sessionNamed: name) }
+            // `?tool=git` / `?tool=conversation` — the rail's tab icons, for
+            // tests with no pointer. See `debugSelectRailTool`.
+            if let tool = parameters["tool"] { main?.debugSelectRailTool(named: tool) }
             return encode(tmuxOnly())
         }
 

@@ -145,6 +145,41 @@ final class GitStatusService {
         return cached == nil
     }
 
+    /// The repository root a path resolved to, or nil while unresolved or once
+    /// it is known not to be in one — `isKnownNotARepository` tells those two
+    /// apart. This is what the rail's Git tool points lazygit at, and it is the
+    /// worktree root rather than the main repository's: `repositoryRoot` walks
+    /// to the nearest `.git`, file or directory.
+    func repositoryRoot(forPath path: String) -> String? {
+        rootByPath[path] ?? nil
+    }
+
+    /// Queue a root lookup for a path nothing has asked about yet.
+    ///
+    /// `setVisiblePaths` resolves what the rail's rows draw, but a row can be
+    /// out of sight — its session's group folded — while its window is the one
+    /// on screen, and the Git tool needs the answer for exactly that window.
+    /// A no-op once the path has ever been queued: `resolveRoots` records the
+    /// claim before the lookup lands.
+    func ensureRootResolved(_ path: String) {
+        guard rootByPath[path] == nil else { return }
+        resolveRoots(for: [path])
+    }
+
+    /// Forget a "not a repository" answer and ask again.
+    ///
+    /// The cache never re-asks on its own, and for the rail's rows that is
+    /// right — a wrong blank second line costs nothing. The Git tool shows
+    /// the negative answer full-screen, so a `git init` run after it was
+    /// cached would leave the tool wrong until relaunch. Called once per
+    /// reveal of the Git tab and nowhere else, which is what bounds the extra
+    /// processes (Codex review, 2026-08-03).
+    func reresolveIfNotRepository(_ path: String) {
+        guard isKnownNotARepository(path: path) else { return }
+        rootByPath.removeValue(forKey: path)
+        resolveRoots(for: [path])
+    }
+
     /// The paths the rail is currently drawing, in any session.
     ///
     /// Idempotent and cheap to call on every rebuild, which is what the rail

@@ -60,6 +60,12 @@ would draw.
 - **Activity dots** reuse tmux's own activity flag, so they mean the same thing
   as the `#` in a tmux status line. Git branch and agent state can sit under each
   row too, or be switched off.
+- **The right rail has tools**, switched by the icons in its header: the
+  conversation of the agent in the window on screen, and a Git tab running
+  [lazygit](https://github.com/jesseduffield/lazygit) on the worktree that
+  window is sitting in. It follows as you switch windows, restarting only when
+  the repository actually changes; swap lazygit for anything else with
+  `git_tool_command` in the settings file.
 - **Settings live in `~/.config/attache.toml`** — a file you can read, edit,
   diff, keep in a dotfiles repository and restore by hand. The app rewrites only
   the lines it recognises, so your comments and anything it does not know about
@@ -130,6 +136,10 @@ tmux 回报之后才会真正生效 —— 所以你在另一个终端里敲 `pr
   ⌘1-9 选窗口、⌘⇧[ ] 上/下一个窗口；⌃⌘1-9 选会话、⌃⌘[ ] 上/下一个会话、⌘⇧N 新会话。
 - **活动指示点**直接用 tmux 自己的 activity flag，所以它的含义和 tmux 状态栏里的 `#` 完全
   一致。每行下面还可以显示 git 分支和 agent 状态，也可以关掉。
+- **右栏是一组工具**，用它标题行右侧的图标切换：当前窗口里 agent 的对话，以及一个 Git
+  标签页 —— 在这个窗口所在的 worktree 上跑
+  [lazygit](https://github.com/jesseduffield/lazygit)。它跟着你切窗口走，只有仓库真的变了
+  才会重启；想换掉 lazygit，改设置文件里的 `git_tool_command` 就行。
 - **设置存在 `~/.config/attache.toml`** —— 一个你能读、能改、能 diff、能放进 dotfiles 仓库、
   能手工恢复的文件。app 只会重写它认识的那些行，所以你写的注释和它不认识的键都会原样保留。
 

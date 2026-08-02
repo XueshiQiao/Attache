@@ -52,6 +52,10 @@ final class ConversationSidebarView: NSView {
     private let metaLabel = NSTextField(labelWithString: "")
     private let headerSeparator = NSBox()
     private let titleDragStrip = TitleDragStrip()
+    /// Stored so `reserveHeaderSpace` can move it: the rail's tool tabs sit at
+    /// the right end of this row, and the title has to stop where they start.
+    private lazy var headerTrailing = titleLabel.superview!.trailingAnchor
+        .constraint(equalTo: trailingAnchor, constant: -9)
     private let scrollView = NSScrollView()
     private let stack = NSStackView()
     /// The prompt of whichever turn the viewport is currently inside, pinned
@@ -168,7 +172,7 @@ final class ConversationSidebarView: NSView {
             // so the traffic lights and this never share a row.
             header.topAnchor.constraint(equalTo: topAnchor, constant: 30),
             header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 11),
-            header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9),
+            headerTrailing,
 
             headerSeparator.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 7),
             headerSeparator.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -242,6 +246,12 @@ final class ConversationSidebarView: NSView {
         for observer in clockObservers {
             NotificationCenter.default.removeObserver(observer)
         }
+    }
+
+    /// The rail's tool tabs sit at the right end of the header row; the title
+    /// has to stop where they start.
+    func reserveHeaderSpace(_ width: CGFloat) {
+        headerTrailing.constant = -(9 + width)
     }
 
     // MARK: - Input
@@ -1070,7 +1080,9 @@ private final class StickyHeaderView: NSView {
 /// and the window title live in, and a window has to be draggable from it.
 /// Everything else in the rail answers no, so without this view there would be
 /// nowhere on the right-hand side to pick the window up.
-private final class TitleDragStrip: NSView {
+/// Not private: `GitToolView` draws the same 30pt band over the same rail and
+/// needs the same answer for the same reason.
+final class TitleDragStrip: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
 
     init() {

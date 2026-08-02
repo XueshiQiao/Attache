@@ -45,9 +45,13 @@ MainViewController     the two-level rail + the current session's content
  ├─ SessionSidebarView       both levels: sessions, and the windows of any open one
  │   └─ SidebarRows          the heading / window / hidden-count row views
  ├─ SessionModel             one session's state and commands; no view at all
- └─ EmbeddedSessionViewController   one session's content half
-     ├─ TitleBandView        28pt drag band over the terminal; draws nothing
-     └─ TmuxTerminalView     the surface tmux draws the whole session into
+ ├─ EmbeddedSessionViewController   one session's content half
+ │   ├─ TitleBandView        28pt drag band over the terminal; draws nothing
+ │   └─ TmuxTerminalView     the surface tmux draws the whole session into
+ └─ ToolRailView             the right rail: one tool up, tab icons in the header row
+     ├─ ConversationSidebarView   the window's agent conversation
+     └─ GitToolView               lazygit in an app-owned terminal — not in tmux —
+                                  opened on the current window's worktree root
 ```
 
 `SessionModel` and the controller beside it are split on one line: the model
@@ -65,9 +69,12 @@ controller if there is not one yet, because the rail lists the windows of every
 session it has open and acting on one of them is not conditional on having
 looked at it.
 
-Two things in the UI are authored locally and nothing else is: the hidden window
-ids in `SessionViewController`, and `expandedSessions` in `SessionSidebarView`.
-tmux has no opinion about either.
+Three things in the UI are authored locally and nothing else is: the hidden
+window ids in `SessionViewController`, `expandedSessions` in
+`SessionSidebarView`, and which rail tool is up in `ToolRailView`. tmux has no
+opinion about any of them. The Git tool's lazygit child is the app's own
+process on purpose — inside tmux it would appear in every attached client and
+outlive the app in their session lists.
 
 `Attache/Tmux/` has no AppKit imports and should stay that way.
 `Attache/UI/` is the only place that touches views.

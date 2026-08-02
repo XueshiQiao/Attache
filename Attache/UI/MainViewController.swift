@@ -59,6 +59,12 @@ final class MainViewController: NSSplitViewController {
     /// whole divider layout and loses the width the person dragged to.
     private let conversation = ConversationSidebarView(frame: .zero)
     private let conversations = ConversationController()
+    /// The rail's second tool, and the container that holds the two of them
+    /// behind its tab icons. The split item hosts `rail`; everything that used
+    /// to measure the conversation view measures the container now, because
+    /// the rail's width is the rail's whichever tool is up.
+    private let gitTool = GitToolView(frame: .zero)
+    private lazy var rail = ToolRailView(conversation: conversation, git: gitTool)
     private var conversationItem: NSSplitViewItem?
     private var appliedConversationWidth: CGFloat?
     private var hasPlacedConversation = false
@@ -101,7 +107,12 @@ final class MainViewController: NSSplitViewController {
     private var conversationVisible: Bool {
         conversationManualShow
             || (AppSettings.showsConversation
-                && (conversationHasAgent || !AppSettings.hidesConversationWithoutAgent))
+                && (conversationHasAgent || !AppSettings.hidesConversationWithoutAgent
+                    // The no-agent rule is about the *conversation* having
+                    // nothing to say. With the Git tool up the rail is showing
+                    // a repository, which a window has whether or not an agent
+                    // is in it — hiding it would end lazygit mid-look.
+                    || rail.activeTool == .git))
     }
 
     /// What the View menu's checkmark and the corner toggle read: the rail as
@@ -136,13 +147,25 @@ final class MainViewController: NSSplitViewController {
     @objc private func collapseTurnsClicked() { conversation.collapseAllTurns() }
     @objc private func expandTurnsClicked() { conversation.expandAllTurns() }
 
+    private func applyBandTheme() {
+        let bandTint = ChromeTheme.current.faintText
+        collapseTurnsButton.contentTintColor = bandTint
+        expandTurnsButton.contentTintColor = bandTint
+        conversationToggle.contentTintColor = bandTint
+        bandSeparator.fillColor = bandTint.withAlphaComponent(0.35)
+    }
+
     /// Driven off the split item's *actual* collapsed state, via KVO, rather
     /// than off the visibility rule — a divider drag collapses the item
     /// without any code of ours running, and fold buttons floating over the
     /// terminal would act on a list nobody can see. They also go when the
     /// rail is showing only a placeholder: there are no turns to fold.
     private func syncBandButtons() {
+        // The Git tool up means the conversation the fold pair acts on is not
+        // on screen, and buttons that mutate what nobody can see read as
+        // broken (Codex review, 2026-08-03).
         let foldable = isConversationRailVisible
+            && rail.activeTool == .conversation
             && !(conversations.conversation?.isEmpty ?? true)
         collapseTurnsButton.isHidden = !foldable
         expandTurnsButton.isHidden = !foldable
@@ -678,7 +701,7 @@ final class MainViewController: NSSplitViewController {
         // window is one sheet of glass and a third treatment on the right would
         // read as a separate window pasted on.
         let conversationItem = NSSplitViewItem(
-            viewController: Hosting(view: conversation, backdrop: railBackdrop)
+            viewController: Hosting(view: rail, backdrop: railBackdrop)
         )
         conversationItem.minimumThickness = AppSettings.conversationWidthRange.lowerBound
         conversationItem.maximumThickness = AppSettings.conversationWidthRange.upperBound
@@ -700,6 +723,29 @@ final class MainViewController: NSSplitViewController {
         addSplitViewItem(conversationItem)
 
         conversations.onChange = { [weak self] in self?.refreshConversation() }
+        // A tool switch can change the visibility rule's answer (the Git
+        // exemption above) as well as what the rail draws, and
+        // `refreshConversation` is the one place both are decided.
+        //
+        // The click also raises the same per-window wish ⌘\ raises. A tab is
+        // only clickable on a rail that is up, and the person just used it —
+        // without this, Git → Conversation on a no-agent window left the rule
+        // answering "hidden" under a rail that stayed on screen, and the two
+        // disagreed until the next window switch (Codex review, 2026-08-03).
+        // The next window switch clears it, like every manual wish.
+        rail.onActiveToolChanged = { [weak self] in
+            self?.conversationManualShow = true
+            self?.refreshConversation()
+        }
+        // "No such path" from a link click inside the Git tool. The current
+        // session's status line is where every other transient message goes.
+        gitTool.onStatus = { [weak self] message in
+            guard let self, let id = currentSessionID else { return }
+            server.connection(id: id)?.showStatusMessage(message)
+        }
+        gitTool.onRevealRecheck = { [weak self] path in
+            self?.gitStatus.reresolveIfNotRepository(path)
+        }
 
         // The title band's button cluster. A subview of the split view
         // itself, which is safe only because NSSplitViewController runs its
@@ -760,9 +806,21 @@ final class MainViewController: NSSplitViewController {
         // because a divider drag collapses the item with none of our code in
         // the loop.
         railCollapseObservation = conversationItem.observe(\.isCollapsed) { [weak self] _, _ in
-            MainActor.assumeIsolated { self?.syncBandButtons() }
+            MainActor.assumeIsolated {
+                self?.syncBandButtons()
+                // The Git tool's child dies with the rail — off screen is off
+                // duty — and a divider drag collapses the item with none of
+                // our code in the loop, so the KVO is where this has to live.
+                self?.syncGitToolVisibility()
+            }
         }
         syncBandButtons()
+        // Here as well as on every settings change: `applySettings` first
+        // runs when a setting *moves*, so colours applied only there leave
+        // the cluster on AppKit's default tint for the whole first launch.
+        // The rail's own views dodge this by theming themselves in `build()`;
+        // these buttons lost that when they moved out of the rail.
+        applyBandTheme()
 
         // No autosave name on purpose: the width is a setting, and an autosaved
         // divider position would silently outrank it after the first drag.
@@ -796,7 +854,7 @@ final class MainViewController: NSSplitViewController {
         if !wanted, !conversationItem.isCollapsed, hasPlacedConversation,
            AppSettings.conversationWidthRange.contains(conversation.bounds.width)
         {
-            preservedConversationWidth = conversation.bounds.width
+            preservedConversationWidth = rail.bounds.width
         }
         conversationItem.isCollapsed = !wanted
         guard wanted, view.bounds.width > 200 else { return }
@@ -812,7 +870,7 @@ final class MainViewController: NSSplitViewController {
         // setting as a 281pt rail: 281 is this item's own minimum, so the
         // request had been clamped and nothing noticed. Left unset, the next
         // layout tries again.
-        hasPlacedConversation = abs(conversation.bounds.width - width) < 2
+        hasPlacedConversation = abs(rail.bounds.width - width) < 2
         // Logged because the answer disagreed with the request twice, for two
         // different reasons, and neither showed up anywhere else. If the rail
         // is ever the wrong width again, this line says whether the request was
@@ -820,7 +878,7 @@ final class MainViewController: NSSplitViewController {
         TmuxLog.lifecycle(
             "conversation rail: asked for \(Int(width))pt in a"
                 + " \(Int(view.bounds.width))pt split view, got"
-                + " \(Int(conversation.bounds.width))pt"
+                + " \(Int(rail.bounds.width))pt"
                 + " — \(hasPlacedConversation ? "placed" : "will retry")"
         )
     }
@@ -1085,12 +1143,8 @@ final class MainViewController: NSSplitViewController {
         // Each connection decides for itself whether to start capturing panes.
         for id in server.sessionIDs { server.connection(id: id)?.applyAgentStateSource() }
         sidebar.applyChromeTheme()
-        conversation.applyChromeTheme()
-        let bandTint = ChromeTheme.current.faintText
-        collapseTurnsButton.contentTintColor = bandTint
-        expandTurnsButton.contentTintColor = bandTint
-        conversationToggle.contentTintColor = bandTint
-        bandSeparator.fillColor = bandTint.withAlphaComponent(0.35)
+        rail.applyChromeTheme()
+        applyBandTheme()
         // A moved width setting outranks the width preserved from a drag —
         // writing the number down is the stronger statement of intent — and it
         // does so even while the rail is hidden, or the preserved value
@@ -1375,6 +1429,20 @@ final class MainViewController: NSSplitViewController {
             applyConversationVisibility()
         }
 
+        // The Git tool follows the same window, by pane path rather than by
+        // agent. Fed before the visibility guard on purpose: its own
+        // `isRailVisible` gate is what keeps a hidden rail from doing process
+        // work, and it needs current state the moment the rail comes back.
+        let path = windowID.flatMap { connection?.pathByWindow[$0] }
+        if let path { gitStatus.ensureRootResolved(path) }
+        syncGitToolVisibility()
+        gitTool.update(
+            path: path,
+            root: path.flatMap { gitStatus.repositoryRoot(forPath: $0) },
+            knownNotRepository: path.map { gitStatus.isKnownNotARepository(path: $0) } ?? false,
+            summary: path.flatMap { gitStatus.summary(forPath: $0) }
+        )
+
         // Off screen is off duty: a hidden rail keeping a transcript watcher
         // alive would re-render a conversation nobody can see on every write
         // the agent makes. `follow(nil)` is what stops the watcher.
@@ -1400,6 +1468,13 @@ final class MainViewController: NSSplitViewController {
         // The fold pair depends on whether there are turns to fold, and this
         // is the moment that answer can change.
         syncBandButtons()
+    }
+
+    /// The Git tool's child lives exactly as long as the rail is actually on
+    /// screen. Reads the split item rather than the visibility rule, because
+    /// a divider drag collapses the item behind the rule's back.
+    private func syncGitToolVisibility() {
+        gitTool.isRailVisible = isConversationRailVisible
     }
 
     private func placeholderForConversation(evidence: AgentPaneEvidence?) -> String {
@@ -1574,6 +1649,29 @@ final class MainViewController: NSSplitViewController {
         func debugShow(sessionNamed name: String) {
             guard let id = server.sessionID(named: name) else { return }
             show(sessionID: id)
+        }
+
+        /// Put the named rail tool up, exactly as clicking its tab icon would.
+        ///
+        /// The tab icons are the one part of this feature a test cannot reach
+        /// without a pointer, and the pointer needs an Accessibility grant an
+        /// agent's shell does not have — the same gap `/paste` exists to
+        /// close. Everything downstream (the child starting, the follow rule,
+        /// teardown) is the real code path either way.
+        func debugSelectRailTool(named name: String) {
+            switch name {
+            case "git": rail.select(.git)
+            case "conversation": rail.select(.conversation)
+            default: break
+            }
+            // The tab icons cannot be clicked on a collapsed rail, so this
+            // route can reach a state the pointer cannot: tool switched
+            // behind a hidden rail, rule saying visible, item still shut.
+            // Treat it as the ⌘\-then-click a person would have typed.
+            if !isConversationRailVisible, conversationVisible {
+                hasPlacedConversation = false
+                applyConversationVisibility()
+            }
         }
 
         /// Every session on the server, whether or not it has ever been shown.

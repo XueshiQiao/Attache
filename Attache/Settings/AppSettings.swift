@@ -67,6 +67,7 @@ enum AppSettings {
         static let conversationFontSize   = "conversation_font_size"
         static let startupSession         = "startup_session"
         static let startupWindow          = "startup_window"
+        static let gitToolCommand         = "git_tool_command"
     }
 
     /// The old `UserDefaults` name for each key, for the migration and nothing
@@ -321,6 +322,20 @@ enum AppSettings {
     static var hidesConversationWithoutAgent: Bool {
         get { store.object(forKey: Key.hidesConversationWithoutAgent) as? Bool ?? true }
         set { store.set(newValue, forKey: Key.hidesConversationWithoutAgent) }
+    }
+
+    /// The command the rail's Git tool runs in its terminal. A bare program
+    /// name is located the way tmux is — a GUI app's PATH has no Homebrew in
+    /// it — while a command carrying a `/` is trusted as written, flags and
+    /// all. Swapping lazygit for tig, or for anything else that draws a
+    /// full-screen git UI, is editing this line in `attache.toml`.
+    static var gitToolCommand: String {
+        get {
+            let value = store.string(forKey: Key.gitToolCommand)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (value?.isEmpty ?? true) ? "lazygit" : value!
+        }
+        set { store.set(newValue, forKey: Key.gitToolCommand) }
     }
 
     static var conversationWidth: CGFloat {
