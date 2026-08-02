@@ -334,6 +334,9 @@ final class MainViewController: NSSplitViewController {
             moveWindow(id: id, from: from, to: to, before: anchor)
         }
         sidebar.onHideWindow = { [weak self] session, id in
+            // Same reason as ⌘W: hiding a row can move the selection, and it
+            // is a deliberate act either way.
+            self?.userIsChoosingWindow()
             self?.inSession(session) { $0.hideWindow(id) }
         }
         sidebar.onKillWindow = { [weak self] session, id in
@@ -1152,6 +1155,14 @@ final class MainViewController: NSSplitViewController {
     /// through. Without this, ⌘1-9 during the gap between the session and
     /// window phases picks a window that `startup_window` then replaces a
     /// moment later.
+    ///
+    /// **Hiding counts, and reasoning that it does not was wrong.** It looks
+    /// like the opposite of picking a window, but `SessionModel.hideWindow`
+    /// sends `select-window` for the next visible row — so hiding the active
+    /// window moves the selection like any other choice, and leaving it out let
+    /// a pending `startup_window` select the hidden window straight back and
+    /// the following sync un-hide it. Caught by review 2026-08-02 after I had
+    /// argued the other way.
     func userIsChoosingWindow() { cancelStartupTargeting() }
 
     private func cancelStartupTargeting() {

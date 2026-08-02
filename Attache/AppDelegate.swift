@@ -461,7 +461,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         main?.userIsChoosingWindow()
         main?.currentSession?.newWindow()
     }
-    @objc private func hideCurrentWindow() { main?.currentSession?.hideActiveWindow() }
+    @objc private func hideCurrentWindow() {
+        // **Hiding the active window selects another one**, which is easy to
+        // miss: `SessionModel.hideWindow` sends `select-window` for the next
+        // visible row so that the session is not left pointing at a row the
+        // rail no longer draws. Leaving this uncancelled let a pending
+        // `startup_window` select the just-hidden window straight back, and the
+        // sync that follows un-hides it — the row reappears by itself.
+        main?.userIsChoosingWindow()
+        main?.currentSession?.hideActiveWindow()
+    }
     @objc private func nextWindow() {
         main?.userIsChoosingWindow()
         main?.currentSession?.selectAdjacentWindow(offset: 1)
