@@ -47,6 +47,23 @@ struct AgentStats: Equatable {
     /// the footer picks the freshest of the ones it can see.
     var usage: AccountUsage?
 
+    /// Absolute path to this session's transcript, from `transcript_path`.
+    ///
+    /// **The whole reason the conversation sidebar needed no new mechanism.**
+    /// Claude Code publishes it in the same payload as the cost and context
+    /// numbers, so the link from a tmux pane to the file holding its
+    /// conversation was already arriving on the control-mode connection and
+    /// was simply not being read. `ClaudeCodeConversationProvider` is the
+    /// consumer.
+    ///
+    /// Not part of `isEmpty`: a payload carrying only this says nothing a rail
+    /// row could draw, and treating it as content would put an empty row under
+    /// every window.
+    var transcriptPath: String?
+    /// `session_id`. Distinct from the transcript path because the path can be
+    /// renamed underneath a running session, while this cannot.
+    var sessionID: String?
+
     /// True when there is nothing a row could draw. A payload that parsed but
     /// holds only rate limits still says nothing about *this* window.
     var isEmpty: Bool {
@@ -189,6 +206,8 @@ extension AgentStats {
         }
         stats.effort = string((root["effort"] as? [String: Any])?["level"])
         stats.outputStyle = string((root["output_style"] as? [String: Any])?["name"])
+        stats.transcriptPath = string(root["transcript_path"])
+        stats.sessionID = string(root["session_id"])
 
         if let limits = root["rate_limits"] as? [String: Any] {
             var usage = AccountUsage()

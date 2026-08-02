@@ -473,6 +473,35 @@ final class TmuxSessionConnection {
     /// never reads `needs you` beside another pane's model and cost. Same pane
     /// set as `agentBadge(forWindow:)` and for the same zoom reason.
     func agentStats(forWindow windowID: String) -> AgentStats? {
+        agentPane(forWindow: windowID).flatMap { statsByPane[$0] }
+    }
+
+    /// What the conversation rail needs to find this window's transcript.
+    ///
+    /// Deliberately the **same pane** `agentStats(forWindow:)` reads, so the
+    /// conversation on the right and the model and cost on the left are always
+    /// about the same agent. A window with two agents in it otherwise shows one
+    /// pane's numbers over the other pane's conversation, which is the kind of
+    /// disagreement this codebase exists to avoid.
+    func conversationEvidence(forWindow windowID: String) -> AgentPaneEvidence? {
+        guard let pane = agentPane(forWindow: windowID),
+              let evidence = evidenceByPane[pane]
+        else { return nil }
+        return AgentPaneEvidence(
+            paneID: pane,
+            kind: evidence.optionKind,
+            currentCommand: evidence.currentCommand,
+            statusPayload: evidence.optionStats,
+            // Nothing writes a session id straight to a pane yet. Claude Code
+            // publishes its own inside the status payload; the field is here
+            // for an agent that has no status line to put one in — Codex's
+            // hooks are expected to be the first.
+            sessionID: ""
+        )
+    }
+
+    /// Which pane speaks for a window, by the badge's own ranking.
+    private func agentPane(forWindow windowID: String) -> String? {
         guard let window = windows.first(where: { $0.id == windowID }) else { return nil }
         var best: (pane: String, badge: AgentBadge)?
         for pane in window.paneIDs {
@@ -502,7 +531,7 @@ final class TmuxSessionConnection {
                 }
             }
         }
-        return best.flatMap { statsByPane[$0.pane] }
+        return best?.pane
     }
 
     /// The freshest account-wide rate-limit snapshot any pane here has
