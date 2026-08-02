@@ -49,6 +49,7 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var agentStateSource: AgentStateSource
     @Published private(set) var gitAutoFetch: Bool
     @Published private(set) var gitAutoFetchMinutes: Int
+    @Published private(set) var hidesConversationWithoutAgent: Bool
 
     // ─── Agent hook (Behaviour page) ─────────────────────────────────────────
     @Published private(set) var agentHookInstalled = AgentHookInstaller.isInstalled()
@@ -194,6 +195,7 @@ final class SettingsStore: ObservableObject {
         agentStateSource = AppSettings.agentStateSource
         gitAutoFetch = AppSettings.gitAutoFetch
         gitAutoFetchMinutes = AppSettings.gitAutoFetchMinutes
+        hidesConversationWithoutAgent = AppSettings.hidesConversationWithoutAgent
         windowOpacity = AppSettings.windowOpacity
         backgroundBlur = AppSettings.backgroundBlur
         blurRadius = AppSettings.blurRadius
@@ -314,6 +316,12 @@ final class SettingsStore: ObservableObject {
     func setSidebarShowsGit(_ shows: Bool) {
         AppSettings.sidebarShowsGit = shows
         sidebarShowsGit = shows
+        AppSettings.notifyChanged()
+    }
+
+    func setHidesConversationWithoutAgent(_ hides: Bool) {
+        AppSettings.hidesConversationWithoutAgent = hides
+        hidesConversationWithoutAgent = hides
         AppSettings.notifyChanged()
     }
 

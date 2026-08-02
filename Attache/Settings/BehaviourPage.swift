@@ -349,6 +349,33 @@ struct BehaviourPage: View {
 
             Section {
                 Toggle(isOn: Binding(
+                    get: { store.hidesConversationWithoutAgent },
+                    set: { store.setHidesConversationWithoutAgent($0) }
+                )) {
+                    iconLabel(
+                        "sidebar.trailing",
+                        store.hidesConversationWithoutAgent ? .blue : .gray,
+                        "Hide the rail when no agent is running"
+                    )
+                }
+            } header: {
+                Text("Conversation")
+            } footer: {
+                Text(
+                    "The rail on the right shows the conversation of the window on screen, so "
+                        + "it follows that window: switch to one with no agent and the rail "
+                        + "slides away, switch back and it returns. Each transition changes the "
+                        + "terminal's width once. The toggle in the window's top-right corner "
+                        + "(or ⌘\\) always wins for the window you are on — it can summon the "
+                        + "rail with no agent there, and hide it with one. Off, the rail stays "
+                        + "up everywhere — a window with no agent just says so."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
+                Toggle(isOn: Binding(
                     get: { store.copyOnSelect },
                     set: { store.setCopyOnSelect($0) }
                 )) {

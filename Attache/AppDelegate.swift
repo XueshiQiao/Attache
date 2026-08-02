@@ -1,7 +1,7 @@
 import Cocoa
 import GhosttyTerminal
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
     /// A share of the screen rather than a fixed size in points.
     ///
     /// 1280×780 was dialled in on one display and is a different window on
@@ -442,15 +442,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ = main?.currentEmbedded?.confirmKillFocusedPane()
     }
 
-    /// Flip the conversation rail, and tick the menu item to match.
-    ///
-    /// Written through `AppSettings` rather than held here, so it survives a
-    /// relaunch and shows up in `~/.config/attache.toml` where the person can
-    /// see it — the rule the whole settings layer exists to enforce.
+    /// Flip the conversation rail — `MainViewController` owns the rule,
+    /// because "visible" is a fact about the window (which window is on
+    /// screen, whether it has an agent), not about the setting alone.
     @objc private func toggleConversationSidebar(_ sender: NSMenuItem) {
-        AppSettings.showsConversation.toggle()
-        sender.state = AppSettings.showsConversation ? .on : .off
-        AppSettings.notifyChanged()
+        main?.toggleConversationRail()
+    }
+
+    /// The checkmark on "Show Conversation" reads the rail's actual state each
+    /// time the menu opens. Setting it inside the action was wrong twice over:
+    /// the item started unchecked no matter what the TOML said, and went stale
+    /// whenever anything else moved the rail. The `NSMenuItemValidation`
+    /// conformance on the class is load-bearing — without it Swift never
+    /// exposes this method to Objective-C, AppKit never calls it, and the
+    /// whole thing reads as wired while doing nothing. Everything else stays
+    /// enabled unconditionally, which is exactly what AppKit did for these
+    /// items before this method existed.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleConversationSidebar) {
+            menuItem.state =
+                (main?.isConversationRailVisible ?? AppSettings.showsConversation) ? .on : .off
+        }
+        return true
     }
 
     // Each of these picks a window, and picking one is a choice — so each

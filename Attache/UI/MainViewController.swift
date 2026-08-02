@@ -62,6 +62,92 @@ final class MainViewController: NSSplitViewController {
     private var conversationItem: NSSplitViewItem?
     private var appliedConversationWidth: CGFloat?
     private var hasPlacedConversation = false
+    /// Whether the window on screen has an agent, by the same evidence the
+    /// rail's content follows — so the rail never hides while claiming to have
+    /// a conversation, and never shows for a window it has nothing to say
+    /// about. Updated by `refreshConversation`, read by `conversationVisible`.
+    private var conversationHasAgent = false
+    /// The person asked to see the rail on *this* window even though it has no
+    /// agent. Manual has to be able to beat automatic: without this, on a
+    /// no-agent window the formula below answered hidden no matter what the
+    /// switch said, so ⌘\ could be pressed any number of times and nothing on
+    /// screen would move — which shipped, and is exactly how the owner lost
+    /// the rail on 2026-08-02. Scoped to one window visit: switching windows
+    /// clears it and hands the decision back to the standing rule.
+    private var conversationManualShow = false
+    /// Which window the manual wish was made on, as "session/window" ids.
+    private var conversationWindowKey: String?
+    /// The width the rail actually had when auto-hide took it away, so the
+    /// person's own divider drag survives the hide/show cycle a window switch
+    /// causes. The `conversation_width` *setting* deliberately does not track
+    /// drags; before auto-hide that meant a drag lasted until relaunch, and
+    /// resetting on every window switch would have shortened that to seconds.
+    private var preservedConversationWidth: CGFloat?
+    /// The title band's button cluster, top-right of the window: collapse
+    /// every turn, expand every turn, a hairline, and the rail toggle. The
+    /// fold pair acts on the rail's content and vanishes with it; the toggle
+    /// is the way back — Xcode's inspector-toggle interaction, chosen from an
+    /// HTML mock-up round on 2026-08-02 — and never moves.
+    private let collapseTurnsButton = RailButton()
+    private let expandTurnsButton = RailButton()
+    private let bandSeparator = NSBox()
+    private let conversationToggle = RailButton()
+    private var railCollapseObservation: NSKeyValueObservation?
+
+    /// The one place "should the rail be on screen" is decided. The setting is
+    /// the master switch; on top of it, a window with no agent hides the rail
+    /// unless the person has turned that behaviour off — or is overriding it
+    /// for the window they are looking at.
+    private var conversationVisible: Bool {
+        conversationManualShow
+            || (AppSettings.showsConversation
+                && (conversationHasAgent || !AppSettings.hidesConversationWithoutAgent))
+    }
+
+    /// What the View menu's checkmark and the corner toggle read: the rail as
+    /// it actually is on screen, not what `conversationVisible` computes. The
+    /// two disagree after the person drags the divider shut — the item
+    /// collapses, the rule still answers "visible", and a toggle branching on
+    /// the rule spends its first click hiding a rail that is already gone
+    /// (Codex review, 2026-08-02).
+    var isConversationRailVisible: Bool { !(conversationItem?.isCollapsed ?? true) }
+
+    /// One entry for the corner button, ⌘\ and the View menu item.
+    ///
+    /// Hiding is a standing choice and writes the setting off. Showing writes
+    /// it on *and* raises the per-window override, so the click always
+    /// produces a rail — on a window with no agent it opens onto the
+    /// placeholder rather than silently losing to the auto-hide rule.
+    func toggleConversationRail() {
+        if isConversationRailVisible {
+            conversationManualShow = false
+            AppSettings.showsConversation = false
+        } else {
+            AppSettings.showsConversation = true
+            conversationManualShow = true
+        }
+        AppSettings.notifyChanged()
+    }
+
+    @objc private func conversationToggleClicked() {
+        toggleConversationRail()
+    }
+
+    @objc private func collapseTurnsClicked() { conversation.collapseAllTurns() }
+    @objc private func expandTurnsClicked() { conversation.expandAllTurns() }
+
+    /// Driven off the split item's *actual* collapsed state, via KVO, rather
+    /// than off the visibility rule — a divider drag collapses the item
+    /// without any code of ours running, and fold buttons floating over the
+    /// terminal would act on a list nobody can see. They also go when the
+    /// rail is showing only a placeholder: there are no turns to fold.
+    private func syncBandButtons() {
+        let foldable = isConversationRailVisible
+            && !(conversations.conversation?.isEmpty ?? true)
+        collapseTurnsButton.isHidden = !foldable
+        expandTurnsButton.isHidden = !foldable
+        bandSeparator.isHidden = !foldable
+    }
 
     /// The repositories behind the rail's rows.
     ///
@@ -615,6 +701,69 @@ final class MainViewController: NSSplitViewController {
 
         conversations.onChange = { [weak self] in self?.refreshConversation() }
 
+        // The title band's button cluster. A subview of the split view
+        // itself, which is safe only because NSSplitViewController runs its
+        // split view with `arrangesAllSubviews` off — checked below, because
+        // a split view that *does* arrange all subviews would adopt the
+        // cluster as a fourth pane. Added after every pane so the macOS 26
+        // sibling overdraw (CLAUDE.md) cannot put a pane's backing layer
+        // over it.
+        assert(!splitView.arrangesAllSubviews, "the band buttons would become a pane")
+        // The toggle's tooltip is one phrasing for both states on purpose: a
+        // "Hide"/"Show" pair keyed off the visibility rule says the wrong
+        // word after a divider drag collapses the rail behind the rule's back.
+        for (button, symbol, tip, action) in [
+            (collapseTurnsButton, "arrow.down.forward.and.arrow.up.backward",
+             "Collapse every turn", #selector(collapseTurnsClicked)),
+            (expandTurnsButton, "arrow.up.backward.and.arrow.down.forward",
+             "Expand every turn", #selector(expandTurnsClicked)),
+            (conversationToggle, "sidebar.trailing",
+             "Show or hide the conversation rail (⌘\\)", #selector(conversationToggleClicked)),
+        ] {
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
+            button.imageScaling = .scaleProportionallyDown
+            button.bezelStyle = .accessoryBarAction
+            button.isBordered = false
+            button.target = self
+            button.action = action
+            button.toolTip = tip
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.widthAnchor.constraint(equalToConstant: 24).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 20).isActive = true
+        }
+        bandSeparator.boxType = .custom
+        bandSeparator.borderWidth = 0
+        bandSeparator.translatesAutoresizingMaskIntoConstraints = false
+        bandSeparator.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        bandSeparator.heightAnchor.constraint(equalToConstant: 12).isActive = true
+
+        let band = NSStackView(views: [
+            collapseTurnsButton, expandTurnsButton, bandSeparator, conversationToggle,
+        ])
+        band.orientation = .horizontal
+        band.alignment = .centerY
+        band.spacing = 2
+        // The hairline needs air on both sides or it reads as a fourth glyph.
+        band.setCustomSpacing(7, after: expandTurnsButton)
+        band.setCustomSpacing(7, after: bandSeparator)
+        band.translatesAutoresizingMaskIntoConstraints = false
+        splitView.addSubview(band)
+        NSLayoutConstraint.activate([
+            // Centred in the 28pt title band, and 12pt off the window edge so
+            // the cluster sits beside the rounded corner rather than inside
+            // its curve — the complaint that started the mock-up round.
+            band.centerYAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            band.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+        ])
+
+        // The fold pair tracks the rail's *actual* collapsed state — KVO,
+        // because a divider drag collapses the item with none of our code in
+        // the loop.
+        railCollapseObservation = conversationItem.observe(\.isCollapsed) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.syncBandButtons() }
+        }
+        syncBandButtons()
+
         // No autosave name on purpose: the width is a setting, and an autosaved
         // divider position would silently outrank it after the first drag.
         appliedSidebarWidth = AppSettings.sidebarWidth
@@ -634,12 +783,26 @@ final class MainViewController: NSSplitViewController {
     /// `viewDidLayout` re-runs it once the width is real.
     private func applyConversationVisibility() {
         guard let conversationItem else { return }
-        let wanted = AppSettings.showsConversation
+        let wanted = conversationVisible
+
+        // Catch the width on the way down, not on the way up: the person's
+        // divider drag lives only in the view's bounds, and collapsing is the
+        // moment those bounds stop being real. `hasPlacedConversation` is the
+        // guard that the bounds ever *were* real — the startup collapse runs
+        // against a window that has not been laid out, and the placeholder
+        // width it read (280pt, inside the legal range) was captured as a
+        // "drag" and faithfully restored over the 400pt setting. Measured on
+        // launch, 2026-08-02.
+        if !wanted, !conversationItem.isCollapsed, hasPlacedConversation,
+           AppSettings.conversationWidthRange.contains(conversation.bounds.width)
+        {
+            preservedConversationWidth = conversation.bounds.width
+        }
         conversationItem.isCollapsed = !wanted
         guard wanted, view.bounds.width > 200 else { return }
 
-        let width = AppSettings.conversationWidth
-        appliedConversationWidth = width
+        let width = preservedConversationWidth ?? AppSettings.conversationWidth
+        appliedConversationWidth = AppSettings.conversationWidth
         splitView.setPosition(view.bounds.width - width, ofDividerAt: 1)
 
         // **Believe the result, not the request.** `setPosition` is a request
@@ -667,7 +830,7 @@ final class MainViewController: NSSplitViewController {
         // Until it lands, then never again — re-running it on every layout
         // would undo the person's own divider drag on each window resize, the
         // mistake `appliedSidebarWidth` exists to avoid on the other side.
-        guard !hasPlacedConversation, AppSettings.showsConversation else { return }
+        guard !hasPlacedConversation, conversationVisible else { return }
         applyConversationVisibility()
     }
 
@@ -923,11 +1086,23 @@ final class MainViewController: NSSplitViewController {
         for id in server.sessionIDs { server.connection(id: id)?.applyAgentStateSource() }
         sidebar.applyChromeTheme()
         conversation.applyChromeTheme()
+        let bandTint = ChromeTheme.current.faintText
+        collapseTurnsButton.contentTintColor = bandTint
+        expandTurnsButton.contentTintColor = bandTint
+        conversationToggle.contentTintColor = bandTint
+        bandSeparator.fillColor = bandTint.withAlphaComponent(0.35)
+        // A moved width setting outranks the width preserved from a drag —
+        // writing the number down is the stronger statement of intent — and it
+        // does so even while the rail is hidden, or the preserved value
+        // resurfaces over the new number on the next expansion (Codex review).
+        if appliedConversationWidth != AppSettings.conversationWidth {
+            preservedConversationWidth = nil
+        }
         // Both the switch and the width, and the width only when the *setting*
         // moved — same rule as the session rail, so a theme change does not
         // undo a divider the person dragged.
-        if conversationItem?.isCollapsed == AppSettings.showsConversation
-            || (AppSettings.showsConversation && appliedConversationWidth != AppSettings.conversationWidth)
+        if conversationItem?.isCollapsed == conversationVisible
+            || (conversationVisible && appliedConversationWidth != AppSettings.conversationWidth)
         {
             hasPlacedConversation = false
             applyConversationVisibility()
@@ -1178,13 +1353,33 @@ final class MainViewController: NSSplitViewController {
     private static let startupAttemptLimit = 20
 
     private func refreshConversation() {
-        guard AppSettings.showsConversation else { return }
-
         let connection = currentSessionID.flatMap { server.connection(id: $0) }
         let windowID = connection?.activeWindowID
         let evidence = (connection != nil && windowID != nil)
             ? connection!.conversationEvidence(forWindow: windowID!)
             : nil
+
+        // Evidence is read before any visibility guard, because the collapsed
+        // rail is exactly the one that needs to notice an agent appearing.
+        let wasVisible = conversationVisible
+        let windowKey = windowID.map { "\(currentSessionID ?? "")/\($0)" }
+        if windowKey != conversationWindowKey {
+            conversationWindowKey = windowKey
+            // The manual override was about the window that was on screen
+            // when it was made; a new window gets the standing rule.
+            conversationManualShow = false
+        }
+        conversationHasAgent = evidence != nil
+        if wasVisible != conversationVisible {
+            hasPlacedConversation = false
+            applyConversationVisibility()
+        }
+
+        // Off screen is off duty: a hidden rail keeping a transcript watcher
+        // alive would re-render a conversation nobody can see on every write
+        // the agent makes. `follow(nil)` is what stops the watcher.
+        guard conversationVisible else { return conversations.follow(nil) }
+
         conversations.follow(evidence)
 
         let window = windowID.flatMap { id in connection?.windows.first { $0.id == id } }
@@ -1202,6 +1397,9 @@ final class MainViewController: NSSplitViewController {
             // read, or one that has not spoken yet.
             placeholder: placeholderForConversation(evidence: evidence)
         )
+        // The fold pair depends on whether there are turns to fold, and this
+        // is the moment that answer can change.
+        syncBandButtons()
     }
 
     private func placeholderForConversation(evidence: AgentPaneEvidence?) -> String {

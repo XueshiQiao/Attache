@@ -62,6 +62,7 @@ enum AppSettings {
         static let linkClick              = "link_click"
         static let linkModifier           = "link_modifier"
         static let showsConversation      = "shows_conversation"
+        static let hidesConversationWithoutAgent = "hides_conversation_without_agent"
         static let conversationWidth      = "conversation_width"
         static let conversationFontSize   = "conversation_font_size"
         static let startupSession         = "startup_session"
@@ -298,15 +299,28 @@ enum AppSettings {
         }
     }
 
-    /// How opaque the window is, 0.3 to 1.0. See `windowOpacityRange`.
     /// Whether the conversation rail is on the right of the window at all.
     ///
-    /// Off by default. It costs the terminal real columns — at the default
-    /// width, about 55 of them — and a person who never runs an agent in here
-    /// would be paying that for a permanently empty panel.
+    /// The master switch — ⌘\ and the corner toggle both write it, through
+    /// `MainViewController.toggleConversationRail`, which also holds the
+    /// per-window override this switch alone cannot express.
+    /// On by default *because* `hidesConversationWithoutAgent` is: the old
+    /// off-default existed so a person who never runs an agent would not pay
+    /// real terminal columns — about 55 at the default width — for a
+    /// permanently empty panel, and auto-hide removes exactly that cost.
     static var showsConversation: Bool {
-        get { store.object(forKey: Key.showsConversation) as? Bool ?? false }
+        get { store.object(forKey: Key.showsConversation) as? Bool ?? true }
         set { store.set(newValue, forKey: Key.showsConversation) }
+    }
+
+    /// Collapse the conversation rail while the window on screen has no agent,
+    /// and bring it back when one is detected. Judged per window — the rail's
+    /// content already follows the window on screen, so its visibility does
+    /// too. Turning this off keeps the rail up everywhere, placeholder and
+    /// all, which is exactly the pre-2026-08-02 behaviour.
+    static var hidesConversationWithoutAgent: Bool {
+        get { store.object(forKey: Key.hidesConversationWithoutAgent) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.hidesConversationWithoutAgent) }
     }
 
     static var conversationWidth: CGFloat {

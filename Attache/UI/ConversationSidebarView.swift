@@ -50,8 +50,6 @@ final class ConversationSidebarView: NSView {
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let metaLabel = NSTextField(labelWithString: "")
-    private let collapseButton = RailButton()
-    private let expandButton = RailButton()
     private let headerSeparator = NSBox()
     private let titleDragStrip = TitleDragStrip()
     private let scrollView = NSScrollView()
@@ -100,60 +98,18 @@ final class ConversationSidebarView: NSView {
         metaLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         metaLabel.lineBreakMode = .byTruncatingTail
 
-        for (button, symbol, tip, action) in [
-            (collapseButton, "arrow.down.forward.and.arrow.up.backward", "Collapse every turn", #selector(collapseAll)),
-            (expandButton, "arrow.up.backward.and.arrow.down.forward", "Expand every turn", #selector(expandAll)),
-        ] {
-            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
-            button.imageScaling = .scaleProportionallyDown
-            button.bezelStyle = .accessoryBarAction
-            button.isBordered = false
-            button.target = self
-            button.action = action
-            button.toolTip = tip
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.widthAnchor.constraint(equalToConstant: 22).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 18).isActive = true
-        }
-
-        let buttons = NSStackView(views: [collapseButton, expandButton])
-        buttons.orientation = .horizontal
-        buttons.spacing = 1
-        buttons.translatesAutoresizingMaskIntoConstraints = false
-
-        // **Explicit constraints, not a stack view, and that is the second
-        // attempt.** A horizontal stack sizes each arranged view to what it
-        // asks for; a label asks for exactly its text, so the two buttons sat
-        // immediately after the window name with 300pt of empty rail to their
-        // right. Setting `distribution = .fill` plus hugging priorities was
-        // the obvious fix and did not move them. Pinning the buttons to the
-        // trailing edge says what is actually wanted and cannot be argued
-        // with. Found by measuring where a click landed, not by looking —
-        // the misplaced buttons read as a design choice in a screenshot.
-        let titleRow = NSView()
-        titleRow.translatesAutoresizingMaskIntoConstraints = false
-        titleRow.addSubview(titleLabel)
-        titleRow.addSubview(buttons)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: titleRow.leadingAnchor),
-            titleLabel.centerYAnchor.constraint(equalTo: titleRow.centerYAnchor),
-            titleLabel.trailingAnchor.constraint(
-                lessThanOrEqualTo: buttons.leadingAnchor, constant: -6
-            ),
-            buttons.trailingAnchor.constraint(equalTo: titleRow.trailingAnchor),
-            buttons.centerYAnchor.constraint(equalTo: titleRow.centerYAnchor),
-            buttons.topAnchor.constraint(equalTo: titleRow.topAnchor),
-            buttons.bottomAnchor.constraint(equalTo: titleRow.bottomAnchor),
-        ])
+        // No buttons in this row any more: collapse-all, expand-all and the
+        // rail toggle live together in the title band, hosted by
+        // `MainViewController` — the band is window chrome and survives this
+        // whole view collapsing. The header is text and nothing else.
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let header = NSStackView(views: [titleRow, metaLabel])
+        let header = NSStackView(views: [titleLabel, metaLabel])
         header.orientation = .vertical
         header.alignment = .leading
         header.spacing = 3
         header.translatesAutoresizingMaskIntoConstraints = false
-        titleRow.widthAnchor.constraint(equalTo: header.widthAnchor).isActive = true
+        titleLabel.widthAnchor.constraint(equalTo: header.widthAnchor).isActive = true
 
         headerSeparator.boxType = .separator
         headerSeparator.translatesAutoresizingMaskIntoConstraints = false
@@ -344,9 +300,6 @@ final class ConversationSidebarView: NSView {
         emptyLabel.stringValue = isEmpty ? placeholder : ""
         emptyLabel.isHidden = !isEmpty
         scrollView.isHidden = isEmpty
-        let hasContent = !isEmpty
-        collapseButton.isHidden = !hasContent
-        expandButton.isHidden = !hasContent
 
         rebuild()
     }
@@ -582,7 +535,9 @@ final class ConversationSidebarView: NSView {
         rebuild()
     }
 
-    @objc private func collapseAll() {
+    // Called by the band buttons `MainViewController` hosts; nothing inside
+    // this view triggers them any more.
+    func collapseAllTurns() {
         hasBeenTouched = true
         openTurns.removeAll()
         openSteps.removeAll()
@@ -590,7 +545,7 @@ final class ConversationSidebarView: NSView {
         scrollView.contentView.scroll(to: .zero)
     }
 
-    @objc private func expandAll() {
+    func expandAllTurns() {
         hasBeenTouched = true
         guard let conversation else { return }
         openTurns = Set(turns(of: conversation).map(\.id))
@@ -606,8 +561,6 @@ final class ConversationSidebarView: NSView {
         titleLabel.textColor = theme.faintText
         metaLabel.textColor = theme.faintText
         emptyLabel.textColor = theme.faintText
-        collapseButton.contentTintColor = theme.faintText
-        expandButton.contentTintColor = theme.faintText
         stickyHeader.applyChromeTheme()
         rebuild()
     }
@@ -1138,7 +1091,11 @@ private final class TitleDragStrip: NSView {
 /// rows here answer no because `ClickableView` says so; a plain `NSButton`
 /// whose image view is what gets hit does not, so collapse-all and expand-all
 /// silently dragged the window instead of firing. Verified by clicking them.
-private final class RailButton: NSButton {
+///
+/// Not private: `MainViewController`'s corner toggle sits in the title band —
+/// the one strip of this window that exists to drag it — so it needs this
+/// exact override for the same reason.
+final class RailButton: NSButton {
     override var mouseDownCanMoveWindow: Bool { false }
 }
 
