@@ -51,6 +51,85 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var gitAutoFetchMinutes: Int
     @Published private(set) var hidesConversationWithoutAgent: Bool
 
+    // ─── Remote hosts (Behaviour page) ───────────────────────────────────────
+
+    /// Wired by `AppDelegate` once the hosts exist. A closure because the
+    /// settings window outlives nothing — it is made on demand — while the
+    /// hosts live for the run.
+    nonisolated(unsafe) static var remoteHostsProvider: (@MainActor () -> [HostContext])?
+
+    struct RemoteSetupRow: Identifiable {
+        let id: String
+        let name: String
+        var hookState = RemoteAgentSetup.State.unknown
+        var statusLineState = RemoteAgentSetup.State.unknown
+        var wrapped: String?
+        var message: String?
+        var failed = false
+        var busy = false
+    }
+
+    @Published private(set) var remoteSetups: [RemoteSetupRow] = []
+
+    private func remoteHosts() -> [HostContext] {
+        (Self.remoteHostsProvider?() ?? []).filter { !$0.isLocal }
+    }
+
+    func refreshRemoteSetups() {
+        let hosts = remoteHosts()
+        if remoteSetups.map(\.id) != hosts.map(\.id) {
+            remoteSetups = hosts.map { RemoteSetupRow(id: $0.id, name: $0.displayName) }
+        }
+        for host in hosts {
+            guard let setup = host.agentSetup else { continue }
+            setup.onChange = { [weak self, weak setup] in
+                guard let self, let setup else { return }
+                self.updateRow(host.id) { row in
+                    row.hookState = setup.hookState
+                    row.statusLineState = setup.statusLineState
+                    row.wrapped = setup.statusLineWrapped
+                }
+            }
+            setup.refreshState()
+        }
+    }
+
+    private func updateRow(_ id: String, _ mutate: (inout RemoteSetupRow) -> Void) {
+        guard let index = remoteSetups.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&remoteSetups[index])
+    }
+
+    func installRemoteSetup(hostID: String) {
+        runRemoteSetup(hostID: hostID) { $0.install(completion: $1) }
+    }
+
+    func uninstallRemoteSetup(hostID: String) {
+        runRemoteSetup(hostID: hostID) { $0.uninstall(completion: $1) }
+    }
+
+    private func runRemoteSetup(
+        hostID: String,
+        _ action: (RemoteAgentSetup, @escaping @MainActor (Result<String, Error>) -> Void) -> Void
+    ) {
+        guard let setup = remoteHosts().first(where: { $0.id == hostID })?.agentSetup,
+              remoteSetups.first(where: { $0.id == hostID })?.busy != true
+        else { return }
+        updateRow(hostID) { $0.busy = true; $0.message = nil }
+        action(setup) { [weak self] result in
+            self?.updateRow(hostID) { row in
+                row.busy = false
+                switch result {
+                case .success(let message):
+                    row.message = message
+                    row.failed = false
+                case .failure(let error):
+                    row.message = error.localizedDescription
+                    row.failed = true
+                }
+            }
+        }
+    }
+
     // ─── Agent hook (Behaviour page) ─────────────────────────────────────────
     @Published private(set) var agentHookInstalled = AgentHookInstaller.isInstalled()
     /// Installed, but not what this version installs. See `isUpToDate`.

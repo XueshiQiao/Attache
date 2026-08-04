@@ -23,7 +23,7 @@ import Foundation
 /// the problem, not a silent fall-through to the default server: the person
 /// asked for a specific server, and quietly connecting to a different one
 /// invites destructive actions on the wrong sessions.
-enum TmuxSocket: Equatable {
+nonisolated enum TmuxSocket: Equatable {
     /// No flag: tmux resolves the socket from the environment.
     case standard
     /// `tmux -L <name>` — a socket name under tmux's own directory.
@@ -64,18 +64,6 @@ enum TmuxSocket: Equatable {
         case .standard: []
         case .label(let name): ["-L", name]
         case .path(let path): ["-S", path]
-        }
-    }
-
-    /// The same flags for the one consumer that is a shell line rather than
-    /// argv: the embedded terminal's `command`. Single-quoted, and safe only
-    /// because `parse` refused values carrying a quote. Ends with a space
-    /// when non-empty so call sites splice it in front of the command word.
-    var shellFragment: String {
-        switch self {
-        case .standard: ""
-        case .label(let name): "-L '\(name)' "
-        case .path(let path): "-S '\(path)' "
         }
     }
 

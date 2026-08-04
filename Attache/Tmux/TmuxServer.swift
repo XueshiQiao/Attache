@@ -18,11 +18,17 @@ import Foundation
 /// connection costs a pipe; a surface costs GPU memory.
 @MainActor
 final class TmuxServer {
-    let tmuxPath: String
     /// Which server, fixed for the life of the app. Everything here is keyed
     /// by bare session ids, which are unique only within one server — so one
-    /// `TmuxServer` is one socket, and changing the setting means relaunching.
-    let socket: TmuxSocket
+    /// `TmuxServer` is one transport (one socket on one machine), and
+    /// changing the setting means relaunching.
+    let transport: TmuxTransport
+
+    /// The server's version, probed by `HostContext` before `start()`. What
+    /// it gates: reply-block decoding (3.5 escapes, 3.6 does not) and the
+    /// `refresh-client -B` subscriptions. nil means "never probed", which
+    /// only a caller that skipped `HostContext` can produce.
+    var tmuxVersion: TmuxVersion?
 
     /// tmux's session ids, in tmux's own order. The identity of a session
     /// everywhere in this app: a name is user text and any terminal can change
@@ -35,12 +41,16 @@ final class TmuxServer {
     /// list changes in a way the sidebar shows.
     var onChange: (() -> Void)?
 
-    init(tmuxPath: String, socket: TmuxSocket) {
-        self.tmuxPath = tmuxPath
-        self.socket = socket
+    init(transport: TmuxTransport) {
+        self.transport = transport
     }
 
     func start() {
+        // Resettable, which it did not use to be: a remote host's server is
+        // stopped whenever its ssh master drops and started again when the
+        // pre-flight recovers, so "stopped" is a phase now, not a terminal
+        // state. The local server still calls this once and never stops.
+        stopped = false
         refreshSessions()
     }
 
@@ -100,7 +110,7 @@ final class TmuxServer {
         // used to end the loop for good, since the re-ask is the only trigger
         // that does not need a connection.
         let listed: [TmuxSessionListing]
-        switch TmuxControlClient.listSessions(tmuxPath: tmuxPath, socket: socket) {
+        switch TmuxControlClient.listSessions(transport: transport) {
         case .failed(let message):
             TmuxLog.lifecycle("list-sessions failed, changing nothing: \(message)")
             // Retry unconditionally, not only when `connections` is empty:
@@ -120,10 +130,26 @@ final class TmuxServer {
         }
         sessionIDs = listed.map(\.id)
 
+        // A connection whose client has *exited* while its session lives on —
+        // an ssh channel dying under it is the common way — is dead weight the
+        // recreate loop below would otherwise skip forever: entries only leave
+        // this dictionary when their session leaves the listing.
+        for session in listed {
+            guard let existing = connections[session.id], !existing.clientIsRunning
+            else { continue }
+            TmuxLog.lifecycle(
+                "connection for \(session.id) has a dead client — remaking it",
+                session: existing.sessionName
+            )
+            existing.stop()
+            connections.removeValue(forKey: session.id)
+        }
+
         for session in listed where connections[session.id] == nil {
             let connection = TmuxSessionConnection(
-                tmuxPath: tmuxPath, socket: socket,
-                sessionID: session.id, sessionName: session.name
+                transport: transport,
+                sessionID: session.id, sessionName: session.name,
+                decodesOctalReplies: tmuxVersion?.escapesControlModeReplies ?? false
             )
             connection.addModelObserver { [weak self] in self?.onChange?() }
             connection.onServerSessionsChanged = { [weak self] in
@@ -177,7 +203,7 @@ final class TmuxServer {
         // Not sent through a control client, so it bypasses the logging choke
         // point in `TmuxControlClient.enqueue` and has to record itself.
         TmuxLog.command("new-session -d", session: "-")
-        if let problem = TmuxControlClient.createDetachedSession(tmuxPath: tmuxPath, socket: socket) {
+        if let problem = TmuxControlClient.createDetachedSession(transport: transport) {
             // A refused create used to go to /dev/null and read as the +
             // button doing nothing. tmux's own words, or there is nothing for
             // the user to act on.

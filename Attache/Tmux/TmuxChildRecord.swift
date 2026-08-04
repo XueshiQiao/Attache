@@ -28,24 +28,39 @@ struct TmuxChildRecord: Equatable {
     /// spawn byte-identical command lines against the same session ids. Pid plus
     /// start time can, because the pair is never reused.
     let startedAt: String
-    /// The session id the child attached to — `$34`.
+    /// The session id the child attached to — `$34`. For a child that is not
+    /// a control client (the ssh master), a label like `ssh-master`.
     let sessionID: String
 
-    /// `<owner> <child> <started> <session>` — one line, hand-readable on
-    /// purpose. After an incident this file is evidence, and evidence that needs
-    /// a parser is evidence nobody reads.
-    var line: String { "\(ownerPID) \(childPID) \(startedAt) \(sessionID)" }
+    /// The exact command line this app spawned, as `ps -o command=` prints it
+    /// back. New records carry it; records from builds before ssh support do
+    /// not, and fall back to the shape test in `shouldReclaim`. It exists
+    /// because the shape test cannot survive ssh: `argv[0]` is `ssh`, `-C` is
+    /// also ssh's compression flag, and the token after ssh's `-t` is a
+    /// hostname — every clause either fails or, loosened, starts matching
+    /// processes that are not ours. Byte equality has neither problem.
+    let commandLine: String?
+
+    /// `<owner> <child> <started> <session> [<command line…>]` — one line,
+    /// hand-readable on purpose. After an incident this file is evidence, and
+    /// evidence that needs a parser is evidence nobody reads. The command
+    /// line is last because it is the one field that contains spaces.
+    var line: String {
+        "\(ownerPID) \(childPID) \(startedAt) \(sessionID)"
+            + (commandLine.map { " \($0)" } ?? "")
+    }
 
     static func parse(line: String) -> TmuxChildRecord? {
-        let fields = line.split(separator: " ")
-        guard fields.count == 4,
+        let fields = line.split(separator: " ", maxSplits: 4)
+        guard fields.count >= 4,
               let owner = Int32(fields[0]),
               let child = Int32(fields[1]),
               !fields[2].isEmpty, !fields[3].isEmpty
         else { return nil }
         return TmuxChildRecord(
             ownerPID: owner, childPID: child,
-            startedAt: String(fields[2]), sessionID: String(fields[3])
+            startedAt: String(fields[2]), sessionID: String(fields[3]),
+            commandLine: fields.count == 5 ? String(fields[4]) : nil
         )
     }
 
@@ -88,6 +103,15 @@ struct TmuxChildRecord: Equatable {
         guard !ownerIsAlive, let child else { return false }
         guard child.startedAt == startedAt else { return false }
         guard child.parentPID == 1 else { return false }
+
+        // A record that knows its exact command line compares bytes and is
+        // done — the only test that works for the ssh children, whose argv
+        // defeats every clause of the shape test below (see `commandLine`).
+        // Start time and orphanhood still gate above: the byte-identical
+        // command of a second running copy of this app fails on those.
+        if let commandLine {
+            return child.commandLine == commandLine
+        }
 
         let tokens = child.commandLine.split(separator: " ").map(String.init)
         guard tokens.contains("-C"), tokens.contains("attach") else { return false }

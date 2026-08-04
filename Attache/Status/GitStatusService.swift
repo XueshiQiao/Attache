@@ -38,6 +38,16 @@ final class GitStatusService {
     /// reads every row anyway.
     var onChange: (() -> Void)?
 
+    /// Who actually looks at a disk. One service per host, each with the
+    /// backend that reaches that host's file system — handing this service a
+    /// remote pane's path with the local backend is how a path that exists
+    /// on both machines decorates a row with the wrong repository.
+    private let backend: GitStatusBackend
+
+    init(backend: GitStatusBackend) {
+        self.backend = backend
+    }
+
     /// How long after a filesystem event to actually look. Long enough that a
     /// `git checkout` writing hundreds of files is one read rather than
     /// hundreds, short enough that it still feels immediate.
@@ -46,7 +56,6 @@ final class GitStatusService {
     private static let backstop: TimeInterval = 30
     /// Past this, a repository is treated as expensive and backed off.
     private static let slowRead: TimeInterval = 0.25
-    private static let concurrency = 4
 
     /// Cached `pane_current_path` → repository root. The mapping never changes
     /// for a given path, and resolving it costs its own `git` process — 76ms
@@ -83,7 +92,6 @@ final class GitStatusService {
     private var lastReadFinished = [String: Date]()
     private static let quietAfterRead: TimeInterval = 1.5
 
-    private var watchers = [String: DispatchSourceFileSystemObject]()
     private var debounceWork = [String: DispatchWorkItem]()
     /// Backstop multiplier for repositories that read slowly. 1 for everything
     /// until proven otherwise.
@@ -104,13 +112,6 @@ final class GitStatusService {
     /// Suspended while nobody can see the rail. There is no point reading a
     /// repository to draw it into a window that is not on screen.
     private var isPaused = false
-
-    private let queue: OperationQueue = {
-        let queue = OperationQueue()
-        queue.maxConcurrentOperationCount = GitStatusService.concurrency
-        queue.qualityOfService = .utility
-        return queue
-    }()
 
     // MARK: - What the rail asks
 
@@ -208,6 +209,7 @@ final class GitStatusService {
     func setPaused(_ paused: Bool) {
         guard paused != isPaused else { return }
         isPaused = paused
+        backend.setPaused(paused)
         if paused {
             backstopTimer?.invalidate()
             backstopTimer = nil
@@ -236,22 +238,45 @@ final class GitStatusService {
             // recorded at all.
             rootByPath.updateValue(nil, forKey: path)
             resolving.insert(path)
-            queue.addOperation { [weak self] in
-                let root = GitStatus.repositoryRoot(containing: path)
-                Task { @MainActor in
-                    guard let self else { return }
+            backend.resolve(path: path) { [weak self] answer in
+                guard let self else { return }
+                self.resolving.remove(path)
+                switch answer {
+                case .unavailable:
+                    // Never cached: the claim comes off so the next rebuild
+                    // asks again, and `isKnownNotARepository` stays false —
+                    // "could not ask" must not draw as "not a repository".
+                    self.rootByPath.removeValue(forKey: path)
+                case .notARepository:
+                    self.rootByPath.updateValue(nil, forKey: path)
+                    // Now answerable, and the answer changes what the row
+                    // draws — from blank to the directory it is sitting in.
+                    self.onChange?()
+                case .root(let root, let carried):
                     self.rootByPath.updateValue(root, forKey: path)
-                    self.resolving.remove(path)
-                    guard let root else {
-                        // Now answerable, and the answer changes what the row
-                        // draws — from blank to the directory it is sitting in.
-                        self.onChange?()
-                        return
-                    }
                     if self.visibleRoots.insert(root).inserted {
                         self.startWatching(root)
                     }
-                    self.refresh(root: root)
+                    // The remote backend answers root and status in one
+                    // round trip; storing the ride-along saves the second.
+                    if let carried {
+                        self.lastReadFinished[root] = Date()
+                        if self.summaryByRoot[root] != carried {
+                            // The same once-per-root line the read path logs,
+                            // because this *is* that first answer arriving.
+                            if self.summaryByRoot[root] == nil {
+                                TmuxLog.lifecycle(
+                                    "git: \(root) — \(carried.displayRef),"
+                                        + " +\(carried.staged) ~\(carried.modified)"
+                                        + " ?\(carried.untracked) (with root resolution)"
+                                )
+                            }
+                            self.summaryByRoot[root] = carried
+                            self.onChange?()
+                        }
+                    } else {
+                        self.refresh(root: root)
+                    }
                 }
             }
         }
@@ -271,51 +296,51 @@ final class GitStatusService {
         }
         reading.insert(root)
 
-        queue.addOperation { [weak self] in
-            let started = Date()
-            let result = Result { try GitStatus.read(root: root) }
+        let started = Date()
+        backend.read(root: root) { [weak self] answer in
+            guard let self else { return }
             let elapsed = Date().timeIntervalSince(started)
+            self.reading.remove(root)
+            self.lastReadFinished[root] = Date()
+            if self.backend.measuresReadCost { self.noteReadCost(elapsed, root: root) }
 
-            Task { @MainActor in
-                guard let self else { return }
-                self.reading.remove(root)
-                self.lastReadFinished[root] = Date()
-                self.noteReadCost(elapsed, root: root)
-
-                switch result {
-                case .success(let summary):
-                    if self.summaryByRoot[root] != summary {
-                        // Once per repository per run, on the read that first
-                        // produces an answer. Not tidiness: a row drawing
-                        // nothing looks the same whether the repository is
-                        // clean, the read failed, or the path never resolved,
-                        // and this is the only place those come apart.
-                        if self.summaryByRoot[root] == nil {
-                            TmuxLog.lifecycle(
-                                "git: \(root) — \(summary.displayRef),"
-                                    + " +\(summary.staged) ~\(summary.modified)"
-                                    + " ?\(summary.untracked)"
-                                    + (summary.hasUpstream
-                                        ? " ↑\(summary.ahead) ↓\(summary.behind)"
-                                        : " (no upstream)")
-                                    + " in \(Int(elapsed * 1000))ms"
-                            )
-                        }
-                        self.summaryByRoot[root] = summary
-                        self.onChange?()
+            switch answer {
+            case .summary(let summary):
+                if self.summaryByRoot[root] != summary {
+                    // Once per repository per run, on the read that first
+                    // produces an answer. Not tidiness: a row drawing
+                    // nothing looks the same whether the repository is
+                    // clean, the read failed, or the path never resolved,
+                    // and this is the only place those come apart.
+                    if self.summaryByRoot[root] == nil {
+                        TmuxLog.lifecycle(
+                            "git: \(root) — \(summary.displayRef),"
+                                + " +\(summary.staged) ~\(summary.modified)"
+                                + " ?\(summary.untracked)"
+                                + (summary.hasUpstream
+                                    ? " ↑\(summary.ahead) ↓\(summary.behind)"
+                                    : " (no upstream)")
+                                + " in \(Int(elapsed * 1000))ms"
+                        )
                     }
-                case .failure:
-                    // A repository that stopped being one — deleted, or a
-                    // worktree removed. Drop it rather than keeping the last
-                    // good answer on screen, which would be a row describing
-                    // something that no longer exists.
-                    if self.summaryByRoot.removeValue(forKey: root) != nil {
-                        self.onChange?()
-                    }
+                    self.summaryByRoot[root] = summary
+                    self.onChange?()
                 }
-
-                if self.againAfter.remove(root) != nil { self.refresh(root: root) }
+            case .gone:
+                // A repository that stopped being one — deleted, or a
+                // worktree removed. Drop it rather than keeping the last
+                // good answer on screen, which would be a row describing
+                // something that no longer exists.
+                if self.summaryByRoot.removeValue(forKey: root) != nil {
+                    self.onChange?()
+                }
+            case .unavailable:
+                // Could not ask. The last summary stays: recent beats blank,
+                // and the host row is already saying why nothing is moving.
+                break
             }
+
+            if self.againAfter.remove(root) != nil { self.refresh(root: root) }
         }
     }
 
@@ -343,28 +368,13 @@ final class GitStatusService {
     /// seen by the backstop rather than immediately, which is the right trade:
     /// the numbers that change on an edit are the least urgent thing on the row.
     private func startWatching(_ root: String) {
-        guard watchers[root] == nil else { return }
-        let path = URL(fileURLWithPath: root).appendingPathComponent(".git").path
-        let descriptor = open(path, O_EVTONLY)
-        guard descriptor >= 0 else { return }
-
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: descriptor,
-            eventMask: [.write, .rename, .delete, .attrib],
-            queue: .global(qos: .utility)
-        )
-        source.setEventHandler { [weak self] in
-            Task { @MainActor in self?.scheduleDebounced(root) }
+        backend.startWatching(root: root) { [weak self] in
+            self?.scheduleDebounced(root)
         }
-        // The descriptor belongs to the source, and closing it anywhere else is
-        // a use-after-close the moment an event is already in flight.
-        source.setCancelHandler { close(descriptor) }
-        source.resume()
-        watchers[root] = source
     }
 
     private func stopWatching(_ root: String) {
-        watchers.removeValue(forKey: root)?.cancel()
+        backend.stopWatching(root: root)
         debounceWork.removeValue(forKey: root)?.cancel()
     }
 
@@ -425,21 +435,17 @@ final class GitStatusService {
             where !fetchRefused.contains(root) && !fetching.contains(root)
         {
             fetching.insert(root)
-            queue.addOperation { [weak self] in
-                let result = Result { try GitStatus.fetch(root: root) }
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.fetching.remove(root)
-                    switch result {
-                    case .success:
-                        // The refs moved, so the ahead/behind pair did too.
-                        self.refresh(root: root)
-                    case .failure:
-                        self.fetchRefused.insert(root)
-                        TmuxLog.lifecycle(
-                            "git fetch refused in \(root) — not asking again this run"
-                        )
-                    }
+            backend.fetch(root: root) { [weak self] succeeded in
+                guard let self else { return }
+                self.fetching.remove(root)
+                if succeeded {
+                    // The refs moved, so the ahead/behind pair did too.
+                    self.refresh(root: root)
+                } else {
+                    self.fetchRefused.insert(root)
+                    TmuxLog.lifecycle(
+                        "git fetch refused in \(root) — not asking again this run"
+                    )
                 }
             }
         }
@@ -459,9 +465,10 @@ final class GitStatusService {
     }
 
     deinit {
-        // `watchers` cannot be touched from a non-isolated deinit, and the
-        // sources hold the only reference to their descriptors — so they are
-        // cancelled by the process ending, which is the only way this object
-        // ever goes away. Recorded rather than left as an apparent leak.
+        // The backend's watchers cannot be touched from a non-isolated
+        // deinit, and the kqueue sources hold the only reference to their
+        // descriptors — so they are cancelled by the process ending, which is
+        // the only way this object ever goes away. Recorded rather than left
+        // as an apparent leak.
     }
 }

@@ -77,6 +77,13 @@ final class EmbeddedSessionViewController: NSViewController {
     /// cares.
     private let statusAtTop: Bool
 
+    /// The machine this session lives on: its transport built the attach
+    /// command above, and its helper is what a ⌘-click's existence checks go
+    /// through — the local disk must be unreachable for a remote pane's
+    /// paths, because a path that exists on both machines is the wrong file
+    /// with the right name.
+    private let host: HostContext
+
     /// Set from the surface's own resize callback, which is the only place a
     /// cell height can be had — it is font-derived, so it does not move unless
     /// the font does, and the overhang constraint below can safely depend on
@@ -89,14 +96,16 @@ final class EmbeddedSessionViewController: NSViewController {
     private var overhang: NSLayoutConstraint?
 
 
-    init(model: SessionModel, tmuxPath: String, socket: TmuxSocket) {
+    init(model: SessionModel, host: HostContext) {
         self.model = model
+        self.host = host
+        let transport = host.transport
         let connection = model.connection
         statusRows = TmuxStatusOption.lines(
-            tmuxPath: tmuxPath, socket: socket, sessionID: connection.sessionID
+            transport: transport, sessionID: connection.sessionID
         )
         statusAtTop = TmuxStatusOption.isAtTop(
-            tmuxPath: tmuxPath, socket: socket, sessionID: connection.sessionID
+            transport: transport, sessionID: connection.sessionID
         )
 
         let base = TerminalConfiguration(startingFrom: .default) { builder in
@@ -104,19 +113,16 @@ final class EmbeddedSessionViewController: NSViewController {
             builder.withCustom("window-padding-x", "0")
             builder.withCustom("window-padding-y", "0")
             builder.withCustom("window-padding-balance", "false")
-            // Single-quoted, and that is not decoration: ghostty hands this
-            // value to `/bin/sh -c`, and a session id *is* `$N` — unquoted,
-            // the shell expands `$34` to nothing and the attach silently
-            // targets whatever is current. A tmux id matches `[$@%]\d+` and so
-            // cannot carry a quote of its own, which is what makes quoting it
-            // safe rather than merely hopeful — the same reason this project
-            // targets tmux by id everywhere.
-            // The socket fragment rides in front of the command word, quoted
-            // the same way and safe for the same reason: `TmuxSocket.parse`
-            // refuses values carrying a quote or a control character.
+            // The transport renders this line, and the quoting in it is not
+            // decoration: ghostty hands the value to `/bin/sh -c`, a remote
+            // attach adds ssh's own join-and-reparse on top, and a session id
+            // *is* `$N` — each unquoted layer is a shell that expands it to
+            // nothing, so the attach silently targets whatever is current.
+            // `TransportCheck` executes this rendering through both shells
+            // and compares the argv that comes out the far end.
             builder.withCustom(
                 "command",
-                "\(tmuxPath) \(socket.shellFragment)attach -t '\(connection.sessionID)'"
+                transport.attachShellCommand(sessionID: connection.sessionID)
             )
             // An attach that fails prints one line and exits; without this the
             // surface tears down before anyone can read it.
@@ -385,6 +391,11 @@ final class EmbeddedSessionViewController: NSViewController {
         // window list lags the screen by a notification and a round trip.
         let cell = cell(at: press)
 
+        guard host.transport.pathsAreLocal else {
+            openRemoteLink(raw, cell: cell)
+            return
+        }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let direct = TerminalLinkTarget.resolve(raw, cwd: nil, existence: Self.existence)
             // A URL or an absolute path is already answerable, so it opens
@@ -411,6 +422,61 @@ final class EmbeddedSessionViewController: NSViewController {
                     }
                 }
             }
+        }
+    }
+
+    /// The remote shape of the same two-step: URLs and absolute paths first,
+    /// a tmux ask only for a relative match — but every existence answer
+    /// comes from the pane's machine, in one classification round trip.
+    private func openRemoteLink(_ raw: String, cell: (column: Int, row: Int)?) {
+        guard let helper = host.helper else {
+            connection.showStatusMessage("Attaché: can't reach \(host.displayName) right now")
+            return
+        }
+        RemoteLinkResolver.resolve(raw: raw, cwd: nil, helper: helper) { [weak self] first in
+            guard let self else { return }
+            guard let first else {
+                self.connection.showStatusMessage(
+                    "Attaché: can't reach \(self.host.displayName) right now"
+                )
+                return
+            }
+            guard first == .unsupported, let cell else {
+                self.performRemote(first, raw: raw)
+                return
+            }
+            self.connection.workingDirectory(atColumn: cell.column, row: cell.row) { cwd in
+                RemoteLinkResolver.resolve(raw: raw, cwd: cwd, helper: helper) { [weak self] target in
+                    guard let self else { return }
+                    guard let target else {
+                        self.connection.showStatusMessage(
+                            "Attaché: can't reach \(self.host.displayName) right now"
+                        )
+                        return
+                    }
+                    self.performRemote(target, raw: raw)
+                }
+            }
+        }
+    }
+
+    private func performRemote(_ target: TerminalLinkTarget, raw: String) {
+        switch target {
+        case let .url(url):
+            // A URL is machine-independent; the person's browser is here.
+            NSWorkspace.shared.open(url)
+        case let .directory(path), let .file(path):
+            RemoteOpener.open(
+                path: path,
+                host: host.displayName,
+                destination: host.transport.ssh?.destination ?? host.displayName,
+                template: host.config?.remoteOpenCommand,
+                status: { [weak self] message in self?.connection.showStatusMessage(message) }
+            )
+        case let .missing(path):
+            connection.showStatusMessage("Attaché: no such path on \(host.displayName) — \(path)")
+        case .unsupported:
+            connection.showStatusMessage("Attaché: not a path this app can open — \(raw)")
         }
     }
 

@@ -107,8 +107,15 @@ enum AgentHookInstaller {
     /// bundle, and kept readable, because it runs on every hook event of every
     /// Claude Code session on this machine. Somebody should be able to read
     /// exactly what that is without unpacking an app.
+    /// Bumped when `script` changes meaningfully. Locally the script is
+    /// rewritten on every install so nothing reads this; remotely it is the
+    /// one line a state check can read without shipping the whole script
+    /// over for comparison — see `RemoteAgentSetup`.
+    static let scriptVersion = 1
+
     static let script = #"""
     #!/bin/sh
+    # attache-hook-version: 1
     # Attaché — reports the agent's state into tmux, where the sidebar reads it.
     #
     # Installed by Attaché (Settings -> Behaviour -> Agent status). Remove it
@@ -211,7 +218,7 @@ enum AgentHookInstaller {
     /// Whether our hook is already registered for at least one event.
     static func isInstalled() -> Bool {
         guard let settings = try? loadSettings() else { return false }
-        return !ourCommands(in: settings).isEmpty
+        return !ourCommands(in: settings, scriptPath: scriptURL.path).isEmpty
     }
 
     /// Whether what is installed matches *this* version's definition.
@@ -230,7 +237,10 @@ enum AgentHookInstaller {
     /// Order-independent structural comparison. `JSONSerialization` hands back
     /// dictionaries, so `==` is unavailable and comparing encoded bytes would
     /// fail on key order alone.
-    private nonisolated static func same(_ a: Any?, _ b: Any?) -> Bool {
+    // Non-private for the same reason the file I/O quartet is: the remote
+    // installer asks "is what is there already what an install would write"
+    // and must not grow its own structural compare to drift.
+    nonisolated static func same(_ a: Any?, _ b: Any?) -> Bool {
         switch (a, b) {
         case (nil, nil): true
         case let (x as [String: Any], y as [String: Any]):
@@ -259,7 +269,7 @@ enum AgentHookInstaller {
                 guard let groups = value as? [[String: Any]] else { continue }
                 for group in groups {
                     guard let entries = group["hooks"] as? [[String: Any]] else { continue }
-                    for entry in entries where isOurs(entry) {
+                    for entry in entries where isOurs(entry, scriptPath: scriptURL.path) {
                         let matcher = (group["matcher"] as? String).map { " [\($0)]" } ?? ""
                         removals.append("  \(event)\(matcher)")
                     }
@@ -270,10 +280,10 @@ enum AgentHookInstaller {
         var additions = [String: Any]()
         let pristine = unmerge(fromSettings: settings)
         for (event, matcher, state) in events
-            where !hasOurHook(for: event, matcher: matcher, in: pristine)
+            where !hasOurHook(for: event, matcher: matcher, in: pristine, scriptPath: scriptURL.path)
         {
             var groups = (additions[event] as? [[String: Any]]) ?? []
-            groups.append(hookGroup(state: state, matcher: matcher))
+            groups.append(hookGroup(state: state, matcher: matcher, scriptPath: scriptURL.path))
             additions[event] = groups
         }
         guard !additions.isEmpty || !removals.isEmpty else { return "" }
@@ -340,40 +350,47 @@ enum AgentHookInstaller {
 
     /// One entry, in the shape Claude Code's settings use: an event maps to a
     /// list of groups, each holding a list of commands.
-    private static func hookGroup(state: String, matcher: String?) -> [String: Any] {
+    private static func hookGroup(
+        state: String, matcher: String?, scriptPath: String
+    ) -> [String: Any] {
         var group: [String: Any] = [
-            "hooks": [["type": "command", "command": "\(scriptURL.path) \(state)"]],
+            "hooks": [["type": "command", "command": "\(scriptPath) \(state)"]],
         ]
         if let matcher { group["matcher"] = matcher }
         return group
     }
 
-    private nonisolated static func isOurs(_ entry: [String: Any]) -> Bool {
-        (entry["command"] as? String)?.contains(scriptURL.path) == true
+    private nonisolated static func isOurs(_ entry: [String: Any], scriptPath: String) -> Bool {
+        (entry["command"] as? String)?.contains(scriptPath) == true
     }
 
     /// The matcher is part of the identity. `Notification` legitimately carries
     /// two of ours — one for the kinds that mean "blocked", one for the idle
     /// nudge — so "is ours already here" has to ask about the specific one.
+    /// The matcher is part of the identity. `Notification` legitimately carries
+    /// two of ours — one for the kinds that mean "blocked", one for the idle
+    /// nudge — so "is ours already here" has to ask about the specific one.
     private static func hasOurHook(
-        for event: String, matcher: String?, in settings: [String: Any]
+        for event: String, matcher: String?, in settings: [String: Any], scriptPath: String
     ) -> Bool {
         guard let hooks = settings["hooks"] as? [String: Any],
               let groups = hooks[event] as? [[String: Any]] else { return false }
         return groups.contains { group in
-            guard (group["hooks"] as? [[String: Any]])?.contains(where: isOurs) == true
+            guard (group["hooks"] as? [[String: Any]])?
+                .contains(where: { isOurs($0, scriptPath: scriptPath) }) == true
             else { return false }
             return (group["matcher"] as? String) == matcher
         }
     }
 
-    private static func ourCommands(in settings: [String: Any]) -> [String] {
+    private static func ourCommands(in settings: [String: Any], scriptPath: String) -> [String] {
         guard let hooks = settings["hooks"] as? [String: Any] else { return [] }
         return hooks.values.flatMap { value -> [String] in
             guard let groups = value as? [[String: Any]] else { return [] }
             return groups.flatMap { group -> [String] in
                 guard let entries = group["hooks"] as? [[String: Any]] else { return [] }
-                return entries.filter(isOurs).compactMap { $0["command"] as? String }
+                return entries.filter { isOurs($0, scriptPath: scriptPath) }
+                    .compactMap { $0["command"] as? String }
             }
         }
     }
@@ -393,14 +410,20 @@ enum AgentHookInstaller {
     ///
     /// Only entries naming our script are touched, so this is still an append
     /// as far as every other tool in the file is concerned.
-    static func merge(intoSettings settings: [String: Any]) -> [String: Any] {
-        var settings = unmerge(fromSettings: settings)
+    /// `scriptPath` defaults to this machine's install location; the remote
+    /// install passes the *other* machine's, because the entries it writes
+    /// must name the script where that machine's agents will find it.
+    static func merge(
+        intoSettings settings: [String: Any], scriptPath: String? = nil
+    ) -> [String: Any] {
+        let path = scriptPath ?? scriptURL.path
+        var settings = unmerge(fromSettings: settings, scriptPath: path)
         var hooks = (settings["hooks"] as? [String: Any]) ?? [:]
-        // No `hasOurHook` check: `unmerge` above removed every one of ours, so
-        // there is nothing left for it to find.
+        // No "already there" check: `unmerge` above removed every one of
+        // ours, so there is nothing left for it to find.
         for (event, matcher, state) in events {
             var groups = (hooks[event] as? [[String: Any]]) ?? []
-            groups.append(hookGroup(state: state, matcher: matcher))
+            groups.append(hookGroup(state: state, matcher: matcher, scriptPath: path))
             hooks[event] = groups
         }
         settings["hooks"] = hooks
@@ -408,14 +431,17 @@ enum AgentHookInstaller {
     }
 
     /// The inverse, for the same reason.
-    static func unmerge(fromSettings settings: [String: Any]) -> [String: Any] {
+    static func unmerge(
+        fromSettings settings: [String: Any], scriptPath: String? = nil
+    ) -> [String: Any] {
+        let path = scriptPath ?? scriptURL.path
         var settings = settings
         guard var hooks = settings["hooks"] as? [String: Any] else { return settings }
         for (event, _, _) in events {
             guard var groups = hooks[event] as? [[String: Any]] else { continue }
             groups = groups.compactMap { group in
                 guard var entries = group["hooks"] as? [[String: Any]] else { return group }
-                entries.removeAll { isOurs($0) }
+                entries.removeAll { isOurs($0, scriptPath: path) }
                 guard !entries.isEmpty else { return nil }
                 var kept = group
                 kept["hooks"] = entries

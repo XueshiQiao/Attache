@@ -67,7 +67,7 @@
                 )
             }
             return TmuxReport(
-                tmuxPath: main.server.tmuxPath,
+                tmuxPath: main.server.transport.summary,
                 shownSession: main.debugShownSessionName,
                 sessionControllers: main.debugSessionControllerNames,
                 sessions: main.debugSessionReports()

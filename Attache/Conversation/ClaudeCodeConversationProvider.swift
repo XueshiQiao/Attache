@@ -43,6 +43,34 @@ import Foundation
 struct ClaudeCodeConversationProvider: AgentConversationProvider {
     let agent = "claude"
 
+    /// Prefixed onto locator keys so one path on two machines is two
+    /// locators; empty for the local machine, whose keys predate hosts.
+    private let hostPrefix: String
+    /// Whether the transcript is worth following. Local answers with a stat;
+    /// remote answers `true` *optimistically*, because `locate` runs on the
+    /// main actor by design (see `AgentConversationProvider`) and a round
+    /// trip does not belong there — a remote path that turns out absent
+    /// renders as the empty conversation its placeholder already covers.
+    private let transcriptExists: (String) -> Bool
+    private let sourceFactory: (String) -> AgentConversationSource
+
+    /// The local machine's provider — the shape this file always had.
+    init() {
+        hostPrefix = ""
+        transcriptExists = { FileManager.default.fileExists(atPath: $0) }
+        sourceFactory = { ClaudeCodeConversationSource(path: $0) }
+    }
+
+    /// A remote machine's provider: same evidence, same parsing, but the
+    /// bytes arrive over the helper channel and no local path is ever
+    /// consulted — a transcript path that exists on both machines is the
+    /// wrong conversation with the right name.
+    init(remoteHostID: String, helper: RemoteHelper) {
+        hostPrefix = remoteHostID + "\u{01}"
+        transcriptExists = { _ in true }
+        sourceFactory = { RemoteClaudeCodeConversationSource(helper: helper, path: $0) }
+    }
+
     func locate(_ evidence: AgentPaneEvidence) -> AgentConversationLocator? {
         // **Liveness before anything else, and this is not defensive coding.**
         // Every field of the evidence is a tmux pane option, and a pane option
@@ -60,14 +88,14 @@ struct ClaudeCodeConversationProvider: AgentConversationProvider {
         guard kind == agent else { return nil }
 
         guard let path = Self.transcriptPath(fromStatusPayload: evidence.statusPayload),
-              FileManager.default.fileExists(atPath: path)
+              transcriptExists(path)
         else { return nil }
 
-        return AgentConversationLocator(agent: agent, key: path)
+        return AgentConversationLocator(agent: agent, key: hostPrefix + path)
     }
 
     func makeSource(for locator: AgentConversationLocator) -> AgentConversationSource {
-        ClaudeCodeConversationSource(path: locator.key)
+        sourceFactory(String(locator.key.dropFirst(hostPrefix.count)))
     }
 
     /// Pull `transcript_path` out of the raw `@agent_stat` value.
@@ -99,6 +127,40 @@ struct ClaudeCodeConversationProvider: AgentConversationProvider {
 /// parsing. What is *published* is still a whole snapshot, because that is what
 /// lets a source whose file was rewritten in place stay correct; see
 /// `AgentConversation`.
+/// The parsing half both sources share: JSONL lines in, a publishable
+/// conversation out. Split from the byte transport because the local and
+/// remote sources differ *only* in where bytes come from, and two copies of
+/// the record parsing is how they drift.
+private struct ClaudeConversationAccumulator {
+    private(set) var messages = [AgentMessage]()
+    private(set) var conversationID: String?
+
+    mutating func reset() {
+        messages.removeAll()
+        conversationID = nil
+    }
+
+    mutating func append(line: Data) {
+        guard !line.isEmpty,
+              let root = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any]
+        else { return }
+
+        if conversationID == nil, let id = root["sessionId"] as? String, !id.isEmpty {
+            conversationID = id
+        }
+        if let message = ClaudeTranscript.message(fromRecord: root) { messages.append(message) }
+    }
+
+    func snapshot(fallbackID: String) -> AgentConversation {
+        AgentConversation(
+            id: conversationID ?? fallbackID,
+            agent: "claude",
+            title: messages.first(where: { $0.author == .user })?.markdown,
+            messages: messages
+        )
+    }
+}
+
 private final class ClaudeCodeConversationSource: AgentConversationSource {
     var onSnapshot: ((AgentConversation) -> Void)?
 
@@ -111,8 +173,7 @@ private final class ClaudeCodeConversationSource: AgentConversationSource {
     /// split-record cases can be checked with no disk — see
     /// `Tools/TranscriptTailCheck`.
     private var tail = TranscriptTail()
-    private var messages = [AgentMessage]()
-    private var conversationID: String?
+    private var accumulated = ClaudeConversationAccumulator()
 
     init(path: String) {
         self.path = path
@@ -157,39 +218,115 @@ private final class ClaudeCodeConversationSource: AgentConversationSource {
         // replacement is usually a different session, and keeping the old id
         // would make `ConversationController` treat it as growth and carry the
         // reader's open turns across into a conversation they never opened.
-        if step.didReset {
-            messages.removeAll()
-            conversationID = nil
-        }
-        for line in step.lines { append(line: line) }
+        if step.didReset { accumulated.reset() }
+        for line in step.lines { accumulated.append(line: line) }
 
         // **Publish on a reset even with nothing to show.** A file truncated to
         // empty produces no lines, and a publish gated on having some would
         // never fire — leaving the sidebar displaying the whole conversation
         // that was just thrown away. Found by review 2026-08-01.
         guard step.didReset || !step.lines.isEmpty else { return }
+        let snapshot = accumulated.snapshot(fallbackID: path)
+        guard let onSnapshot else { return }
+        DispatchQueue.main.async { onSnapshot(snapshot) }
+    }
+}
+
+// MARK: -
+
+/// The same transcript followed over the helper channel: one `STATTAIL` per
+/// second while the rail is visible, `TranscriptTail` deciding what the
+/// answer means exactly as it does locally — identity and reader are already
+/// injected there, so the remote source is a ranged-read closure over the
+/// fetched window and nothing else. **Not `tail -F`**, and that is measured,
+/// not stylistic: an atomic replace and an in-place truncation both stream
+/// through `tail -F` with no marker of any kind, which is precisely the
+/// spliced-conversation defect `TranscriptTail`'s three reset tests exist to
+/// prevent — and streaming would starve all three of input.
+private final class RemoteClaudeCodeConversationSource: AgentConversationSource {
+    var onSnapshot: ((AgentConversation) -> Void)?
+
+    private let helper: RemoteHelper
+    private let path: String
+    private var tail = TranscriptTail()
+    private var accumulated = ClaudeConversationAccumulator()
+    private var timer: Timer?
+    private var inFlight = false
+    private var started = false
+
+    init(helper: RemoteHelper, path: String) {
+        self.helper = helper
+        self.path = path
+    }
+
+    func start() {
+        started = true
+        poll()
+        let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.poll() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func stop() {
+        started = false
+        timer?.invalidate()
+        timer = nil
+        onSnapshot = nil
+    }
+
+    @MainActor private func poll() {
+        guard started, !inFlight else { return }
+        inFlight = true
+        helper.statTail(path: path, fromOffset: tail.offset) { [weak self] outcome in
+            guard let self, self.started else { return }
+            self.inFlight = false
+            guard case .answered(let answer) = outcome else {
+                // Absent keeps the last snapshot, like a local file that went
+                // away mid-look; unavailable is the channel's problem and the
+                // host row is already saying so. Neither is "empty now".
+                return
+            }
+            self.consume(answer)
+        }
+    }
+
+    @MainActor private func consume(_ answer: RemoteStatTail) {
+        let window = answer.bytes
+        let windowStart = answer.start
+        let step = tail.advance(
+            size: answer.size,
+            identity: TranscriptTail.FileIdentity(device: answer.device, inode: answer.inode)
+        ) { offset, count in
+            // Answer only from the fetched window. After a reset the tail
+            // asks from 0, which an offset-anchored window cannot serve —
+            // the nil sends it back empty-handed and the immediate re-poll
+            // below fetches the file from the top.
+            guard offset >= windowStart,
+                  let from = Int(exactly: offset - windowStart), from <= window.count
+            else { return nil }
+            let take = min(count, window.count - from)
+            return window.subdata(in: from ..< from + take)
+        }
+
+        if step.didReset { accumulated.reset() }
+        for line in step.lines { accumulated.append(line: line) }
+
+        if step.didReset, windowStart > 0 {
+            // The file was replaced or truncated and the new content starts
+            // before our window. Publish the reset so nothing stale stays on
+            // screen, then go straight back for the bytes from zero.
+            publish()
+            inFlight = false
+            poll()
+            return
+        }
+        guard step.didReset || !step.lines.isEmpty else { return }
         publish()
     }
 
-    private func append(line: Data) {
-        guard !line.isEmpty,
-              let root = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any]
-        else { return }
-
-        if conversationID == nil, let id = root["sessionId"] as? String, !id.isEmpty {
-            conversationID = id
-        }
-        if let message = ClaudeTranscript.message(fromRecord: root) { messages.append(message) }
-    }
-
-    private func publish() {
-        let snapshot = AgentConversation(
-            id: conversationID ?? path,
-            agent: "claude",
-            title: messages.first(where: { $0.author == .user })?.markdown,
-            messages: messages
-        )
-        guard let onSnapshot else { return }
-        DispatchQueue.main.async { onSnapshot(snapshot) }
+    @MainActor private func publish() {
+        onSnapshot?(accumulated.snapshot(fallbackID: path))
     }
 }

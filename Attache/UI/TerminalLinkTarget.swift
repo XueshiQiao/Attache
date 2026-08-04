@@ -84,6 +84,43 @@ extension TerminalLinkTarget {
         return classify(absolutePath(for: text, cwd: cwd, home: home), existence: existence)
     }
 
+    /// Every path `resolve` could possibly ask `existence` about, in probe
+    /// order — the whole match first, then each space-cut prefix.
+    ///
+    /// This exists for the remote flow, whose `existence` cannot be a live
+    /// closure: a round trip per probe would put serial network waits behind
+    /// one click. Instead the candidates are enumerated here (no disk, pure),
+    /// classified in **one** helper round trip, and `resolve` then runs
+    /// against the answers as a lookup table — the decision table above does
+    /// not change by a byte, so `Tools/LinkTargetCheck` keeps covering it,
+    /// including the assertion that this list really does cover every probe.
+    static func candidatePaths(
+        _ raw: String, cwd: String?, home: String = NSHomeDirectory()
+    ) -> [String] {
+        let text = trimmed(raw)
+        guard !text.isEmpty else { return [] }
+        let base: String?
+        if let scheme = scheme(of: text) {
+            guard scheme == "file", let url = URL(string: text), url.isFileURL else { return [] }
+            base = url.path
+        } else {
+            base = absolutePath(for: text, cwd: cwd, home: home)
+        }
+        guard let path = base, !path.isEmpty else { return [] }
+
+        var candidates = [path]
+        // Mirrors `longestExistingPrefix` exactly, empties-stop included: it
+        // cuts the *uncleaned* text at each space and probes the cleaned form.
+        var candidate = path
+        while let space = candidate.lastIndex(of: " ") {
+            candidate = String(candidate[candidate.startIndex ..< space])
+            let cleaned = trimmed(candidate)
+            guard !cleaned.isEmpty else { break }
+            if !candidates.contains(cleaned) { candidates.append(cleaned) }
+        }
+        return candidates
+    }
+
     private static func classify(
         _ path: String?,
         existence: (String) -> Existence

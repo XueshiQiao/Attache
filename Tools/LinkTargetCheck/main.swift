@@ -310,10 +310,37 @@ for testCase in cases {
     }
 }
 
+// The remote flow prefetches `candidatePaths` and answers `resolve` from a
+// batch classification — legal only if the list covers every probe resolve
+// can make. Asserted across the whole table twice: once against each case's
+// own fixture, and once against an all-absent disk, which drives the prefix
+// walk to its longest.
+var coverageFailures = 0
+for testCase in cases {
+    for fs in [testCase.fs, [:]] {
+        var asked = [String]()
+        _ = TerminalLinkTarget.resolve(
+            testCase.raw, cwd: testCase.cwd, home: home,
+            existence: { path in
+                asked.append(path)
+                return fs[path] ?? .absent
+            }
+        )
+        let candidates = TerminalLinkTarget.candidatePaths(
+            testCase.raw, cwd: testCase.cwd, home: home
+        )
+        let uncovered = asked.filter { !candidates.contains($0) }
+        if !uncovered.isEmpty {
+            coverageFailures += 1
+            print("FAIL  \(testCase.name) — probes candidatePaths does not list: \(uncovered)")
+        }
+    }
+}
+
 let total = cases.count
-if failures == 0, probeFailures == 0 {
-    print("LinkTargetCheck: \(total) cases, all pass")
+if failures == 0, probeFailures == 0, coverageFailures == 0 {
+    print("LinkTargetCheck: \(total) cases, all pass (probe coverage included)")
 } else {
-    print("LinkTargetCheck: \(failures + probeFailures) failed out of \(total)")
+    print("LinkTargetCheck: \(failures + probeFailures + coverageFailures) failed out of \(total)")
     exit(1)
 }

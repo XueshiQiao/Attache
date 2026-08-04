@@ -125,6 +125,22 @@ final class SettingsFile {
     /// the user typed cannot fall back to the default over a missing `.0`.
     private var values: [String: Any] = [:]
     private var quickActions: [QuickAction] = []
+    /// `[[host]]` blocks, raw: one dictionary per block, every assignment in
+    /// it, uninterpreted. File-only configuration — the app reads these and
+    /// never writes them, on the same reasoning as `tmux_socket`: the person
+    /// who reaches their tmux over ssh is the person who edits a TOML file
+    /// without flinching. Validation lives in `HostConfig.parse`.
+    ///
+    /// Computed, because the first read of the session may come through here:
+    /// a stored property answered `[]` until some *other* key had loaded the
+    /// file, which is exactly the sometimes-empty answer a cache must never
+    /// give.
+    var hostTables: [[String: String]] {
+        loadIfNeeded()
+        return parsedHostTables
+    }
+
+    private var parsedHostTables: [[String: String]] = []
     /// The file exactly as it is on disk, kept so a write can edit one line of
     /// it rather than replace it.
     private var lines: [String] = []
@@ -164,37 +180,63 @@ final class SettingsFile {
     private func parse() {
         values = [:]
         quickActions = []
+        parsedHostTables = []
         var pendingAction: (title: String?, command: String?)?
+        var pendingHost: [String: String]?
+        // True from any table header this parser does not model. Its keys are
+        // preserved on disk like everything else, but they must not be *read*:
+        // before this flag existed, `[[host]] / name = "x"` defined a
+        // top-level `name`, and three blocks collapsed into whichever came
+        // last — table keys leaking into the flat namespace.
+        var insideForeignTable = false
 
-        func commitPendingAction() {
-            guard let pending = pendingAction else { return }
+        func commitPending() {
+            if let pending = pendingAction,
+               let title = pending.title, let command = pending.command
+            {
+                quickActions.append(QuickAction(title: title, command: command))
+            }
             pendingAction = nil
-            guard let title = pending.title, let command = pending.command else { return }
-            quickActions.append(QuickAction(title: title, command: command))
+            if let host = pendingHost, !host.isEmpty { parsedHostTables.append(host) }
+            pendingHost = nil
         }
 
         for raw in lines {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty || line.hasPrefix("#") { continue }
             if line == "[[quick_action]]" {
-                commitPendingAction()
+                commitPending()
+                insideForeignTable = false
                 pendingAction = (nil, nil)
+                continue
+            }
+            if line == "[[host]]" {
+                commitPending()
+                insideForeignTable = false
+                pendingHost = [:]
                 continue
             }
             // Any other table header ends the array-of-tables run.
             if line.hasPrefix("[") {
-                commitPendingAction()
+                commitPending()
+                insideForeignTable = true
                 continue
             }
             guard let (key, value) = Self.splitAssignment(line) else { continue }
             if pendingAction != nil {
                 if key == "title" { pendingAction?.title = value as? String }
                 if key == "command" { pendingAction?.command = value as? String }
-            } else {
+            } else if pendingHost != nil {
+                // Every key, not a known list: which keys mean something is
+                // `HostConfig.parse`'s question, and an older build holding a
+                // newer file must carry the ones it does not know rather than
+                // flatten them away.
+                pendingHost?[key] = (value as? String) ?? String(describing: value)
+            } else if !insideForeignTable {
                 values[key] = value
             }
         }
-        commitPendingAction()
+        commitPending()
     }
 
     /// `key = value` into the two halves, with the value converted to the
@@ -310,16 +352,23 @@ final class SettingsFile {
     private func writeLine(_ value: String?, forKey key: String) {
         var replaced = false
         var output: [String] = []
-        var insideQuickAction = false
+        var insideTable = false
 
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("[") { insideQuickAction = trimmed == "[[quick_action]]" }
+            // Sticky across *any* header, not a `[[quick_action]]` test: in
+            // TOML there is no way back to the top level after a header, so
+            // everything below the first one belongs to some table. The old
+            // quick_action-only test let a top-level `set("name", …)` rewrite
+            // the `name = …` inside the first `[[host]]` block — and this
+            // guard is what makes a build that predates a table kind safe to
+            // point at a file that carries one.
+            if trimmed.hasPrefix("[") { insideTable = true }
             // A `title` inside a `[[quick_action]]` block is not the top-level
             // `title` this is looking for. Without this the first block's line
             // would be rewritten by an unrelated setting that happened to share
             // a name.
-            if !insideQuickAction, !replaced, !trimmed.hasPrefix("#"),
+            if !insideTable, !replaced, !trimmed.hasPrefix("#"),
                let (found, _) = Self.splitAssignment(trimmed), found == key
             {
                 replaced = true

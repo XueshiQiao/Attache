@@ -29,8 +29,7 @@ final class TmuxControlClient {
     /// Called when the child exits, on `callbackQueue`.
     var onExit: ((String?) -> Void)?
 
-    private let tmuxPath: String
-    private let socket: TmuxSocket
+    private let transport: TmuxTransport
     /// What this client attaches to and what every log line names it by.
     /// An id rather than a name because a name is not an identity: it can be
     /// changed from any terminal at any moment, including between the
@@ -56,6 +55,11 @@ final class TmuxControlClient {
     private let process = Process()
     private let stdinPipe = Pipe()
     private let stdoutPipe = Pipe()
+    private let stderrPipe = Pipe()
+    /// Last few KB of the child's stderr, for the exit report. Written on the
+    /// pipe's reader queue, read from `terminationHandler` — hence the lock.
+    private var stderrTail = Data()
+    private let stderrLock = NSLock()
 
     /// Buffer for bytes that arrived without a terminating newline yet.
     private var pending = [UInt8]()
@@ -105,30 +109,50 @@ final class TmuxControlClient {
     private var handshakeComplete = false
     private var queuedCommands = [(String, (([Data], Bool) -> Void)?)]()
 
-    init(tmuxPath: String, socket: TmuxSocket, sessionID: String, sessionName: String,
+    /// True for servers old enough to `\ooo`-escape reply lines (< 3.6);
+    /// see `TmuxVersion.escapesControlModeReplies` for the measurement.
+    private let decodesOctalReplies: Bool
+
+    init(transport: TmuxTransport, sessionID: String, sessionName: String,
+         decodesOctalReplies: Bool = false,
          callbackQueue: DispatchQueue = .main)
     {
-        self.tmuxPath = tmuxPath
-        self.socket = socket
+        self.transport = transport
         self.sessionID = sessionID
         storedLabel = sessionName
+        self.decodesOctalReplies = decodesOctalReplies
         self.callbackQueue = callbackQueue
     }
 
     // MARK: - Lifecycle
 
     func start() throws {
-        process.executableURL = URL(fileURLWithPath: tmuxPath)
         // `$3`, not `=name`. Exact-match on the name was already needed to stop
         // a session called "7" resolving by prefix to something else; the id
         // removes the question. It also closes the window between listing the
         // sessions and attaching to one of them, in which any terminal on the
         // machine is free to rename it — verified on tmux 3.6a that a session
         // id is accepted wherever a session target is.
-        process.arguments = socket.arguments + ["-C", "attach", "-t", sessionID]
+        let argv = transport.controlAttachArgv(sessionID: sessionID)
+        process.executableURL = URL(fileURLWithPath: argv[0])
+        process.arguments = Array(argv.dropFirst())
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
-        process.standardError = FileHandle.nullDevice
+        // The tail of stderr, kept for the exit report. Locally tmux says
+        // almost nothing here; over ssh this is where the auth, host-key and
+        // connection errors go, and discarding it turns every one of them
+        // into a silent immediate exit.
+        process.standardError = stderrPipe
+        stderrPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let self else { return }
+            self.stderrLock.lock()
+            self.stderrTail.append(data)
+            if self.stderrTail.count > 4096 {
+                self.stderrTail.removeFirst(self.stderrTail.count - 4096)
+            }
+            self.stderrLock.unlock()
+        }
 
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
@@ -143,12 +167,21 @@ final class TmuxControlClient {
             // later sweep has to reason about for no reason.
             TmuxChildRegistry.forget(childPID: process.processIdentifier)
             guard let self else { return }
+            self.stderrLock.lock()
+            let stderrText = String(decoding: self.stderrTail, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            self.stderrLock.unlock()
             TmuxLog.lifecycle(
                 "control client exited — status \(process.terminationStatus)"
-                    + " reason \(process.terminationReason.rawValue)",
+                    + " reason \(process.terminationReason.rawValue)"
+                    + (stderrText.isEmpty ? "" : " stderr: \(stderrText)"),
                 session: self.sessionLabel
             )
-            self.callbackQueue.async { self.onExit?(nil) }
+            // The stderr tail rides along only for a failure exit: that is the
+            // case where ssh's one explanatory line would otherwise vanish.
+            let reason = process.terminationStatus == 0 || stderrText.isEmpty
+                ? nil : stderrText
+            self.callbackQueue.async { self.onExit?(reason) }
         }
 
         try process.run()
@@ -159,11 +192,15 @@ final class TmuxControlClient {
         // unknown. This record is what lets a later run collect one anyway.
         TmuxChildRegistry.record(childPID: process.processIdentifier, sessionID: sessionID)
         TmuxLog.lifecycle(
-            "spawned \(tmuxPath) \((process.arguments ?? []).joined(separator: " "))"
+            "spawned \(argv.joined(separator: " "))"
                 + " (\(sessionLabel), pid \(process.processIdentifier))",
             session: sessionLabel
         )
     }
+
+    /// Whether the child is still running — what tells a connection that can
+    /// still carry commands from one whose client died under it.
+    var isRunning: Bool { process.isRunning }
 
     func stop() {
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
@@ -373,7 +410,7 @@ final class TmuxControlClient {
 
         case .end(let number, let failed, let isCommandReply):
             stateLock.lock()
-            let lines = replyLines ?? []
+            var lines = replyLines ?? []
             replyLines = nil
             openBlockNumber = nil
             // **Only a block tmux attributes to a command of ours takes a
@@ -411,6 +448,15 @@ final class TmuxControlClient {
                     "command reply arrived with no command waiting — reply queue is out of step",
                     session: sessionLabel
                 )
+            }
+            // Undone here, once, for every consumer — the same `\ooo` codec
+            // `%output` always needed, applied to replies only on the servers
+            // that escape them. Without this, a 3.5 server's `list-windows`
+            // reply reads as one un-splittable field and the window list
+            // silently never fills (found against tmux 3.5a over ssh,
+            // 2026-08-04).
+            if decodesOctalReplies {
+                lines = lines.map { TmuxOctal.decode([UInt8]($0)) }
             }
             if let completion {
                 callbackQueue.async { completion(lines, failed) }
@@ -576,16 +622,17 @@ final class TmuxControlClient {
     /// A one-shot `tmux list-sessions` rather than a control mode command:
     /// picking which session to attach to has to happen before there is a
     /// control mode client to ask.
-    static func listSessions(tmuxPath: String, socket: TmuxSocket) -> SessionListResult {
+    static func listSessions(transport: TmuxTransport) -> SessionListResult {
+        let argv = transport.oneShotArgv(["list-sessions", "-F", "#{session_id} #{session_name}"])
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: tmuxPath)
-        process.arguments = socket.arguments + ["list-sessions", "-F", "#{session_id} #{session_name}"]
+        process.executableURL = URL(fileURLWithPath: argv[0])
+        process.arguments = Array(argv.dropFirst())
         let pipe = Pipe()
         let errorPipe = Pipe()
         process.standardOutput = pipe
         process.standardError = errorPipe
         guard (try? process.run()) != nil else {
-            return .failed("tmux at \(tmuxPath) would not start")
+            return .failed("\(argv[0]) would not start")
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
@@ -600,15 +647,24 @@ final class TmuxControlClient {
             // command-alias running `source-file /missing`, say — as "no
             // server", and `.noServer` is the answer that tears down every
             // connection. Found in review before it shipped.
-            if message.hasPrefix("no server running on")
-                || (message.hasPrefix("error connecting to")
-                    && message.contains("No such file or directory"))
+            //
+            // Status 255 is excluded on top of that: it is ssh's own "I could
+            // not do my job" — auth refused, host unreachable, mux channel
+            // refused — and over ssh the remote command's status is forwarded
+            // verbatim, so 255 can only mean ssh itself failed. Whatever its
+            // stderr says, "the host is unreachable" must never be read as
+            // "the server has no sessions", because `.noServer` is the answer
+            // that tears down every connection.
+            if process.terminationStatus != 255,
+               message.hasPrefix("no server running on")
+               || (message.hasPrefix("error connecting to")
+                   && message.contains("No such file or directory"))
             {
                 return .noServer
             }
             return .failed(
                 message.isEmpty
-                    ? "tmux exited with status \(process.terminationStatus)" : message
+                    ? "\(argv[0]) exited with status \(process.terminationStatus)" : message
             )
         }
 
@@ -633,15 +689,16 @@ final class TmuxControlClient {
     /// the kind of silence this app has already paid for once: a refused
     /// `new-session` used to send its explanation to `/dev/null` and present
     /// as the + button doing nothing.
-    static func createDetachedSession(tmuxPath: String, socket: TmuxSocket) -> String? {
+    static func createDetachedSession(transport: TmuxTransport) -> String? {
+        let argv = transport.oneShotArgv(["new-session", "-d"])
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: tmuxPath)
-        process.arguments = socket.arguments + ["new-session", "-d"]
+        process.executableURL = URL(fileURLWithPath: argv[0])
+        process.arguments = Array(argv.dropFirst())
         let errorPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errorPipe
         guard (try? process.run()) != nil else {
-            return "tmux at \(tmuxPath) would not start"
+            return "\(argv[0]) would not start"
         }
         let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
@@ -649,7 +706,7 @@ final class TmuxControlClient {
         let message = String(decoding: errorData, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return message.isEmpty
-            ? "tmux exited with status \(process.terminationStatus)" : message
+            ? "\(argv[0]) exited with status \(process.terminationStatus)" : message
     }
 
     /// Locate tmux. `Process` does not consult PATH, and a GUI app launched

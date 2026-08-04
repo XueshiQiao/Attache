@@ -15,6 +15,114 @@ import Cocoa
 /// command, tmux replies, the rail rebuilds, and the view being clicked is
 /// gone before a mouse-down handler could finish.
 
+// MARK: - Host
+
+/// A machine, drawn above its sessions — the tier that exists only when a
+/// `[[host]]` is configured. With no remote hosts the rail never shows one,
+/// so a machine that has always been local-only looks exactly as it did.
+///
+/// The row is also where a host's *state* lives: "connecting…", or the ssh
+/// error, in full in the tooltip and truncated beside the name. That is the
+/// issue's honesty rule at the top level — an unreachable host must say so
+/// here, not present an empty list indistinguishable from "no sessions".
+/// Clicking a down host retries now instead of waiting out the backoff.
+@MainActor
+final class SidebarHostRow: NSView {
+    let hostID: String
+
+    /// What a down row's click means. Wired only when the host is down.
+    var onRetry: (() -> Void)?
+
+    static let height: CGFloat = 22
+    static let topGap: CGFloat = 14
+
+    private let dot = NSView()
+    private let label = NSTextField(labelWithString: "")
+    private let stateLabel = NSTextField(labelWithString: "")
+    private var pressed = false
+
+    /// `state` is prose, already localised to the host row's size by the
+    /// caller; `tone` picks the dot. nil prose means all is well and the row
+    /// is just a heading.
+    init(id: String, name: String, state: String?, tone: Tone) {
+        hostID = id
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+
+        let theme = ChromeTheme.current
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 2.5
+        dot.layer?.backgroundColor = switch tone {
+        case .ready: theme.faintText.withAlphaComponent(0.8).cgColor
+        case .connecting: NSColor.systemYellow.cgColor
+        case .down: NSColor.systemRed.cgColor
+        }
+        addSubview(dot)
+
+        label.attributedStringValue = NSAttributedString(
+            string: name.uppercased(),
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                .kern: 0.8,
+            ]
+        )
+        label.textColor = theme.mutedText
+        label.lineBreakMode = .byTruncatingTail
+        addSubview(label)
+
+        stateLabel.stringValue = state ?? ""
+        stateLabel.font = .systemFont(ofSize: 9.5)
+        stateLabel.textColor = tone == .down ? .systemRed : theme.faintText
+        stateLabel.lineBreakMode = .byTruncatingTail
+        stateLabel.alignment = .right
+        addSubview(stateLabel)
+        if let state { toolTip = state }
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel("Host \(name)\(state.map { ", \($0)" } ?? "")")
+    }
+
+    enum Tone { case ready, connecting, down }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) { fatalError("not supported") }
+
+    override func layout() {
+        super.layout()
+        dot.frame = CGRect(x: 8, y: bounds.midY - 2.5, width: 5, height: 5)
+        // The name takes what it needs and the state text truncates in what
+        // is left. Clamping the name by `intrinsicContentSize` looked
+        // equivalent and was not: for this attributed string it under-reports
+        // and "THIS MAC" drew as "THIS" — seen live on the first demo.
+        let available = bounds.width - 20 - 8
+        let nameWidth = stateLabel.stringValue.isEmpty
+            ? available
+            : min(label.attributedStringValue.size().width + 4, available * 0.6)
+        label.frame = CGRect(
+            x: 20, y: bounds.midY - 7, width: max(0, nameWidth), height: 14
+        )
+        let stateX = label.frame.maxX + 8
+        stateLabel.frame = CGRect(
+            x: stateX, y: bounds.midY - 7,
+            width: max(0, bounds.width - stateX - 8), height: 14
+        )
+    }
+
+    // Selection on mouse up, like every row here; a host row only acts at
+    // all when it is down, and then the action is one retry.
+    override func mouseDown(with _: NSEvent) { pressed = onRetry != nil }
+    override func mouseUp(with event: NSEvent) {
+        defer { pressed = false }
+        guard pressed, let onRetry,
+              bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        onRetry()
+    }
+
+    override var mouseDownCanMoveWindow: Bool { onRetry == nil }
+}
+
 // MARK: - Session
 
 /// A session, drawn as a group heading rather than a selectable pill.

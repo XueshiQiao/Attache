@@ -41,7 +41,8 @@ func check(
     expected: Bool
 ) {
     let record = TmuxChildRecord(
-        ownerPID: 999, childPID: 1234, startedAt: recordedStart, sessionID: sessionID
+        ownerPID: 999, childPID: 1234, startedAt: recordedStart, sessionID: sessionID,
+        commandLine: nil
     )
     let facts = commandLine.map {
         TmuxChildRecord.ChildFacts(
@@ -121,9 +122,55 @@ for (raw, want) in [
     }
 }
 
+// The v2 records: an exact command line, byte-compared. The ssh children are
+// why — their argv defeats every clause of the shape test: argv[0] is `ssh`,
+// `-C` doubles as ssh's compression flag, and the token after ssh's own `-t`
+// is a hostname. The cases below hold the gates that must still gate.
+print("— v2 records: exact command line —")
+let sshCommand = "/usr/bin/ssh -T -o BatchMode=yes -o ControlMaster=no"
+    + " -o ControlPath=/Users/me/.config/attache/ssh/mini -o ConnectTimeout=5"
+    + " -- me@192.168.1.20 '/opt/homebrew/bin/tmux' '-L' 'attache-test' '-C' 'attach' '-t' '$0'"
+let v2 = TmuxChildRecord(
+    ownerPID: 999, childPID: 1234, startedAt: recordedStart, sessionID: "$0",
+    commandLine: sshCommand
+)
+func checkV2(_ name: String, ownerIsAlive: Bool = false, commandLine: String = sshCommand,
+             startedAt: String = recordedStart, parentPID: Int32 = 1, expected: Bool)
+{
+    let facts = TmuxChildRecord.ChildFacts(
+        commandLine: commandLine, startedAt: startedAt, parentPID: parentPID
+    )
+    let got = v2.shouldReclaim(ownerIsAlive: ownerIsAlive, child: facts)
+    if got == expected {
+        print("  ok    \(name)")
+    } else {
+        print("  FAIL  \(name) — expected \(expected), got \(got)")
+        failures += 1
+    }
+}
+checkV2("an orphaned ssh control client with the exact recorded argv", expected: true)
+checkV2("owner still alive", ownerIsAlive: true, expected: false)
+checkV2("started at a different time (reused pid)",
+        startedAt: "Thu_Jul_31_08:00:00_2026", expected: false)
+checkV2("not an orphan", parentPID: 812, expected: false)
+checkV2("same shape, different socket — someone else's connection",
+        commandLine: sshCommand.replacingOccurrences(of: "attache-test", with: "work"),
+        expected: false)
+checkV2("an unrelated ssh -C that would fool a loosened shape test",
+        commandLine: "/usr/bin/ssh -C me@192.168.1.20 -t attach.example.org tmux",
+        expected: false)
+
+if TmuxChildRecord.parse(line: v2.line) == v2 {
+    print("  ok    a v2 line with spaces in the command round-trips")
+} else {
+    print("  FAIL  a v2 line with spaces in the command round-trips")
+    failures += 1
+}
+
 print("— the file format round-trips —")
 let entry = TmuxChildRecord(
-    ownerPID: 42, childPID: 4242, startedAt: recordedStart, sessionID: "$7"
+    ownerPID: 42, childPID: 4242, startedAt: recordedStart, sessionID: "$7",
+    commandLine: nil
 )
 if TmuxChildRecord.parse(line: entry.line) == entry {
     print("  ok    a written line parses back to the same record")
@@ -133,7 +180,9 @@ if TmuxChildRecord.parse(line: entry.line) == entry {
 }
 for bad in [
     "", "42", "42 4242", "42 4242 \(recordedStart)",
-    "42 4242 \(recordedStart) $7 extra", "x 4242 \(recordedStart) $7",
+    // "…$7 extra" is deliberately NOT here any more: a fifth field is the
+    // v2 format's command line, checked in its own section above.
+    "x 4242 \(recordedStart) $7",
     // Three fields is the *old* format. It must be rejected rather than
     // half-read: a record without a start time cannot be judged safely.
     "42 4242 $7",

@@ -32,7 +32,16 @@ import Cocoa
 /// AppKit changes.
 @MainActor
 final class MainViewController: NSSplitViewController {
-    let server: TmuxServer
+    /// Every machine whose tmux this window shows — the local one first,
+    /// then each `[[host]]` in file order. One `TmuxServer` each; session
+    /// ids repeat across them, so everything here keys by `SessionKey`
+    /// composites and only ever hands a bare `$N` to the one server it
+    /// belongs to.
+    let hosts: [HostContext]
+    /// The local server. Kept as a name because a handful of features are
+    /// local by nature — the startup target, the debug inspector — and
+    /// reading `hosts[0]` at those sites would bury the *why*.
+    var server: TmuxServer { hosts[0].server }
 
     private let sidebar = SessionSidebarView(frame: .zero)
     private lazy var content = Content(backdrop: contentBackdrop)
@@ -172,14 +181,13 @@ final class MainViewController: NSSplitViewController {
         bandSeparator.isHidden = !foldable
     }
 
-    /// The repositories behind the rail's rows.
-    ///
-    /// Owned here rather than by a session controller because it is keyed by
-    /// repository, not by session: four windows across three sessions in one
-    /// checkout are one repository and must be one `git status`. Its work list
-    /// is set from `refreshSidebar`, which is the only place that knows what is
-    /// actually on screen.
-    private let gitStatus = GitStatusService()
+    /// The repositories behind the rail's rows live on `HostContext` now —
+    /// one service per machine, because the caches are keyed by path and
+    /// paths collide across machines by design. This accessor answers for
+    /// the session on screen, which is what the Git tool follows.
+    private var currentGitStatus: GitStatusService? {
+        currentSessionID.flatMap { host(ofComposite: $0) }?.gitStatus
+    }
     /// The rail width this controller last placed the divider at. Not the
     /// rail's current width, which the user is free to drag.
     private var appliedSidebarWidth: CGFloat?
@@ -189,8 +197,9 @@ final class MainViewController: NSSplitViewController {
 
     var onStatusChange: ((String) -> Void)?
 
-    init(server: TmuxServer) {
-        self.server = server
+    init(hosts: [HostContext]) {
+        precondition(hosts.first?.isLocal == true, "hosts[0] must be the local machine")
+        self.hosts = hosts
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -212,13 +221,44 @@ final class MainViewController: NSSplitViewController {
         return embedded[currentSessionID]
     }
 
+    // MARK: - Host resolution
+
+    /// The composite ids everything in this file keys by, in rail order.
+    private var allSessionIDs: [String] {
+        hosts.flatMap { host in
+            host.server.sessionIDs.map { SessionKey(host: host.id, session: $0).composite }
+        }
+    }
+
+    private func host(id: String) -> HostContext? {
+        hosts.first { $0.id == id }
+    }
+
+    private func host(ofComposite id: String) -> HostContext? {
+        SessionKey(composite: id).flatMap { key in hosts.first { $0.id == key.host } }
+    }
+
+    /// The one door from a composite id to a live connection. Splitting and
+    /// routing happens here and nowhere else, so a bare `$N` can never be
+    /// asked of the wrong machine's server.
+    private func connection(id: String) -> TmuxSessionConnection? {
+        guard let key = SessionKey(composite: id) else { return nil }
+        return host(id: key.host)?.server.connection(id: key.session)
+    }
+
+    /// A local `$N` as the composite the dictionaries use — the inspector's
+    /// routes and the startup target speak bare local ids.
+    private func localComposite(_ session: String) -> String {
+        SessionKey(host: HostContext.localID, session: session).composite
+    }
+
     /// Run a Quick Action against the session on screen.
     ///
     /// The connection rather than `currentSession`: that one is a *view*
     /// controller, and with `tmuxDrawsItself` on it is not the half being
     /// looked at. What a session-level command addresses is the session.
     func run(quickAction: QuickAction) {
-        guard let currentSessionID, let connection = server.connection(id: currentSessionID) else {
+        guard let currentSessionID, let connection = connection(id: currentSessionID) else {
             showStatus("No session", detail: "Quick Actions need a session on screen")
             return
         }
@@ -244,8 +284,22 @@ final class MainViewController: NSSplitViewController {
 
         wireSidebar()
 
-        server.onChange = { [weak self] in self?.refreshSidebar() }
-        server.start()
+        conversations.makeProviders = { [weak self] hostID in
+            guard let host = self?.host(id: hostID) else { return [] }
+            if host.isLocal { return [ClaudeCodeConversationProvider()] }
+            guard let helper = host.helper else { return [] }
+            return [ClaudeCodeConversationProvider(remoteHostID: host.id, helper: helper)]
+        }
+
+        for host in hosts {
+            host.server.onChange = { [weak self] in self?.refreshSidebar() }
+            host.onStateChange = { [weak self] in self?.refreshSidebar() }
+            // A repository changed under a row. Routed through the same
+            // rebuild every tmux notification uses, so the rail has exactly
+            // one way to be redrawn and the rebuild's own guards hold.
+            host.gitStatus.onChange = { [weak self] in self?.refreshSidebar() }
+            host.start()
+        }
 
         settingsObserver = NotificationCenter.default.addObserver(
             forName: AppSettings.didChange, object: nil, queue: .main
@@ -256,7 +310,7 @@ final class MainViewController: NSSplitViewController {
 
         observeReturningToTheApp()
         observeWindowVisibility()
-        gitStatus.applySettings()
+        for host in hosts { host.gitStatus.applySettings() }
     }
 
     /// Stop reading repositories while nobody can see the answer.
@@ -276,11 +330,13 @@ final class MainViewController: NSSplitViewController {
             Task { @MainActor in
                 guard let self, window === self.view.window else { return }
                 let hidden = !window.occlusionState.contains(.visible)
-                self.gitStatus.setPaused(hidden)
-                // The pane capture the screen strategy runs is the same kind of
-                // work for the same nobody.
-                for id in self.server.sessionIDs {
-                    self.server.connection(id: id)?.setPaused(hidden)
+                // The pane capture the screen strategy runs is the same kind
+                // of work for the same nobody.
+                for host in self.hosts {
+                    host.gitStatus.setPaused(hidden)
+                    for id in host.server.sessionIDs {
+                        host.server.connection(id: id)?.setPaused(hidden)
+                    }
                 }
             }
         }
@@ -401,22 +457,22 @@ final class MainViewController: NSSplitViewController {
     /// session: making a window somewhere you are not looking and then not
     /// going there would leave no sign it happened, so it switches too.
     private func wireSidebar() {
-        // A repository changed under a row. Goes through the same rebuild every
-        // tmux notification uses rather than reaching into a row, so the rail
-        // has exactly one way to be redrawn — and so the rebuild's own guards
-        // still hold: it refuses while a rename field is open or a drag is in
-        // flight, and a `git status` finishing must not be the one thing that
-        // pulls a row out from under the pointer.
-        gitStatus.onChange = { [weak self] in self?.refreshSidebar() }
-
         sidebar.onSelect = { [weak self] id in self?.show(sessionID: id) }
-        sidebar.onNew = { [weak self] in self?.server.newSession() }
+        // The footer button makes the session on the machine being looked
+        // at: with the rail pointed into a remote host's block, "+ New
+        // session" there is what the click plainly means.
+        sidebar.onNew = { [weak self] in
+            guard let self else { return }
+            let target = currentSessionID.flatMap { self.host(ofComposite: $0) } ?? hosts[0]
+            target.server.newSession()
+        }
+        sidebar.onHostRetry = { [weak self] hostID in self?.host(id: hostID)?.retry() }
         sidebar.onRename = { [weak self] id, new in
-            self?.server.connection(id: id)?.renameSession(to: new)
+            self?.connection(id: id)?.renameSession(to: new)
         }
 
         sidebar.onNewWindow = { [weak self] id in
-            guard let self, let connection = server.connection(id: id) else { return }
+            guard let self, let connection = connection(id: id) else { return }
             cancelStartupTargeting()   // creating a window is a choice too, and
             // it does not necessarily change session
             connection.newWindow()
@@ -438,6 +494,16 @@ final class MainViewController: NSSplitViewController {
             guard let self else { return }
             guard from != to else {
                 inSession(from) { $0.moveWindow(id: id, before: anchor) }
+                return
+            }
+            // `move-window` is one server talking to itself; between two
+            // machines there is no such command, and pretending otherwise
+            // would send `-s @25` to a server holding a different `@25`.
+            guard SessionKey(composite: from)?.host == SessionKey(composite: to)?.host else {
+                showStatus(
+                    "Windows can't move between machines",
+                    detail: "tmux can only move a window within one server"
+                )
                 return
             }
             moveWindow(id: id, from: from, to: to, before: anchor)
@@ -474,8 +540,8 @@ final class MainViewController: NSSplitViewController {
     /// client attached to it is detached. That is not something to do silently
     /// on a drag that could have been a slip, so it asks first.
     private func moveWindow(id: String, from: String, to: String, before anchor: String?) {
-        guard let source = server.connection(id: from),
-              server.connection(id: to) != nil else { return }
+        guard let source = connection(id: from),
+              connection(id: to) != nil else { return }
 
         // tmux's window list, not the rail's rows: a session with one visible
         // window and two hidden ones survives the move, and counting rows would
@@ -499,7 +565,7 @@ final class MainViewController: NSSplitViewController {
                 // client moving it away while the alert was open would turn a
                 // confirmed "empty this session" into a move out of a session
                 // nobody was asked about.
-                guard let source = server.connection(id: from), source.holds(windowID: id) else {
+                guard let source = connection(id: from), source.holds(windowID: id) else {
                     TmuxLog.lifecycle(
                         "not moving \(id) — it left \(describe(from)) while the confirmation"
                             + " was open",
@@ -623,7 +689,7 @@ final class MainViewController: NSSplitViewController {
     /// of the session, because it holds the pane surfaces and the hidden set.
     private func model(forSessionID id: String) -> SessionModel? {
         if let existing = models[id] { return existing }
-        guard let connection = server.connection(id: id) else { return nil }
+        guard let connection = connection(id: id) else { return nil }
 
         let controller = SessionModel(connection: connection)
         controller.onStatusChange = { [weak self] status in self?.onStatusChange?(status) }
@@ -643,10 +709,11 @@ final class MainViewController: NSSplitViewController {
     /// is nothing to replay.
     private func embeddedController(forSessionID id: String) -> EmbeddedSessionViewController? {
         if let existing = embedded[id] { return existing }
-        guard let connection = server.connection(id: id) else { return nil }
+        guard connection(id: id) != nil else { return nil }
         guard let model = model(forSessionID: id) else { return nil }
+        guard let host = host(ofComposite: id) else { return nil }
         let controller = EmbeddedSessionViewController(
-            model: model, tmuxPath: server.tmuxPath, socket: server.socket
+            model: model, host: host
         )
         embedded[id] = controller
         return controller
@@ -655,8 +722,8 @@ final class MainViewController: NSSplitViewController {
     /// A session id rendered for a human — `$3 (agents)`. Used in log lines and
     /// confirmation text, and nowhere that decides anything.
     private func describe(_ id: String) -> String {
-        guard let name = server.name(ofSession: id) else { return id }
-        return "\(id) (\(name))"
+        guard let name = connection(id: id)?.sessionName else { return id }
+        return "\(SessionKey(composite: id)?.session ?? id) (\(name))"
     }
 
     // MARK: - Chrome
@@ -743,10 +810,10 @@ final class MainViewController: NSSplitViewController {
         // session's status line is where every other transient message goes.
         gitTool.onStatus = { [weak self] message in
             guard let self, let id = currentSessionID else { return }
-            server.connection(id: id)?.showStatusMessage(message)
+            connection(id: id)?.showStatusMessage(message)
         }
         gitTool.onRevealRecheck = { [weak self] path in
-            self?.gitStatus.reresolveIfNotRepository(path)
+            self?.currentGitStatus?.reresolveIfNotRepository(path)
         }
 
         // The title band's button cluster. A subview of the split view
@@ -1141,9 +1208,11 @@ final class MainViewController: NSSplitViewController {
         applyBackdropSettings()
         // Before the rail is rebuilt, so a fetch that was just switched off
         // does not get one more turn on the way past.
-        gitStatus.applySettings()
+        for host in hosts { host.gitStatus.applySettings() }
         // Each connection decides for itself whether to start capturing panes.
-        for id in server.sessionIDs { server.connection(id: id)?.applyAgentStateSource() }
+        for host in hosts {
+            for id in host.server.sessionIDs { host.server.connection(id: id)?.applyAgentStateSource() }
+        }
         sidebar.applyChromeTheme()
         rail.applyChromeTheme()
         applyBandTheme()
@@ -1172,6 +1241,34 @@ final class MainViewController: NSSplitViewController {
 
     // MARK: - Sessions
 
+    /// The host tier, or nothing: with the local machine alone the rail
+    /// must look exactly as it always has, so the tier only exists once a
+    /// `[[host]]` is configured.
+    private func hostDescriptors() -> [SessionSidebarView.HostDescriptor] {
+        guard hosts.count > 1 else { return [] }
+        return hosts.map { host in
+            let state: String?
+            let tone: SidebarHostRow.Tone
+            var canRetry = false
+            switch host.state {
+            case .ready:
+                state = nil
+                tone = .ready
+            case .connecting:
+                state = "connecting…"
+                tone = .connecting
+            case .down(let reason):
+                state = reason
+                tone = .down
+                canRetry = true
+            }
+            return SessionSidebarView.HostDescriptor(
+                id: host.id, name: host.displayName,
+                state: state, tone: tone, canRetry: canRetry
+            )
+        }
+    }
+
     private func refreshSidebar() {
         discardControllersForVanishedSessions()
 
@@ -1183,72 +1280,89 @@ final class MainViewController: NSSplitViewController {
         // the service's work list is exactly what the rail is drawing — a
         // session whose list is collapsed costs nothing, and a `git status` is
         // 82ms of process spawn that nobody would see the result of.
-        var visiblePaths = Set<String>()
+        var visiblePathsByHost = [String: Set<String>]()
 
-        let entries = server.sessionIDs.compactMap { id -> SessionSidebarView.Entry? in
-            guard let connection = server.connection(id: id) else { return nil }
-            let hidden = models[id]?.hiddenWindowIDs ?? []
-            var decorations = [String: WindowDecoration]()
-            for window in connection.windows where !hidden.contains(window.id) {
-                var decoration = WindowDecoration()
-                decoration.path = connection.pathByWindow[window.id]
-                if AppSettings.sidebarShowsAgent {
-                    decoration.agent = connection.agentBadge(forWindow: window.id)
-                    // Gated on the badge as well as on its own setting: the
-                    // numbers belong to the agent the dot is about, so a rail
-                    // with the agent column switched off has no place to put
-                    // them either.
-                    if AppSettings.sidebarShowsAgentStats {
-                        decoration.stats = connection.agentStats(forWindow: window.id)
+        var entries: [SessionSidebarView.Entry] = []
+        for hostContext in hosts {
+            for session in hostContext.server.sessionIDs {
+                guard let connection = hostContext.server.connection(id: session) else { continue }
+                let id = SessionKey(host: hostContext.id, session: session).composite
+                let hidden = models[id]?.hiddenWindowIDs ?? []
+                var decorations = [String: WindowDecoration]()
+                for window in connection.windows where !hidden.contains(window.id) {
+                    var decoration = WindowDecoration()
+                    decoration.path = connection.pathByWindow[window.id]
+                    if AppSettings.sidebarShowsAgent {
+                        decoration.agent = connection.agentBadge(forWindow: window.id)
+                        // Gated on the badge as well as on its own setting: the
+                        // numbers belong to the agent the dot is about, so a rail
+                        // with the agent column switched off has no place to put
+                        // them either.
+                        if AppSettings.sidebarShowsAgentStats {
+                            decoration.stats = connection.agentStats(forWindow: window.id)
+                        }
+                    }
+                    // Each host's own service: the caches are per file
+                    // system, and a remote path handed to the local service
+                    // would be read off the local disk — a path that exists
+                    // on both machines decorating the row with the wrong
+                    // repository's numbers.
+                    if AppSettings.sidebarShowsGit, let path = decoration.path {
+                        visiblePathsByHost[hostContext.id, default: []].insert(path)
+                        let service = hostContext.gitStatus
+                        decoration.git = service.summary(forPath: path)
+                        decoration.isNotARepository = service.isKnownNotARepository(path: path)
+                        decoration.fetchIsLive = service.fetchIsLive(forPath: path)
+                    }
+                    if !decoration.isEmpty || decoration.path != nil {
+                        decorations[window.id] = decoration
                     }
                 }
-                if AppSettings.sidebarShowsGit, let path = decoration.path {
-                    visiblePaths.insert(path)
-                    decoration.git = gitStatus.summary(forPath: path)
-                    decoration.isNotARepository = gitStatus.isKnownNotARepository(path: path)
-                    decoration.fetchIsLive = gitStatus.fetchIsLive(forPath: path)
-                }
-                if !decoration.isEmpty || decoration.path != nil {
-                    decorations[window.id] = decoration
-                }
+                entries.append(SessionSidebarView.Entry(
+                    id: id,
+                    host: hostContext.id,
+                    // Read from the connection, which is the only thing that holds
+                    // a session's current name: `%session-renamed` reaches it
+                    // directly, so the rail follows a rename without a relist.
+                    name: connection.sessionName,
+                    hasActivity: connection.hasActivity,
+                    windows: connection.windows,
+                    activeWindowID: connection.activeWindowID,
+                    // Only a session that has been shown has a controller, and
+                    // therefore a hidden set. One that has not cannot have hidden
+                    // anything, which is what the empty default says.
+                    hiddenIDs: hidden,
+                    decorations: decorations
+                ))
             }
-            return SessionSidebarView.Entry(
-                id: id,
-                // Read from the connection, which is the only thing that holds
-                // a session's current name: `%session-renamed` reaches it
-                // directly, so the rail follows a rename without a relist.
-                name: connection.sessionName,
-                hasActivity: connection.hasActivity,
-                windows: connection.windows,
-                activeWindowID: connection.activeWindowID,
-                // Only a session that has been shown has a controller, and
-                // therefore a hidden set. One that has not cannot have hidden
-                // anything, which is what the empty default says.
-                hiddenIDs: hidden,
-                decorations: decorations
-            )
         }
-        gitStatus.setVisiblePaths(visiblePaths)
+        for host in hosts {
+            host.gitStatus.setVisiblePaths(visiblePathsByHost[host.id] ?? [])
+        }
 
         // Whatever the app was showing may have been killed elsewhere; fall
         // back to the first session rather than a blank pane. A rename no
         // longer reaches here at all — the id is unchanged, so nothing about
         // the session the app is showing has moved.
-        if currentSessionID == nil || !server.sessionIDs.contains(currentSessionID!) {
-            if let first = server.sessionIDs.first { showWithoutCancelling(sessionID: first) }
+        let live = allSessionIDs
+        if currentSessionID == nil || !live.contains(currentSessionID!) {
+            if let first = live.first { showWithoutCancelling(sessionID: first) }
         }
         applyStartupTargetIfNeeded()
 
-        sidebar.update(entries: entries, selected: currentSessionID)
+        sidebar.update(
+            hosts: hostDescriptors(), entries: entries, selected: currentSessionID
+        )
 
         // Across every session, not the one on screen. Rate limits belong to
         // the account, so the answer must not change when the rail is pointed
         // at a different session — and the session being looked at is often
         // the one with no agent in it.
         sidebar.showUsage(
-            server.sessionIDs
-                .compactMap { server.connection(id: $0)?.accountUsage }
-                .reduce(nil) { AccountUsage.fresher($0, $1) }
+            hosts.flatMap { host in
+                host.server.sessionIDs.compactMap { host.server.connection(id: $0)?.accountUsage }
+            }
+            .reduce(nil) { AccountUsage.fresher($0, $1) }
         )
 
         refreshConversation()
@@ -1278,6 +1392,9 @@ final class MainViewController: NSSplitViewController {
     /// searching for the life of the app.
     private func applyStartupTargetIfNeeded() {
         guard !hasSettledStartupSession || !hasSettledStartupWindow else { return }
+        // The startup target names sessions on the *local* server: the
+        // setting predates hosts, and a name that matched on two machines
+        // would be a coin toss. A host-qualified form can come later.
         guard !server.sessionIDs.isEmpty else { return }
         // **A counter each, because the phases run one after the other.** A
         // single shared count let the session phase spend the whole budget:
@@ -1302,7 +1419,7 @@ final class MainViewController: NSSplitViewController {
                 return (id, connection.sessionName)
             }
             if let sessionID = StartupTarget.id(matching: wanted, in: sessions) {
-                showWithoutCancelling(sessionID: sessionID)
+                showWithoutCancelling(sessionID: localComposite(sessionID))
                 // **Settle on the result, not on having asked.** `show` returns
                 // early — silently — when the session's controllers do not
                 // exist yet, and on the first refresh after launch they
@@ -1311,7 +1428,7 @@ final class MainViewController: NSSplitViewController {
                 // and the app sat on whatever session happened to be first
                 // while the log said it had matched. Same shape as the window
                 // stage below: asking is not the same as arriving.
-                guard currentSessionID == sessionID else {
+                guard currentSessionID == localComposite(sessionID) else {
                     if outOfPatience {
                         hasSettledStartupSession = true
                         hasSettledStartupWindow = true
@@ -1320,7 +1437,7 @@ final class MainViewController: NSSplitViewController {
                     return
                 }
                 hasSettledStartupSession = true
-                startupSessionID = sessionID
+                startupSessionID = localComposite(sessionID)
             } else if outOfPatience {
                 hasSettledStartupSession = true
                 hasSettledStartupWindow = true
@@ -1333,7 +1450,7 @@ final class MainViewController: NSSplitViewController {
         let wanted = AppSettings.startupWindow
         guard !wanted.isEmpty,
               let sessionID = startupSessionID,
-              let connection = server.connection(id: sessionID)
+              let connection = connection(id: sessionID)
         else {
             hasSettledStartupWindow = true
             return
@@ -1409,7 +1526,7 @@ final class MainViewController: NSSplitViewController {
     private static let startupAttemptLimit = 20
 
     private func refreshConversation() {
-        let connection = currentSessionID.flatMap { server.connection(id: $0) }
+        let connection = currentSessionID.flatMap { self.connection(id: $0) }
         let windowID = connection?.activeWindowID
         let evidence = (connection != nil && windowID != nil)
             ? connection!.conversationEvidence(forWindow: windowID!)
@@ -1435,22 +1552,37 @@ final class MainViewController: NSSplitViewController {
         // agent. Fed before the visibility guard on purpose: its own
         // `isRailVisible` gate is what keeps a hidden rail from doing process
         // work, and it needs current state the moment the rail comes back.
+        // Everything it is fed comes from the *window's own host* — its git
+        // service, its transport, its helper — so a remote repository is a
+        // remote repository the whole way down.
+        let currentHost = currentSessionID.flatMap { self.host(ofComposite: $0) }
         let path = windowID.flatMap { connection?.pathByWindow[$0] }
-        if let path { gitStatus.ensureRootResolved(path) }
+        let service = currentHost?.gitStatus
+        if let path { service?.ensureRootResolved(path) }
         syncGitToolVisibility()
         gitTool.update(
+            host: currentHost.map { host in
+                GitToolView.HostEnv(
+                    id: host.id, name: host.displayName, isLocal: host.isLocal,
+                    transport: host.transport, helper: host.helper,
+                    gitToolCommand: host.config?.gitToolCommand,
+                    remoteOpenCommand: host.config?.remoteOpenCommand
+                )
+            },
             path: path,
-            root: path.flatMap { gitStatus.repositoryRoot(forPath: $0) },
-            knownNotRepository: path.map { gitStatus.isKnownNotARepository(path: $0) } ?? false,
-            summary: path.flatMap { gitStatus.summary(forPath: $0) }
+            root: path.flatMap { service?.repositoryRoot(forPath: $0) },
+            knownNotRepository: path.map { service?.isKnownNotARepository(path: $0) ?? false }
+                ?? false,
+            summary: path.flatMap { service?.summary(forPath: $0) }
         )
 
         // Off screen is off duty: a hidden rail keeping a transcript watcher
         // alive would re-render a conversation nobody can see on every write
-        // the agent makes. `follow(nil)` is what stops the watcher.
-        guard conversationVisible else { return conversations.follow(nil) }
+        // the agent makes. `follow(nil)` is what stops the watcher — and for
+        // a remote host, the 1 Hz transcript poll with it.
+        guard conversationVisible else { return conversations.follow(nil, onHost: nil) }
 
-        conversations.follow(evidence)
+        conversations.follow(evidence, onHost: currentHost?.id)
 
         let window = windowID.flatMap { id in connection?.windows.first { $0.id == id } }
         let stats = windowID.flatMap { connection?.agentStats(forWindow: $0) }
@@ -1480,6 +1612,15 @@ final class MainViewController: NSSplitViewController {
     }
 
     private func placeholderForConversation(evidence: AgentPaneEvidence?) -> String {
+        // Before the three ordinary nothings: a host that cannot be reached
+        // is a different nothing again, with a different fix, and drawing
+        // any of the others for it would be the silent blank the issue's
+        // risk list names.
+        if let host = currentSessionID.flatMap({ self.host(ofComposite: $0) }),
+           !host.isLocal, host.state != .ready
+        {
+            return "Can't reach \(host.displayName) right now."
+        }
         guard let evidence else {
             return "No agent is running in this window."
         }
@@ -1510,7 +1651,7 @@ final class MainViewController: NSSplitViewController {
     /// by name it also fired on every rename, which is what turned renaming a
     /// session into a teardown of a session that was working perfectly.
     private func discardControllersForVanishedSessions() {
-        let live = Set(server.sessionIDs)
+        let live = Set(allSessionIDs)
         for (id, controller) in models where !live.contains(id) {
             // The name comes off the controller's own connection, not from
             // `describe`: `TmuxServer` has already dropped the connection this
@@ -1552,7 +1693,7 @@ final class MainViewController: NSSplitViewController {
     }
 
     private func showWithoutCancelling(sessionID id: String) {
-        guard currentSessionID != id, let connection = server.connection(id: id),
+        guard currentSessionID != id, let connection = connection(id: id),
               let model = model(forSessionID: id),
               let embedded = embeddedController(forSessionID: id) else { return }
 
@@ -1585,13 +1726,13 @@ final class MainViewController: NSSplitViewController {
     /// address one by, and the rail draws sessions in tmux's order without
     /// numbering them.
     func selectSession(atSlot slot: Int) {
-        let ids = server.sessionIDs
+        let ids = allSessionIDs
         guard slot >= 0, slot < ids.count else { return }
         show(sessionID: ids[slot])
     }
 
     func selectAdjacentSession(offset: Int) {
-        let ids = server.sessionIDs
+        let ids = allSessionIDs
         guard !ids.isEmpty, let current = currentSessionID,
               let index = ids.firstIndex(of: current) else { return }
         show(sessionID: ids[(index + offset + ids.count) % ids.count])
@@ -1610,7 +1751,7 @@ final class MainViewController: NSSplitViewController {
     /// nobody can reason about.
     func stop() {
         for controller in embedded.values { controller.detach() }
-        server.stop()
+        for host in hosts { host.stop() }
     }
 }
 
@@ -1618,7 +1759,7 @@ final class MainViewController: NSSplitViewController {
 
     extension MainViewController {
         var debugShownSessionName: String? {
-            currentSessionID.flatMap { server.name(ofSession: $0) }
+            currentSessionID.flatMap { connection(id: $0)?.sessionName }
         }
 
         /// The sessions this controller is holding a `SessionViewController`
@@ -1637,6 +1778,18 @@ final class MainViewController: NSSplitViewController {
         ///
         /// By name because the inspector's routes are typed by a person; the
         /// name is resolved to an id here and nowhere else.
+        /// A typed name resolved across every host, local first — `mini-probe`
+        /// on another machine is as much a thing a test aims at as a local
+        /// session, and headless runs have no pointer to reach the rail with.
+        private func debugComposite(named name: String) -> String? {
+            for host in hosts {
+                if let id = host.server.sessionID(named: name) {
+                    return SessionKey(host: host.id, session: id).composite
+                }
+            }
+            return nil
+        }
+
         func debugSessionController(named name: String) -> SessionModel? {
             // Made on demand rather than looked up. A session that has never
             // been shown is exactly what a test wants to aim at: driving one
@@ -1644,12 +1797,12 @@ final class MainViewController: NSSplitViewController {
             // check that does not take over the display of whoever is at the
             // machine. Same reasoning as `inSession` — acting on a session is
             // not conditional on having looked at it.
-            server.sessionID(named: name).flatMap { model(forSessionID: $0) }
+            debugComposite(named: name).flatMap { model(forSessionID: $0) }
         }
 
         /// Show a session the inspector named. Same reasoning as above.
         func debugShow(sessionNamed name: String) {
-            guard let id = server.sessionID(named: name) else { return }
+            guard let id = debugComposite(named: name) else { return }
             show(sessionID: id)
         }
 
@@ -1684,8 +1837,8 @@ final class MainViewController: NSSplitViewController {
                 guard let connection = server.connection(id: id) else { return nil }
                 return DebugInspector.SessionReport(
                     connection: connection,
-                    hiddenWindowIDs: models[id]?.hiddenWindowIDs ?? [],
-                    isShown: id == currentSessionID
+                    hiddenWindowIDs: models[localComposite(id)]?.hiddenWindowIDs ?? [],
+                    isShown: localComposite(id) == currentSessionID
                 )
             }
         }

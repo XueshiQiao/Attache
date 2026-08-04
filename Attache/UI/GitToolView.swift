@@ -190,10 +190,39 @@ final class GitToolView: NSView {
 
     // MARK: - Input
 
+    /// The machine the followed window's repository is on. What the child
+    /// spawn branches on: a local root gets lazygit as a local child, a
+    /// remote one gets `ssh -t <host> -- lazygit -p <root>` — same view,
+    /// same teardown, different machine doing the work.
+    struct HostEnv {
+        let id: String
+        let name: String
+        let isLocal: Bool
+        let transport: TmuxTransport
+        let helper: RemoteHelper?
+        /// Per-host `git_tool_command` override, when configured.
+        let gitToolCommand: String?
+        /// The `%h`/`%p` template a ⌘-clicked remote path opens with.
+        let remoteOpenCommand: String?
+    }
+
+    private var hostEnv: HostEnv?
+    /// Which machine `runningRoot` is on: `/Users/joey/x` here and on the
+    /// mini are different repositories with one name.
+    private var runningHostID: String?
+    /// Remote lazygit paths, probed once per host per run. `.some(nil)`
+    /// means probed-and-missing — the placeholder case, not a retry.
+    private var remoteProgramByHost = [String: String?]()
+    private var remoteProbesInFlight = Set<String>()
+
     /// Everything the tool follows, in one call, from `refreshConversation` —
     /// which already runs on every window switch, path change and git-status
     /// change, so there is no schedule of this tool's own to keep.
-    func update(path: String?, root: String?, knownNotRepository: Bool, summary: GitSummary?) {
+    func update(
+        host: HostEnv?, path: String?, root: String?,
+        knownNotRepository: Bool, summary: GitSummary?
+    ) {
+        hostEnv = host
         self.path = path
         self.root = root
         self.knownNotRepository = knownNotRepository
@@ -218,7 +247,7 @@ final class GitToolView: NSView {
             return
         }
         if let root {
-            if runningRoot == root {
+            if runningRoot == root, runningHostID == hostEnv?.id {
                 // Already right — but possibly hidden behind the placeholder
                 // a moment of "resolving…" put up. Window switches within one
                 // worktree land here.
@@ -265,7 +294,13 @@ final class GitToolView: NSView {
     /// The first word of the configured command, for messages — "lazygit
     /// exited", or whatever it was swapped for.
     private var programName: String {
-        AppSettings.gitToolCommand.split(separator: " ").first.map(String.init) ?? "lazygit"
+        configuredCommand.split(separator: " ").first.map(String.init) ?? "lazygit"
+    }
+
+    /// The per-host override wins: the same person can run stock lazygit
+    /// here and a pinned one on the machine that has it.
+    private var configuredCommand: String {
+        hostEnv?.gitToolCommand ?? AppSettings.gitToolCommand
     }
 
     // MARK: - The child
@@ -291,12 +326,39 @@ final class GitToolView: NSView {
             )
             return
         }
-        guard let command = Self.resolvedCommand() else {
-            showPlaceholder(
-                "Can't find \"\(programName)\".\n"
-                    + "Install it, or point git_tool_command in ~/.config/attache.toml at it."
-            )
-            return
+        let command: String
+        let workingDirectory: String?
+        if let env = hostEnv, !env.isLocal {
+            // The root meets two shells on the way to the other machine —
+            // quoting is total (`TransportCheck` executes it), and the
+            // refusals above still hold because policy beats mechanism.
+            switch remoteCommand(env: env, root: root) {
+            case .command(let line):
+                command = line
+                // Local-only key: the path names a directory on the other
+                // machine. lazygit's `-p` carries the target instead.
+                workingDirectory = nil
+            case .probing:
+                showPlaceholder("Looking for \(programName) on \(env.name)…")
+                return
+            case .missing:
+                showPlaceholder(
+                    "Can't find \"\(programName)\" on \(env.name).\n"
+                        + "Install it there, or set git_tool_command in this host's"
+                        + " [[host]] block in ~/.config/attache.toml."
+                )
+                return
+            }
+        } else {
+            guard let resolved = Self.resolvedCommand() else {
+                showPlaceholder(
+                    "Can't find \"\(programName)\".\n"
+                        + "Install it, or point git_tool_command in ~/.config/attache.toml at it."
+                )
+                return
+            }
+            command = resolved
+            workingDirectory = root
         }
 
         let base = TerminalConfiguration(startingFrom: .default) { builder in
@@ -310,8 +372,11 @@ final class GitToolView: NSView {
             // The path goes through ghostty's own config key rather than a
             // `cd` in the command line, so a root with a space or a quote in
             // it never meets a shell. Same category of choice as targeting
-            // tmux by id.
-            builder.withCustom("working-directory", root)
+            // tmux by id. Absent for a remote root, which no local working
+            // directory can name.
+            if let workingDirectory {
+                builder.withCustom("working-directory", workingDirectory)
+            }
         }
         let controller = TerminalController(
             configSource: .generated(base.rendered),
@@ -343,6 +408,7 @@ final class GitToolView: NSView {
         terminalView = view
         terminalController = controller
         runningRoot = root
+        runningHostID = hostEnv?.id
         placeholderLabel.isHidden = true
         reopenButton.isHidden = true
         TmuxLog.lifecycle("git tool started \(programName) in \(abbreviated(root))")
@@ -362,6 +428,57 @@ final class GitToolView: NSView {
             TmuxLog.lifecycle("git tool ended \(programName) in \(abbreviated(runningRoot))")
         }
         runningRoot = nil
+        runningHostID = nil
+    }
+
+    private enum RemoteCommand {
+        case command(String)
+        case probing
+        case missing
+    }
+
+    /// The remote command line, or the probe for it. `command -v` runs over
+    /// the helper once per host per run; a configured command that names its
+    /// own path is trusted as written, like the local walk.
+    private func remoteCommand(env: HostEnv, root: String) -> RemoteCommand {
+        let configured = configuredCommand
+        let program = configured.split(separator: " ", maxSplits: 1).first.map(String.init)
+        guard let program else { return .missing }
+
+        var raw = configured
+        if !program.contains("/") {
+            switch remoteProgramByHost[env.id] {
+            case .some(nil):
+                return .missing
+            case .some(let located?):
+                let tail = configured.dropFirst(program.count)
+                raw = TmuxTransport.shellQuote(located) + tail
+            case nil:
+                guard !remoteProbesInFlight.contains(env.id) else { return .probing }
+                guard let helper = env.helper else { return .missing }
+                remoteProbesInFlight.insert(env.id)
+                helper.probe(program: program) { [weak self] outcome in
+                    guard let self else { return }
+                    self.remoteProbesInFlight.remove(env.id)
+                    switch outcome {
+                    case .answered(let path):
+                        self.remoteProgramByHost[env.id] = .some(path)
+                    case .absent:
+                        self.remoteProgramByHost[env.id] = .some(nil)
+                    case .unavailable:
+                        // Not an answer — nothing cached, so the next reveal
+                        // asks again once the channel is back.
+                        break
+                    }
+                    self.reconcile()
+                }
+                return .probing
+            }
+        }
+        guard let line = env.transport.remoteToolShellCommand(
+            rawCommand: raw, quotedArguments: ["-p", root]
+        ) else { return .missing }
+        return .command(line)
     }
 
     private func showPlaceholder(_ text: String, reopen: Bool = false) {
@@ -396,6 +513,38 @@ final class GitToolView: NSView {
         // No tmux to ask here: the child's directory is the root it was
         // started in, so a relative path resolves against that.
         let cwd = runningRoot
+
+        if let env = hostEnv, !env.isLocal {
+            guard let helper = env.helper else {
+                onStatus?("Attaché: can't reach \(env.name) right now")
+                return
+            }
+            RemoteLinkResolver.resolve(raw: raw, cwd: cwd, helper: helper) { [weak self] target in
+                guard let self else { return }
+                guard let target else {
+                    self.onStatus?("Attaché: can't reach \(env.name) right now")
+                    return
+                }
+                switch target {
+                case let .url(url):
+                    NSWorkspace.shared.open(url)
+                case let .directory(path), let .file(path):
+                    RemoteOpener.open(
+                        path: path,
+                        host: env.name,
+                        destination: env.transport.ssh?.destination ?? env.name,
+                        template: env.remoteOpenCommand,
+                        status: { [weak self] message in self?.onStatus?(message) }
+                    )
+                case let .missing(path):
+                    self.onStatus?("Attaché: no such path on \(env.name) — \(path)")
+                case .unsupported:
+                    self.onStatus?("Attaché: not a path this app can open — \(raw)")
+                }
+            }
+            return
+        }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let target = TerminalLinkTarget.resolve(raw, cwd: cwd, existence: Self.existence)
             DispatchQueue.main.async { self?.perform(target, raw: raw) }

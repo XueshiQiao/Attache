@@ -70,6 +70,12 @@ final class TmuxSessionConnection {
         windows.contains { $0.hasActivity && $0.id != activeWindowID }
     }
 
+    /// How this session's machine is reached. Exposed because a few
+    /// operations cannot ride the control connection — a remote paste is a
+    /// one-shot exec with the clipboard on stdin — and because everything
+    /// that treats a tmux-reported path as openable must ask
+    /// `transport.pathsAreLocal` first.
+    let transport: TmuxTransport
     private let client: TmuxControlClient
     private var lastReportedGrid: (columns: Int, rows: Int)?
 
@@ -80,11 +86,15 @@ final class TmuxSessionConnection {
     private var renameStrings = TmuxRenameString()
 
 
-    init(tmuxPath: String, socket: TmuxSocket, sessionID: String, sessionName: String) {
+    init(transport: TmuxTransport, sessionID: String, sessionName: String,
+         decodesOctalReplies: Bool = false)
+    {
+        self.transport = transport
         self.sessionID = sessionID
         self.sessionName = sessionName
         client = TmuxControlClient(
-            tmuxPath: tmuxPath, socket: socket, sessionID: sessionID, sessionName: sessionName
+            transport: transport, sessionID: sessionID, sessionName: sessionName,
+            decodesOctalReplies: decodesOctalReplies
         )
 
         // Deliberately empty, and it is the shortest way to say what changed.
@@ -116,6 +126,9 @@ final class TmuxSessionConnection {
     }
 
     // MARK: - Lifecycle
+
+    /// See `TmuxControlClient.isRunning`; `TmuxServer` reconciles on it.
+    var clientIsRunning: Bool { client.isRunning }
 
     func start() {
         do {
@@ -662,6 +675,9 @@ final class TmuxSessionConnection {
         guard !text.isEmpty else { return false }
         pasteCounter += 1
         let token = "\(sessionID.dropFirst())-\(pasteCounter)"
+        guard transport.pathsAreLocal else {
+            return pasteRemotely(text: text, into: paneID, buffer: "attache-paste-\(token)")
+        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("attache-paste-\(token).txt")
         let path = url.path
@@ -706,8 +722,122 @@ final class TmuxSessionConnection {
         try? FileManager.default.removeItem(at: url)
     }
 
+    /// The clipboard never touches a disk on either machine when the paste
+    /// crosses ssh: a one-shot `tmux load-buffer -b <name> -` runs on the
+    /// host with the text on its stdin, and `paste-buffer` follows over the
+    /// control connection only after that exec answered exit 0.
+    ///
+    /// The one-shot exists because the obvious route lies. Control-mode
+    /// `load-buffer -` reports **success while failing** — measured for the
+    /// issue: `%begin`/`%end` flags 1, no `%error`, and `Bad file
+    /// descriptor: -` printed *outside any block* where the parser drops it —
+    /// so a control-mode paste would see `failed == false` and paste
+    /// whatever stale buffer held the name. A real process has a real exit
+    /// status, which is the entire reason this path spawns one.
+    ///
+    /// Capped, with an honest refusal: 11 MB loaded in 32 ms locally, but
+    /// over a slow link the same paste is a hang with no feedback, pinned to
+    /// a keystroke.
+    private static let remotePasteLimit = 4 * 1024 * 1024
+
+    private func pasteRemotely(text: String, into paneID: String, buffer: String) -> Bool {
+        let payload = Data(text.utf8)
+        guard payload.count <= Self.remotePasteLimit else {
+            showStatusMessage(
+                "Attaché: paste of \(payload.count / (1024 * 1024)) MB not sent over ssh"
+                    + " (limit \(Self.remotePasteLimit / (1024 * 1024)) MB)"
+            )
+            return true
+        }
+
+        let argv = transport.oneShotArgv(["load-buffer", "-b", buffer, "-"])
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: argv[0])
+        process.arguments = Array(argv.dropFirst())
+        let stdin = Pipe()
+        let stderr = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = stderr
+
+        process.terminationHandler = { [weak self] process in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard process.terminationStatus == 0 else {
+                    let said = String(
+                        decoding: stderr.fileHandleForReading.readDataToEndOfFile(),
+                        as: UTF8.self
+                    ).trimmingCharacters(in: .whitespacesAndNewlines)
+                    TmuxLog.lifecycle(
+                        "remote load-buffer failed (status \(process.terminationStatus)):"
+                            + " \(said)",
+                        session: self.sessionName
+                    )
+                    let reason = said.isEmpty
+                        ? "ssh exited \(process.terminationStatus)" : said
+                    self.showStatusMessage("Attaché: paste failed — \(reason)")
+                    return
+                }
+                self.client.run("paste-buffer -p -d -b \(buffer) -t \(paneID)") { [weak self] _, failed in
+                    guard failed else { return }
+                    // Same reasoning as the local path: a paste that never
+                    // happened is a buffer that was never deleted, holding
+                    // the clipboard in the remote server.
+                    self?.client.send("delete-buffer -b \(buffer)")
+                }
+            }
+        }
+        do {
+            TmuxLog.command("load-buffer -b \(buffer) - (one-shot, \(payload.count) bytes)",
+                            session: sessionName)
+            try process.run()
+        } catch {
+            showStatusMessage("Attaché: paste failed — ssh would not start")
+            return true
+        }
+        // Written after run, on a utility queue: a pipe's buffer is 64KB and
+        // a larger clipboard would deadlock a synchronous write against a
+        // child that has not started reading.
+        DispatchQueue.global(qos: .utility).async {
+            let handle = stdin.fileHandleForWriting
+            try? handle.write(contentsOf: payload)
+            try? handle.close()
+        }
+        return true
+    }
+
     func sendKeys(paneID: String, data: Data) {
         client.sendKeys(pane: paneID, data: data)
+    }
+
+    /// Diagnostics found the channel answering nothing for five seconds.
+    ///
+    /// Locally that stays a report: the measured causes are tmux-side stalls
+    /// (a slow hook) that recover on their own, and killing the client for
+    /// one would turn a hiccup into a teardown. Over ssh the usual cause is
+    /// a mux channel whose network died under it — a state that never heals —
+    /// so the client is restarted: stop() ends the child, the exit schedules
+    /// a session refresh, and `TmuxServer` recreates the connection because
+    /// the client is no longer running. Once per half minute, so a link that
+    /// is merely slow does not get torn down in a loop.
+    private var lastDeafRestart: Date?
+
+    func channelWentDeaf() {
+        guard transport.ssh != nil else { return }
+        if let last = lastDeafRestart, Date().timeIntervalSince(last) < 30 { return }
+        lastDeafRestart = Date()
+        TmuxLog.lifecycle(
+            "deaf channel on an ssh transport — restarting the control client",
+            session: sessionName
+        )
+        DiagnosticsCenter.shared.notice(AppNotice(
+            severity: .warning,
+            title: "Reconnecting to \(sessionName)",
+            body: "The control channel stopped answering; the connection is being"
+                + " remade over ssh.",
+            session: sessionName
+        ))
+        stop()
     }
 
     /// Ask tmux to move the active pane, then re-read what it actually is.
@@ -1278,15 +1408,18 @@ final class TmuxSessionConnection {
 
     /// Once per app run, not per connection: the options are server-wide and
     /// six sessions would post the same warning six times.
-    private static var serverOptionsAudited = false
+    private static var auditedHosts = Set<String>()
 
     /// See `TmuxOptionAudit` for what is checked and why. Asked over the
     /// control connection rather than one-shot spawns so the answers are the
     /// server this app is actually attached to, whatever the environment of a
     /// fresh spawn would resolve to.
     private func auditServerOptionsOnce() {
-        guard !Self.serverOptionsAudited else { return }
-        Self.serverOptionsAudited = true
+        // Latched per *host* rather than per process: with `[[host]]` blocks
+        // there are several servers now, and a hostile option on the second
+        // machine must not hide behind the first machine's clean audit.
+        guard !Self.auditedHosts.contains(transport.hostLabel) else { return }
+        Self.auditedHosts.insert(transport.hostLabel)
 
         // The *global* value only. `destroy-unattached` is a session option,
         // so a session can override this either way; per-session overrides

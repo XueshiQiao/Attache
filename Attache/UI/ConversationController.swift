@@ -19,9 +19,20 @@ import Foundation
 /// adding an agent is adding a provider to `providers` and nothing else.
 @MainActor
 final class ConversationController {
-    /// Ordered because the first one that recognises the evidence wins. Today
-    /// there is one; the list is what the second one gets added to.
-    private let providers: [AgentConversationProvider] = [ClaudeCodeConversationProvider()]
+    /// Providers per host, built on first use: which machine's file system a
+    /// transcript path names is decided by who reads it, so each host gets
+    /// its own provider list. Within a list, ordered — the first one that
+    /// recognises the evidence wins, and the list is what a second agent's
+    /// provider gets added to.
+    var makeProviders: ((String) -> [AgentConversationProvider])?
+    private var providersByHost = [String: [AgentConversationProvider]]()
+
+    private func providers(forHost hostID: String) -> [AgentConversationProvider] {
+        if let existing = providersByHost[hostID] { return existing }
+        let made = makeProviders?(hostID) ?? [ClaudeCodeConversationProvider()]
+        providersByHost[hostID] = made
+        return made
+    }
 
     private var locator: AgentConversationLocator?
     private var source: AgentConversationSource?
@@ -36,14 +47,16 @@ final class ConversationController {
     /// the common case compares two `AgentConversationLocator`s and returns.
     /// The expensive part — `locate`, which touches the disk — runs only when
     /// the evidence is not already resolved to the same place.
-    func follow(_ evidence: AgentPaneEvidence?) {
-        guard let evidence else { return clear() }
+    func follow(_ evidence: AgentPaneEvidence?, onHost hostID: String?) {
+        guard let evidence, let hostID else { return clear() }
+        let providers = providers(forHost: hostID)
 
         // `locate` may hit the file system, so it does not belong on the main
         // queue in principle. It is here on purpose anyway: it is a `stat` on a
-        // path that is almost always in the cache, and the alternative — hop
-        // off, hop back — reorders against the next notification and can settle
-        // on a stale locator. Revisit if it ever shows up in a trace.
+        // path that is almost always in the cache (and the remote provider
+        // deliberately answers without any I/O at all), and the alternative —
+        // hop off, hop back — reorders against the next notification and can
+        // settle on a stale locator. Revisit if it ever shows up in a trace.
         guard let next = providers.lazy.compactMap({ $0.locate(evidence) }).first else {
             return clear()
         }

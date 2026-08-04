@@ -376,6 +376,10 @@ final class DiagnosticsCenter {
                 + "no reply for \(seconds(elapsed)).",
             session: label
         ))
+        // Reporting is the whole job locally; over ssh the connection also
+        // gets the chance to remake itself, because a dead mux channel never
+        // heals on its own. The connection decides — it knows its transport.
+        connection(labelled: label)?.channelWentDeaf()
     }
 
     // MARK: - Snapshots

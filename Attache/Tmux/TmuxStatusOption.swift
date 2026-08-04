@@ -27,8 +27,8 @@ enum TmuxStatusOption {
     /// `off` is 0, `on` is 1, and tmux also accepts a count up to 5.
     /// `#{status_lines}` would be the obvious format and does not exist on
     /// 3.6a — measured, it expands to nothing — so the option itself is read.
-    static func lines(tmuxPath: String, socket: TmuxSocket, sessionID: String) -> Int {
-        switch value(tmuxPath: tmuxPath, socket: socket, sessionID: sessionID, option: "status") {
+    static func lines(transport: TmuxTransport, sessionID: String) -> Int {
+        switch value(transport: transport, sessionID: sessionID, option: "status") {
         case "off": 0
         case "on": 1
         case let other: Int(other) ?? 1
@@ -43,8 +43,8 @@ enum TmuxStatusOption {
     /// row 3, and reading it as row 5 lands past a horizontal divider and in
     /// the pane underneath. Which then answers with its own directory, and a
     /// relative link opens the wrong file rather than failing to open.
-    static func isAtTop(tmuxPath: String, socket: TmuxSocket, sessionID: String) -> Bool {
-        value(tmuxPath: tmuxPath, socket: socket, sessionID: sessionID, option: "status-position") == "top"
+    static func isAtTop(transport: TmuxTransport, sessionID: String) -> Bool {
+        value(transport: transport, sessionID: sessionID, option: "status-position") == "top"
     }
 
     /// The effective value, session first and then global.
@@ -56,17 +56,17 @@ enum TmuxStatusOption {
     /// "on" happens to be right until somebody's `.tmux.conf` says
     /// `set -g status 2`.
     private static func value(
-        tmuxPath: String, socket: TmuxSocket, sessionID: String, option: String
+        transport: TmuxTransport, sessionID: String, option: String
     ) -> String {
-        let session = run(tmuxPath, socket.arguments + ["show-options", "-v", "-t", sessionID, option])
+        let session = run(transport.oneShotArgv(["show-options", "-v", "-t", sessionID, option]))
         guard session.isEmpty else { return session }
-        return run(tmuxPath, socket.arguments + ["show-options", "-gv", option])
+        return run(transport.oneShotArgv(["show-options", "-gv", option]))
     }
 
-    private static func run(_ tmuxPath: String, _ arguments: [String]) -> String {
+    private static func run(_ argv: [String]) -> String {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: tmuxPath)
-        process.arguments = arguments
+        process.executableURL = URL(fileURLWithPath: argv[0])
+        process.arguments = Array(argv.dropFirst())
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice

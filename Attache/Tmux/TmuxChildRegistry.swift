@@ -122,9 +122,16 @@ enum TmuxChildRegistry {
             )
             return
         }
+        // The command line as `ps` prints it, read now so a later sweep can
+        // compare bytes — the only match that survives the ssh transports.
+        // Unreadable is recorded as absent and the sweep falls back to the
+        // old shape test, which is only right for local children.
+        let command = ps(["-o", "command=", "-p", "\(childPID)"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let record = TmuxChildRecord(
             ownerPID: ProcessInfo.processInfo.processIdentifier,
-            childPID: childPID, startedAt: started, sessionID: sessionID
+            childPID: childPID, startedAt: started, sessionID: sessionID,
+            commandLine: (command?.isEmpty == false) ? command : nil
         )
         withFileLock {
             var records = read()

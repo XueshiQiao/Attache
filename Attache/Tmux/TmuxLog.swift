@@ -48,6 +48,15 @@ enum TmuxLog {
 
     // MARK: - Entry points
 
+    /// The diagnostics tap: every redacted command line, as it goes out. A
+    /// settable closure pointed at `DiagnosticsCenter` by `AppDelegate` — the
+    /// same wiring as `noticeSink` — rather than a direct call, so this file
+    /// still compiles alone under the check tools that need a `TmuxLog`.
+    /// `nonisolated(unsafe)` on the same terms as any singleton access here:
+    /// written once at startup before the first connection exists, read from
+    /// whatever queue sends a command.
+    nonisolated(unsafe) static var commandSink: ((_ text: String, _ session: String) -> Void)?
+
     /// Record a command on its way to tmux.
     ///
     /// `caller` defaults to the calling function, which is the whole point: it
@@ -60,12 +69,12 @@ enum TmuxLog {
     ) {
         let text = redacted(command)
         emit(kind(of: command), session: session, caller: "\(caller)", text: text)
-        // The diagnostics tap, and this gate is *why* it works: every command
-        // passes through here, so expectations derived from the text cover
-        // call sites that do not exist yet. The redacted form on purpose —
+        // The tap sits behind this gate on purpose: every command passes
+        // through here, so expectations derived from the text cover call
+        // sites that do not exist yet. The redacted form on purpose too —
         // diagnostics keeps a ring of recent commands in its snapshots, and a
         // snapshot must not hold what this file just refused to log.
-        DiagnosticsCenter.shared.commandSent(text, session: session)
+        commandSink?(text, session)
     }
 
     /// Record something that is not a tmux command — a process spawning or

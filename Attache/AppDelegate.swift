@@ -65,6 +65,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         DiagnosticsCenter.shared.noticeSink = { notice in
             MainActor.assumeIsolated { NoticeCenter.shared.post(notice) }
         }
+        // The other half of the same wiring: TmuxLog's command tap, pointed at
+        // diagnostics here so `TmuxLog` itself stays compilable alone in the
+        // check tools.
+        TmuxLog.commandSink = { text, session in
+            DiagnosticsCenter.shared.commandSent(text, session: session)
+        }
         ActivationProbe.shared.start()
 
         // Before any connection of our own exists, so a reclaimed pid can never
@@ -121,19 +127,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         // be one dead-end alert, which for someone who had never run tmux was
         // the whole first-launch experience. tmux errors are shown in tmux's
         // own words; an empty server is an offer, not a failure.
-        switch TmuxControlClient.listSessions(tmuxPath: tmuxPath, socket: socket) {
+        let transport = TmuxTransport.local(tmuxPath: tmuxPath, socket: socket)
+        switch TmuxControlClient.listSessions(transport: transport) {
         case .failed(let message):
-            fail("tmux is not answering", "Asked \(socket.summary) and got: \(message)")
+            fail("tmux is not answering", "Asked \(transport.summary) and got: \(message)")
             return
         case .noServer:
-            guard offerToCreateFirstSession(tmuxPath: tmuxPath, socket: socket) else { return }
+            guard offerToCreateFirstSession(transport: transport) else { return }
         case .sessions(let sessions) where sessions.isEmpty:
-            guard offerToCreateFirstSession(tmuxPath: tmuxPath, socket: socket) else { return }
+            guard offerToCreateFirstSession(transport: transport) else { return }
         case .sessions:
             break
         }
 
-        let controller = MainViewController(server: TmuxServer(tmuxPath: tmuxPath, socket: socket))
+        // The remote hosts, validated. A broken block is a warning that names
+        // itself, never a startup failure: the local server must come up
+        // whether or not a machine on the other side of an ssh config does.
+        let (hostConfigs, hostProblems) = AppSettings.hosts
+        for reason in hostProblems {
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .warning,
+                title: "A [[host]] block was skipped",
+                body: "A [[host]] block in ~/.config/attache.toml \(reason)."
+            ))
+        }
+        let sshPath = AppSettings.sshPath
+        let hosts = [HostContext.local(transport: transport)]
+            + hostConfigs.map { HostContext.remote(config: $0, sshPath: sshPath) }
+        // The Settings window is made on demand and needs the same hosts the
+        // rail shows, for the per-host agent-setup rows.
+        SettingsStore.remoteHostsProvider = { hosts }
+
+        let controller = MainViewController(hosts: hosts)
         controller.onStatusChange = { [weak self] status in
             self?.status = status
             self?.refreshTitle()
@@ -722,12 +747,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     /// True means a session now exists and startup should continue. False
     /// means startup is over — the user chose to quit, or the create failed
     /// and `fail` has already put tmux's own words on screen.
-    private func offerToCreateFirstSession(tmuxPath: String, socket: TmuxSocket) -> Bool {
+    private func offerToCreateFirstSession(transport: TmuxTransport) -> Bool {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "No tmux sessions"
         alert.informativeText =
-            "There is no server, or no sessions, on \(socket.summary)."
+            "There is no server, or no sessions, on \(transport.summary)."
                 + " Create a session here, or quit and create one in a terminal."
         alert.addButton(withTitle: "Create Session")
         alert.addButton(withTitle: "Quit")
@@ -736,8 +761,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             NSApp.terminate(nil)
             return false
         }
-        TmuxLog.lifecycle("create-session offer accepted — creating on \(socket.summary)")
-        if let problem = TmuxControlClient.createDetachedSession(tmuxPath: tmuxPath, socket: socket) {
+        TmuxLog.lifecycle("create-session offer accepted — creating on \(transport.summary)")
+        if let problem = TmuxControlClient.createDetachedSession(transport: transport) {
             fail("tmux could not create a session", problem)
             return false
         }
@@ -747,7 +772,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         // detached session down again before the app attaches. Ask again
         // rather than open a window with nothing behind it.
         if case .sessions(let sessions) = TmuxControlClient.listSessions(
-            tmuxPath: tmuxPath, socket: socket
+            transport: transport
         ), !sessions.isEmpty {
             return true
         }

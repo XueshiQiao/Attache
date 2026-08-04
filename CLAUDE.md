@@ -227,6 +227,40 @@ It splits every case at every byte boundary and again one byte per chunk,
 because tmux cuts `%output` wherever its own buffer ends — including between the
 `ESC` and the `k`.
 
+**`TmuxTransport` has one, and it executes the quoting instead of eyeballing
+it.** A remote command crosses two shells — ssh joins its command words with
+spaces and hands the string to the remote login shell, and the embedded
+terminal's `command` goes through a local `/bin/sh -c` first — and a session id
+is `$N`, which every unquoted layer expands to nothing. The check renders each
+command and runs it through a real `/bin/sh` with an `ssh` stand-in that does
+what OpenSSH documents, comparing the argv that falls out the far end
+byte-for-byte. `HostConfig` validation and `TmuxVersion` parsing ride along.
+Run it after touching `TmuxTransport.swift`, `HostConfig.swift` or
+`TmuxVersion.swift`:
+
+```sh
+swiftc -O -o /tmp/transportcheck Attache/Tmux/TmuxSocket.swift \
+  Attache/Tmux/TmuxTransport.swift Attache/Tmux/HostConfig.swift \
+  Attache/Tmux/TmuxVersion.swift Tools/TransportCheck/main.swift
+/tmp/transportcheck
+```
+
+**The remote helper has one, and it runs the real script against the real
+parser.** `RemoteHelperScript` is the stateless `sh` loop every remote feature
+reads through; `RemoteHelper` is the frame parser that trusts nothing it did
+not length-prefix. The check bootstraps the exact shipped script through a
+local `/bin/sh` — sh is sh, ssh is only the pipe — and drives it with the
+exact shipped client, including the byte-exactness cases a spliced transcript
+or a wrong `git status` would come from. Run it after touching either file:
+
+```sh
+swiftc -O -o /tmp/helpercheck Attache/Tmux/TmuxLog.swift \
+  Attache/Remote/RemoteHelperScript.swift Attache/Remote/RemoteHelper.swift \
+  Attache/Remote/PosixChecksum.swift Attache/Status/GitStatus.swift \
+  Tools/HelperCheck/main.swift
+/tmp/helpercheck
+```
+
 **`TerminalLinkTarget` has one, and it decides what a click opens on the user's
 machine.** libghostty matches the link and draws the underline; this turns the
 matched string into a file, a directory, a URL or nothing. The two directions
@@ -518,6 +552,16 @@ one of them presents as "the code is obviously correct and yet".
   had just been hidden and the "tmux made it active again, put it back" rule
   fired on it. ⌘W therefore only ever switched windows. `hidingActiveWindow`
   is the latch that tells the two apart.
+- **tmux ≤ 3.5 octal-escapes control-mode reply lines; 3.6 does not.**
+  Measured 2026-08-04 against 3.5a and 3.6a with the same command over a pipe:
+  `list-windows` answered a literal four-character `\001` on 3.5a where 3.6a
+  sent the raw byte — so the `\u{01}` field separators this app asks for never
+  match, and the window list of a remote 3.5 server silently stays empty.
+  Notifications (`%subscription-changed` included) carry raw bytes on *both*,
+  so the decode belongs to reply blocks alone, and it is gated on the probed
+  server version (`TmuxVersion.escapesControlModeReplies`), because a decode
+  applied to a 3.6 reply would corrupt content that legitimately contains
+  backslash-digit runs.
 - **`capture-pane` returns one line per row including blanks.** Painting all of
   them parks the cursor on the bottom row, so a prompt redrawn after SIGWINCH
   lands at the bottom of an empty screen. Trim trailing blanks.

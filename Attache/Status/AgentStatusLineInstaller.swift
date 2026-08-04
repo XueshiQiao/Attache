@@ -64,7 +64,15 @@ enum AgentStatusLineInstaller {
     }
 
     /// The command this app writes into `statusLine.command`.
-    static var installedCommand: String { "sh \(scriptURL.path)" }
+    static var installedCommand: String { installedCommand(scriptPath: scriptURL.path) }
+    /// The remote install writes the same wrapper on another machine and
+    /// needs the command spelled with that machine's path.
+    static func installedCommand(scriptPath: String) -> String { "sh \(scriptPath)" }
+
+    /// Bumped when either script changes meaningfully; the stamp line in the
+    /// scripts is what a remote state check reads. See `AgentHookInstaller
+    /// .scriptVersion` for the local story.
+    static let scriptVersion = 1
 
     enum Failure: LocalizedError {
         case unsupportedType(String)
@@ -334,6 +342,7 @@ enum AgentStatusLineInstaller {
 
     static let script = #"""
     #!/bin/sh
+    # attache-hook-version: 1
     # Attaché — feeds the sidebar the numbers Claude Code publishes only here.
     #
     # This is a wrapper. Whatever status line was configured before is recorded

@@ -73,6 +73,22 @@ final class SessionSidebarView: NSView {
     var onHideWindow: ((String, String) -> Void)?
     var onKillWindow: ((String, String) -> Void)?
     var onRestoreHidden: ((String) -> Void)?
+    /// A down host's row was clicked: try its connection again now.
+    var onHostRetry: ((String) -> Void)?
+
+    /// One machine's heading, when the rail draws the host tier at all — it
+    /// exists only while a `[[host]]` is configured, so a local-only rail
+    /// looks exactly as it always did.
+    struct HostDescriptor: Equatable {
+        let id: String
+        let name: String
+        /// Prose for the row's right edge and tooltip; nil when all is well.
+        let state: String?
+        let tone: SidebarHostRow.Tone
+        /// Wires the click. True only when down — a healthy heading is not a
+        /// button.
+        let canRetry: Bool
+    }
 
     /// One session, and everything the rail needs to draw it expanded.
     ///
@@ -82,8 +98,14 @@ final class SessionSidebarView: NSView {
     /// that is what keeps the activity dots honest — so their window lists are
     /// already there to hand over.
     struct Entry {
-        /// tmux's `$N`. What this session *is*; `name` is what it is called.
+        /// The `SessionKey` composite — host and `$N` in one string, because
+        /// `$N` alone stops being an identity the moment two machines'
+        /// sessions share this rail: `$1` exists on every server. Everything
+        /// in this view keys off this opaquely; only `MainViewController`
+        /// ever takes it apart.
         let id: String
+        /// Which `HostDescriptor` this session lists under.
+        let host: String
         let name: String
         let hasActivity: Bool
         /// In tmux's order. Empty only for a session with no live connection.
@@ -132,6 +154,7 @@ final class SessionSidebarView: NSView {
     }
 
     private var entries = [Entry]()
+    private var hostRows = [HostDescriptor]()
     private var selectedID: String?
 
     /// Sessions whose windows are listed. The app's one other piece of purely
@@ -180,6 +203,7 @@ final class SessionSidebarView: NSView {
 
     /// One complete description of what the rail should draw.
     private struct Update {
+        let hosts: [HostDescriptor]
         let entries: [Entry]
         let selected: String?
     }
@@ -207,20 +231,26 @@ final class SessionSidebarView: NSView {
     /// the selected session, the session the drag started in — is wrong the
     /// moment the pointer crosses into another session's block.
     private enum Row {
+        case host(SidebarHostRow)
         case session(SidebarSessionRow, id: String)
         case window(SidebarWindowRow, session: String)
         case hidden(SidebarHiddenRow, session: String)
 
         var view: NSView {
             switch self {
+            case .host(let view): view
             case .session(let view, _): view
             case .window(let view, _): view
             case .hidden(let view, _): view
             }
         }
 
-        var session: String {
+        /// nil for a host heading — the one row that belongs to no session.
+        /// Optional on purpose: every consumer is a drag or menu resolver,
+        /// and a host row answering some session would make it a drop target.
+        var session: String? {
             switch self {
+            case .host: nil
             case .session(_, let id): id
             case .window(_, let session): session
             case .hidden(_, let session): session
@@ -229,6 +259,7 @@ final class SessionSidebarView: NSView {
 
         var height: CGFloat {
             switch self {
+            case .host: SidebarHostRow.height
             case .session: SidebarSessionRow.height
             // The instance's own, not the type's: see `SidebarWindowRow
             // .rowHeight`. The type's answer follows the setting live and the
@@ -346,7 +377,7 @@ final class SessionSidebarView: NSView {
     /// different states. Switching sessions mid-drag — ⌃⌘2 is enough, a mouse
     /// drag does not block keys — then made the drop look up a window id that
     /// is not in the new list and silently do nothing.
-    func update(entries: [Entry], selected: String?) {
+    func update(hosts: [HostDescriptor] = [], entries: [Entry], selected: String?) {
         // Pruned here rather than only where an update is applied, because a
         // held-back update is *replaced* by the next one, not queued behind it.
         // A session that disappeared and came back under the same name while
@@ -354,7 +385,7 @@ final class SessionSidebarView: NSView {
         // is here", and an unrelated new session would open already expanded.
         expandedSessions.formIntersection(Set(entries.map(\.id)))
 
-        let update = Update(entries: entries, selected: selected)
+        let update = Update(hosts: hosts, entries: entries, selected: selected)
         guard editor == nil, draggingWindowID == nil else {
             pendingUpdate = update
             return
@@ -363,6 +394,7 @@ final class SessionSidebarView: NSView {
     }
 
     private func apply(_ update: Update) {
+        hostRows = update.hosts
         entries = update.entries
         // Whatever the app switched to is opened, because the point of
         // switching is to work in it. Closing it again afterwards is allowed —
@@ -413,6 +445,9 @@ final class SessionSidebarView: NSView {
     /// click. tmux chatters, and the Git service has its own reasons to speak.
     private var drawnSignature: String {
         var parts = [selectedID ?? "-"]
+        for host in hostRows {
+            parts.append("host:\(host.id)|\(host.name)|\(host.state ?? "-")|\(host.tone)")
+        }
         for entry in entries {
             let sessionBadge = entry.visibleWindows
                 .compactMap { entry.decorations[$0.id]?.agent }
@@ -476,96 +511,118 @@ final class SessionSidebarView: NSView {
         for row in rows { row.view.removeFromSuperview() }
         rows.removeAll()
 
-        for entry in entries {
-            // Captured, not read back later: from here on these rows belong to
-            // this session no matter what the app switches to before the user
-            // finishes what they started. See the callback declarations.
-            let session = entry.id
-            let isCurrent = session == selectedID
-            let expanded = isExpanded(session)
-
-            // The most urgent agent anywhere in this session, so a collapsed
-            // heading still reports one that is waiting for input.
-            // Settled-aware, like the window rows: a heading that kept saying
-            // "just finished" hours later is the same defect one level up.
-            let winner = entry.visibleWindows
-                .compactMap { entry.decorations[$0.id]?.agent }
-                .reduce(nil) { AgentBadge.moreUrgent($0, $1) }
-            let sessionAgent = (winner?.isSettled == true) ? nil : winner?.state
-
-            let header = SidebarSessionRow(
-                id: session,
-                name: entry.name,
-                windowCount: entry.windowCount,
-                hasActivity: entry.hasActivity,
-                isCurrent: isCurrent,
-                isExpanded: expanded,
-                agent: sessionAgent
-            )
-            header.onClick = { [weak self] in
-                self?.onSelect?(session)
-                self?.resumeUpdates()
-            }
-            header.onDoubleClick = { [weak self] in self?.beginRenameSession(session) }
-            header.onToggle = { [weak self] in self?.toggleExpanded(session) }
-            header.onNewWindow = { [weak self] in
-                self?.notePressElsewhere()
-                self?.onNewWindow?(session)
-            }
-            header.isDoubleClick = { [weak self] row, count in
-                self?.isDoubleClick(on: row, clickCount: count) ?? false
-            }
-            rowsView.addSubview(header)
-            rows.append(.session(header, id: session))
-
-            guard expanded else { continue }
-
-            for window in entry.visibleWindows {
-                // One filled row in the whole rail, and it is the window on
-                // screen. tmux keeps an active window per session, so drawing
-                // that faithfully put a selection in every open list — four
-                // sessions open, four rows claiming to be selected, none of
-                // them the one being looked at. The pill answers "where am I",
-                // and there is only ever one answer.
-                let row = SidebarWindowRow(
-                    window: window,
-                    isActive: isCurrent && window.id == entry.activeWindowID,
-                    decoration: entry.decorations[window.id] ?? WindowDecoration()
+        // With no hosts configured the rail is the flat two-level list it
+        // always was; with hosts, each machine heads its own block — sessions
+        // grouped under the machine they live on, and a host with nothing to
+        // list still gets its heading, because that heading is where its
+        // state (connecting, or the ssh error) is said.
+        let groups: [(HostDescriptor?, [Entry])] = hostRows.isEmpty
+            ? [(nil, entries)]
+            : hostRows.map { host in (host, entries.filter { $0.host == host.id }) }
+        for (host, groupEntries) in groups {
+            if let host {
+                let row = SidebarHostRow(
+                    id: host.id, name: host.name, state: host.state, tone: host.tone
                 )
-                row.onClick = { [weak self] in
-                    self?.onSelectWindow?(session, window.id)
-                    // The press held a rebuild back; the release is what lets
-                    // it through. Without this a rail that nothing else
-                    // disturbs keeps drawing whatever it had when the button
-                    // went down.
+                if host.canRetry {
+                    row.onRetry = { [weak self] in self?.onHostRetry?(host.id) }
+                }
+                rowsView.addSubview(row)
+                rows.append(.host(row))
+            }
+            for entry in groupEntries {
+                // Captured, not read back later: from here on these rows belong to
+                // this session no matter what the app switches to before the user
+                // finishes what they started. See the callback declarations.
+                let session = entry.id
+                let isCurrent = session == selectedID
+                let expanded = isExpanded(session)
+
+                // The most urgent agent anywhere in this session, so a collapsed
+                // heading still reports one that is waiting for input.
+                // Settled-aware, like the window rows: a heading that kept saying
+                // "just finished" hours later is the same defect one level up.
+                let winner = entry.visibleWindows
+                    .compactMap { entry.decorations[$0.id]?.agent }
+                    .reduce(nil) { AgentBadge.moreUrgent($0, $1) }
+                let sessionAgent = (winner?.isSettled == true) ? nil : winner?.state
+
+                let header = SidebarSessionRow(
+                    id: session,
+                    name: entry.name,
+                    windowCount: entry.windowCount,
+                    hasActivity: entry.hasActivity,
+                    isCurrent: isCurrent,
+                    isExpanded: expanded,
+                    agent: sessionAgent
+                )
+                header.onClick = { [weak self] in
+                    self?.onSelect?(session)
                     self?.resumeUpdates()
                 }
-                row.onDoubleClick = { [weak self] in self?.beginRenameWindow(window, in: session) }
-                row.isDoubleClick = { [weak self] identity, count in
-                    self?.isDoubleClick(on: identity, clickCount: count) ?? false
+                header.onDoubleClick = { [weak self] in self?.beginRenameSession(session) }
+                header.onToggle = { [weak self] in self?.toggleExpanded(session) }
+                header.onNewWindow = { [weak self] in
+                    self?.notePressElsewhere()
+                    self?.onNewWindow?(session)
                 }
-                row.onContextMenu = { [weak self, weak row] point in
-                    guard let row else { return }
-                    self?.showMenu(forWindow: window.id, in: session, at: point, from: row)
+                header.isDoubleClick = { [weak self] row, count in
+                    self?.isDoubleClick(on: row, clickCount: count) ?? false
                 }
-                row.onDragged = { [weak self] location in
-                    self?.dragMoved(windowID: window.id, from: session, to: location)
+                rowsView.addSubview(header)
+                rows.append(.session(header, id: session))
+
+                guard expanded else { continue }
+
+                for window in entry.visibleWindows {
+                    // One filled row in the whole rail, and it is the window on
+                    // screen. tmux keeps an active window per session, so drawing
+                    // that faithfully put a selection in every open list — four
+                    // sessions open, four rows claiming to be selected, none of
+                    // them the one being looked at. The pill answers "where am I",
+                    // and there is only ever one answer.
+                    let row = SidebarWindowRow(
+                        window: window,
+                        isActive: isCurrent && window.id == entry.activeWindowID,
+                        decoration: entry.decorations[window.id] ?? WindowDecoration()
+                    )
+                    row.onClick = { [weak self] in
+                        self?.onSelectWindow?(session, window.id)
+                        // The press held a rebuild back; the release is what lets
+                        // it through. Without this a rail that nothing else
+                        // disturbs keeps drawing whatever it had when the button
+                        // went down.
+                        self?.resumeUpdates()
+                    }
+                    row.onDoubleClick = { [weak self] in self?.beginRenameWindow(window, in: session) }
+                    row.isDoubleClick = { [weak self] identity, count in
+                        self?.isDoubleClick(on: identity, clickCount: count) ?? false
+                    }
+                    row.onContextMenu = { [weak self, weak row] point in
+                        guard let row else { return }
+                        self?.showMenu(forWindow: window.id, in: session, at: point, from: row)
+                    }
+                    row.onDragged = { [weak self] location in
+                        self?.dragMoved(windowID: window.id, from: session, to: location)
+                    }
+                    row.onDragEnded = { [weak self] in self?.dragEnded(from: session) }
+                    rowsView.addSubview(row)
+                    rows.append(.window(row, session: session))
                 }
-                row.onDragEnded = { [weak self] in self?.dragEnded(from: session) }
-                rowsView.addSubview(row)
-                rows.append(.window(row, session: session))
+
+                if !entry.hiddenIDs.isEmpty {
+                    let row = SidebarHiddenRow(count: entry.hiddenIDs.count)
+                    row.onPress = { [weak self] in self?.notePressElsewhere() }
+                    row.onClick = { [weak self] in
+                        self?.onRestoreHidden?(session)
+                        self?.resumeUpdates()
+                    }
+                    rowsView.addSubview(row)
+                    rows.append(.hidden(row, session: session))
+                }
             }
 
-            if !entry.hiddenIDs.isEmpty {
-                let row = SidebarHiddenRow(count: entry.hiddenIDs.count)
-                row.onPress = { [weak self] in self?.notePressElsewhere() }
-                row.onClick = { [weak self] in
-                    self?.onRestoreHidden?(session)
-                    self?.resumeUpdates()
-                }
-                rowsView.addSubview(row)
-                rows.append(.hidden(row, session: session))
-            }
+
         }
 
         // Back on top of the rows that were just added. Subviews stack in the
@@ -616,7 +673,12 @@ final class SessionSidebarView: NSView {
         let width = scrollView.contentSize.width
         var y: CGFloat = 0
         for (index, row) in rows.enumerated() {
-            if case .session = row, index > 0 { y += SidebarSessionRow.topGap }
+            if case .host = row, index > 0 { y += SidebarHostRow.topGap }
+            // No session gap right under a host heading: the heading's own
+            // air already separates the block.
+            if case .session = row, index > 0, !rows[index - 1].view.isKind(of: SidebarHostRow.self) {
+                y += SidebarSessionRow.topGap
+            }
             row.view.frame = CGRect(x: 6, y: y, width: max(0, width - 12), height: row.height)
             y += row.height + gap
         }
@@ -641,7 +703,11 @@ final class SessionSidebarView: NSView {
               active != revealedWindowID else { return }
         revealedWindowID = active
         guard let row = rows.compactMap({ row -> SidebarWindowRow? in
-            guard case .window(let view, _) = row, view.windowID == active else { return nil }
+            // The session travels in the match: window ids repeat across
+            // hosts now, so `@5` alone could name a row in another machine's
+            // block and yank the scroll there.
+            guard case .window(let view, let session) = row, session == selectedID,
+                  view.windowID == active else { return nil }
             return view
         }).first else { return }
         rowsView.scrollToVisible(row.frame.insetBy(dx: 0, dy: -SidebarSessionRow.topGap))
@@ -817,9 +883,11 @@ final class SessionSidebarView: NSView {
         // Which list the pointer is over: the session of the last row that
         // starts at or above it. Every row carries its session, so a collapsed
         // heading answers this as readily as a window row does — which is what
-        // makes a closed session a place a window can be dropped into.
-        let target = rows.last { point.y >= $0.view.frame.minY }?.session
-            ?? rows.first?.session
+        // makes a closed session a place a window can be dropped into. A host
+        // heading carries none and is skipped: hovering it reads as the block
+        // above, never as a drop target of its own.
+        let target = rows.last { point.y >= $0.view.frame.minY && $0.session != nil }?.session
+            ?? rows.first(where: { $0.session != nil })?.session
             ?? source
         dropSession = target
 

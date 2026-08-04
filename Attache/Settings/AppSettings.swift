@@ -69,6 +69,7 @@ enum AppSettings {
         static let startupWindow          = "startup_window"
         static let gitToolCommand         = "git_tool_command"
         static let tmuxSocket             = "tmux_socket"
+        static let sshPath                = "ssh_path"
     }
 
     /// The old `UserDefaults` name for each key, for the migration and nothing
@@ -383,6 +384,23 @@ enum AppSettings {
     static var tmuxSocket: String {
         get { store.string(forKey: Key.tmuxSocket) ?? "" }
         set { store.set(newValue.isEmpty ? nil : newValue, forKey: Key.tmuxSocket) }
+    }
+
+    /// The ssh binary used to reach `[[host]]` machines. File-only, default
+    /// `/usr/bin/ssh`. Exists for the machine whose ssh lives elsewhere — and
+    /// because pointing the whole remote stack at a stand-in is the only way
+    /// to exercise it without a network.
+    static var sshPath: String {
+        let value = store.string(forKey: Key.sshPath)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? "/usr/bin/ssh" : value
+    }
+
+    /// The `[[host]]` blocks, validated. Problems come back beside the good
+    /// blocks rather than being logged here, because the caller owns how to
+    /// say them — a warning notice per broken block, not a silent skip.
+    static var hosts: (hosts: [HostConfig], problems: [String]) {
+        HostConfig.parseAll(store.hostTables)
     }
 
     /// Which session to open on, by name. Empty means "whichever comes first",
