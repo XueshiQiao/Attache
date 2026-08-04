@@ -537,4 +537,7 @@ one of them presents as "the code is obviously correct and yet".
 
 ## Open work
 
-See [TODO.md](TODO.md).
+Open work lives in the [GitHub issues](https://github.com/XueshiQiao/Attache/issues).
+TODO.md was migrated there and deleted on 2026-08-04; its full text — including
+the record of everything already finished and how it was verified — is in git
+history before that date.

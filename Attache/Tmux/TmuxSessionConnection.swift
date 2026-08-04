@@ -80,11 +80,11 @@ final class TmuxSessionConnection {
     private var renameStrings = TmuxRenameString()
 
 
-    init(tmuxPath: String, sessionID: String, sessionName: String) {
+    init(tmuxPath: String, socket: TmuxSocket, sessionID: String, sessionName: String) {
         self.sessionID = sessionID
         self.sessionName = sessionName
         client = TmuxControlClient(
-            tmuxPath: tmuxPath, sessionID: sessionID, sessionName: sessionName
+            tmuxPath: tmuxPath, socket: socket, sessionID: sessionID, sessionName: sessionName
         )
 
         // Deliberately empty, and it is the shortest way to say what changed.
@@ -1269,6 +1269,94 @@ final class TmuxSessionConnection {
         notifyModelChanged()
     }
 
+    // MARK: - Server-option audit
+
+    /// Config errors already noticed this run. Static because the same lines
+    /// can arrive on more than one connection's handshake, and one problem
+    /// deserves one notice. Main-queue only, like every notification here.
+    private static var noticedConfigErrors = Set<String>()
+
+    /// Once per app run, not per connection: the options are server-wide and
+    /// six sessions would post the same warning six times.
+    private static var serverOptionsAudited = false
+
+    /// See `TmuxOptionAudit` for what is checked and why. Asked over the
+    /// control connection rather than one-shot spawns so the answers are the
+    /// server this app is actually attached to, whatever the environment of a
+    /// fresh spawn would resolve to.
+    private func auditServerOptionsOnce() {
+        guard !Self.serverOptionsAudited else { return }
+        Self.serverOptionsAudited = true
+
+        // The *global* value only. `destroy-unattached` is a session option,
+        // so a session can override this either way; per-session overrides
+        // are checked by `auditSessionLifecycleOptions`, unlatched, on every
+        // connection. Split like this so the common case — one global `on` —
+        // is one notice instead of one per session.
+        client.run("show-options -g -v destroy-unattached") { lines, failed in
+            guard !failed,
+                  let value = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  TmuxOptionAudit.isHostileLifecycleValue(value) else { return }
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .warning,
+                title: "This tmux server destroys unattached sessions",
+                body: "destroy-unattached is \(value). This app's connections count as"
+                    + " attached clients, so quitting the app can destroy sessions —"
+                    + " and whatever is running inside them. Consider `set -g"
+                    + " destroy-unattached off` in ~/.tmux.conf."
+            ))
+        }
+
+        client.run("show-options -s -v exit-unattached") { lines, failed in
+            guard !failed,
+                  let value = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  TmuxOptionAudit.isHostileLifecycleValue(value) else { return }
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .warning,
+                title: "This tmux server exits when unattached",
+                body: "exit-unattached is \(value): the server exits when its last"
+                    + " client detaches, so quitting this app can take the whole tmux"
+                    + " server — every session in it — down with it."
+            ))
+        }
+
+        client.run("show-options -g command-alias") { lines, failed in
+            guard !failed else { return }
+            let shadowed = TmuxOptionAudit.shadowedCommands(inShowOptionsOutput: lines)
+            guard !shadowed.isEmpty else { return }
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .warning,
+                title: "A tmux command-alias shadows commands this app uses",
+                body: "command-alias redefines \(shadowed.joined(separator: ", "))."
+                    + " Everything this app does through"
+                    + " \(shadowed.count == 1 ? "that command" : "those commands")"
+                    + " will misbehave until the alias is removed."
+            ))
+        }
+    }
+
+    /// The per-session half of the lifecycle audit: a session-scope
+    /// `destroy-unattached` set on *this* session, which the global check
+    /// above cannot see. Unlatched — every connection asks about its own
+    /// session once, at attach. `show-options -v -t` without `-g` answers
+    /// empty for a session that only inherits, so the global-`on` case posts
+    /// one server-wide notice rather than one per session.
+    private func auditSessionLifecycleOptions() {
+        client.run("show-options -v -t \(sessionID) destroy-unattached") { [weak self] lines, failed in
+            guard let self, !failed,
+                  let value = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  TmuxOptionAudit.isHostileLifecycleValue(value) else { return }
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .warning,
+                title: "This session is destroyed when unattached",
+                body: "\(self.sessionName) sets destroy-unattached to \(value) itself,"
+                    + " so quitting this app can destroy it — and whatever is"
+                    + " running inside it.",
+                session: self.sessionName
+            ))
+        }
+    }
+
     // MARK: - Notifications
 
     private func handle(_ notification: TmuxNotification) {
@@ -1295,6 +1383,8 @@ final class TmuxSessionConnection {
                 noteName(name)
             }
             subscribeToActivity()
+            auditServerOptionsOnce()
+            auditSessionLifecycleOptions()
             // After the subscriptions, so the first capture has a pane list to
             // work from rather than starting on an empty one.
             applyAgentStateSource()
@@ -1402,6 +1492,22 @@ final class TmuxSessionConnection {
             guard let index = windows.firstIndex(where: { $0.id == windowID }) else { return }
             windows[index].name = TmuxText.plain(name)
             notifyModelChanged()
+
+        case .other(let verb, let rest) where verb == "%config-error":
+            // Surfaced because the failure it names is otherwise perfectly
+            // silent: the attach succeeds, and the user's settings are just
+            // not there. Measured on 3.6a (2026-08-04): with one unknown
+            // command in the file, *nothing* in it applied — not even the
+            // lines before the error — so the body's claim is the
+            // measurement, not a guess. Deduplicated across connections
+            // because every attach can carry the same lines, and one problem
+            // deserves one notice.
+            guard Self.noticedConfigErrors.insert(rest).inserted else { return }
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .warning,
+                title: "tmux configuration error",
+                body: "\(rest) — the file did not fully apply."
+            ))
 
         case .other(let verb, _) where verb == "%sessions-changed":
             onServerSessionsChanged?()

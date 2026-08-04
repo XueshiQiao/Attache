@@ -19,6 +19,10 @@ import Foundation
 @MainActor
 final class TmuxServer {
     let tmuxPath: String
+    /// Which server, fixed for the life of the app. Everything here is keyed
+    /// by bare session ids, which are unique only within one server — so one
+    /// `TmuxServer` is one socket, and changing the setting means relaunching.
+    let socket: TmuxSocket
 
     /// tmux's session ids, in tmux's own order. The identity of a session
     /// everywhere in this app: a name is user text and any terminal can change
@@ -31,8 +35,9 @@ final class TmuxServer {
     /// list changes in a way the sidebar shows.
     var onChange: (() -> Void)?
 
-    init(tmuxPath: String) {
+    init(tmuxPath: String, socket: TmuxSocket) {
         self.tmuxPath = tmuxPath
+        self.socket = socket
     }
 
     func start() {
@@ -89,13 +94,36 @@ final class TmuxServer {
         // session that no longer existed, and the app went on showing a session
         // the server had lost — with no route out of it, because every trigger
         // that would re-ask is carried by a connection. Now only "could not ask
-        // tmux at all" returns early; an empty list reconciles like any other.
-        guard let listed = TmuxControlClient.listSessions(tmuxPath: tmuxPath) else { return }
+        // tmux at all" returns early; no server and an empty list both
+        // reconcile like any other answer. A failed ask keeps the re-ask alive
+        // when there is nothing left to hear from — returning silently there
+        // used to end the loop for good, since the re-ask is the only trigger
+        // that does not need a connection.
+        let listed: [TmuxSessionListing]
+        switch TmuxControlClient.listSessions(tmuxPath: tmuxPath, socket: socket) {
+        case .failed(let message):
+            TmuxLog.lifecycle("list-sessions failed, changing nothing: \(message)")
+            // Retry unconditionally, not only when `connections` is empty:
+            // the dictionary still holds a connection whose client has
+            // *exited* — reconciliation is what removes entries, and it needs
+            // a successful listing to run. Gating the retry on emptiness left
+            // exactly that state stuck forever, because a dead client sends
+            // no further notifications to trigger anything. A retry against a
+            // healthy server is one list-sessions and then silence, so the
+            // 1 Hz cadence the gone-server loop already uses is fine here.
+            scheduleRetryAfterFailedListing()
+            return
+        case .noServer:
+            listed = []
+        case .sessions(let sessions):
+            listed = sessions
+        }
         sessionIDs = listed.map(\.id)
 
         for session in listed where connections[session.id] == nil {
             let connection = TmuxSessionConnection(
-                tmuxPath: tmuxPath, sessionID: session.id, sessionName: session.name
+                tmuxPath: tmuxPath, socket: socket,
+                sessionID: session.id, sessionName: session.name
             )
             connection.addModelObserver { [weak self] in self?.onChange?() }
             connection.onServerSessionsChanged = { [weak self] in
@@ -149,14 +177,19 @@ final class TmuxServer {
         // Not sent through a control client, so it bypasses the logging choke
         // point in `TmuxControlClient.enqueue` and has to record itself.
         TmuxLog.command("new-session -d", session: "-")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: tmuxPath)
-        process.arguments = ["new-session", "-d"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
-        process.waitUntilExit()
-        TmuxLog.lifecycle("new-session -d finished, status \(process.terminationStatus)")
+        if let problem = TmuxControlClient.createDetachedSession(tmuxPath: tmuxPath, socket: socket) {
+            // A refused create used to go to /dev/null and read as the +
+            // button doing nothing. tmux's own words, or there is nothing for
+            // the user to act on.
+            TmuxLog.lifecycle("new-session -d failed: \(problem)")
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .error,
+                title: "tmux could not create a session",
+                body: problem
+            ))
+        } else {
+            TmuxLog.lifecycle("new-session -d succeeded")
+        }
         refreshSessions()
     }
 
@@ -175,6 +208,19 @@ final class TmuxServer {
             guard let self else { return }
             self.reaskScheduled = false
             guard self.connections.isEmpty else { return }
+            self.refreshSessions()
+        }
+    }
+
+    /// The failed-listing counterpart of `askAgainWhileServerIsGone`, without
+    /// its emptiness guard: after a failure the next attempt must run even
+    /// though connections — possibly all dead — are still in the dictionary.
+    private func scheduleRetryAfterFailedListing() {
+        guard !reaskScheduled, !stopped else { return }
+        reaskScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            self.reaskScheduled = false
             self.refreshSessions()
         }
     }

@@ -645,7 +645,9 @@ final class MainViewController: NSSplitViewController {
         if let existing = embedded[id] { return existing }
         guard let connection = server.connection(id: id) else { return nil }
         guard let model = model(forSessionID: id) else { return nil }
-        let controller = EmbeddedSessionViewController(model: model, tmuxPath: server.tmuxPath)
+        let controller = EmbeddedSessionViewController(
+            model: model, tmuxPath: server.tmuxPath, socket: server.socket
+        )
         embedded[id] = controller
         return controller
     }

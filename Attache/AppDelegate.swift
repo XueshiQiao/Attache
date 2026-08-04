@@ -94,21 +94,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         guard let tmuxPath = TmuxControlClient.locateTmux() else {
             fail(
                 "tmux not found",
-                "Looked in /opt/homebrew/bin, /usr/local/bin, /usr/bin and the PATH of a login shell."
-            )
-            return
-        }
-        // Both answers fail the same way here: tmux that will not run and a
-        // server with nothing in it leave the app with nothing to show.
-        guard let names = TmuxControlClient.listSessions(tmuxPath: tmuxPath), !names.isEmpty else {
-            fail(
-                "No tmux sessions",
-                "The tmux server is not running, or it has no sessions. Create one in a terminal first."
+                "Looked in /opt/homebrew/bin, /usr/local/bin, /usr/bin and the PATH"
+                    + " of a login shell. Install it — `brew install tmux` — and open"
+                    + " this app again."
             )
             return
         }
 
-        let controller = MainViewController(server: TmuxServer(tmuxPath: tmuxPath))
+        let socket: TmuxSocket
+        switch TmuxSocket.parse(AppSettings.tmuxSocket) {
+        case .invalid(let reason):
+            // Not a silent fall-through to the default server: the person
+            // asked for a specific one, and connecting elsewhere invites
+            // destructive actions on the wrong sessions.
+            fail(
+                "tmux_socket is unusable",
+                "The tmux_socket value in ~/.config/attache.toml \(reason)."
+                    + " Fix or remove that line, then open this app again."
+            )
+            return
+        case .socket(let parsed):
+            socket = parsed
+        }
+
+        // Three different answers, three different behaviours — these used to
+        // be one dead-end alert, which for someone who had never run tmux was
+        // the whole first-launch experience. tmux errors are shown in tmux's
+        // own words; an empty server is an offer, not a failure.
+        switch TmuxControlClient.listSessions(tmuxPath: tmuxPath, socket: socket) {
+        case .failed(let message):
+            fail("tmux is not answering", "Asked \(socket.summary) and got: \(message)")
+            return
+        case .noServer:
+            guard offerToCreateFirstSession(tmuxPath: tmuxPath, socket: socket) else { return }
+        case .sessions(let sessions) where sessions.isEmpty:
+            guard offerToCreateFirstSession(tmuxPath: tmuxPath, socket: socket) else { return }
+        case .sessions:
+            break
+        }
+
+        let controller = MainViewController(server: TmuxServer(tmuxPath: tmuxPath, socket: socket))
         controller.onStatusChange = { [weak self] status in
             self?.status = status
             self?.refreshTitle()
@@ -219,7 +244,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     }
 
     func applicationSupportsSecureRestorableState(_: NSApplication) -> Bool { true }
-    func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool { true }
+    /// Only once the main window exists. The create-session offer is an
+    /// alert shown *before* any other window, and with an unconditional
+    /// `true` here, accepting it closed the app's only window and AppKit
+    /// terminated the whole app — cleanly, with the session it had just
+    /// created left running and not one line of log saying why. Observed
+    /// 2026-08-04 on the first real use of that dialog.
+    func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
+        main != nil
+    }
 
     func applicationWillTerminate(_: Notification) {
         TmuxLog.lifecycle("applicationWillTerminate — detaching every connection")
@@ -678,7 +711,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
 
     // MARK: - Errors
 
+    /// The server has nothing to show — not running, or running empty. For
+    /// someone who has never used tmux this is the first thing the app ever
+    /// says to them, so it is an offer with a way forward, not a dead end.
+    /// `new-session -d` also *starts* the server when there is none, loading
+    /// the user's own configuration exactly as a terminal launch would — and
+    /// if that configuration is broken, the `%config-error` the first attach
+    /// carries is surfaced as a notice by `TmuxSessionConnection`.
+    ///
+    /// True means a session now exists and startup should continue. False
+    /// means startup is over — the user chose to quit, or the create failed
+    /// and `fail` has already put tmux's own words on screen.
+    private func offerToCreateFirstSession(tmuxPath: String, socket: TmuxSocket) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "No tmux sessions"
+        alert.informativeText =
+            "There is no server, or no sessions, on \(socket.summary)."
+                + " Create a session here, or quit and create one in a terminal."
+        alert.addButton(withTitle: "Create Session")
+        alert.addButton(withTitle: "Quit")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            TmuxLog.lifecycle("create-session offer declined — quitting")
+            NSApp.terminate(nil)
+            return false
+        }
+        TmuxLog.lifecycle("create-session offer accepted — creating on \(socket.summary)")
+        if let problem = TmuxControlClient.createDetachedSession(tmuxPath: tmuxPath, socket: socket) {
+            fail("tmux could not create a session", problem)
+            return false
+        }
+        // A clean exit is not proof the session still exists. The create is
+        // what *started* the server, which loaded the user's configuration —
+        // and `exit-unattached` or `destroy-unattached` in it can take the
+        // detached session down again before the app attaches. Ask again
+        // rather than open a window with nothing behind it.
+        if case .sessions(let sessions) = TmuxControlClient.listSessions(
+            tmuxPath: tmuxPath, socket: socket
+        ), !sessions.isEmpty {
+            return true
+        }
+        fail(
+            "tmux did not keep the new session",
+            "A session was created and was already gone when this app looked"
+                + " again — usually exit-unattached or destroy-unattached in the"
+                + " tmux configuration. Change that, then open this app again."
+        )
+        return false
+    }
+
     private func fail(_ title: String, _ detail: String) {
+        // The one line that says which exit this was. Its absence is why the
+        // first silent-termination diagnosis had to be done from tmux's side.
+        TmuxLog.lifecycle("fatal startup failure: \(title) — \(detail)")
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = title

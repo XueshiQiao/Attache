@@ -68,6 +68,7 @@ enum AppSettings {
         static let startupSession         = "startup_session"
         static let startupWindow          = "startup_window"
         static let gitToolCommand         = "git_tool_command"
+        static let tmuxSocket             = "tmux_socket"
     }
 
     /// The old `UserDefaults` name for each key, for the migration and nothing
@@ -368,6 +369,20 @@ enum AppSettings {
                 forKey: Key.conversationFontSize
             )
         }
+    }
+
+    /// Which tmux server to connect to. Empty — the default — leaves the
+    /// choice to tmux: `$TMUX` when the app was launched from inside a pane,
+    /// the default socket otherwise. A value without a `/` is a socket name
+    /// (`work` means `tmux -L work`); a value with one is a socket path
+    /// (`tmux -S <path>`). File-only, like `git_tool_command`: the person who
+    /// runs their life on a named socket is the person who edits a TOML file
+    /// without flinching. Parsed and validated by `TmuxSocket.parse`, and an
+    /// unusable value stops startup with the reason rather than silently
+    /// connecting to a server the user did not ask for.
+    static var tmuxSocket: String {
+        get { store.string(forKey: Key.tmuxSocket) ?? "" }
+        set { store.set(newValue.isEmpty ? nil : newValue, forKey: Key.tmuxSocket) }
     }
 
     /// Which session to open on, by name. Empty means "whichever comes first",

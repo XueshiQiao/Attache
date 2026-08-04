@@ -89,11 +89,15 @@ final class EmbeddedSessionViewController: NSViewController {
     private var overhang: NSLayoutConstraint?
 
 
-    init(model: SessionModel, tmuxPath: String) {
+    init(model: SessionModel, tmuxPath: String, socket: TmuxSocket) {
         self.model = model
         let connection = model.connection
-        statusRows = TmuxStatusOption.lines(tmuxPath: tmuxPath, sessionID: connection.sessionID)
-        statusAtTop = TmuxStatusOption.isAtTop(tmuxPath: tmuxPath, sessionID: connection.sessionID)
+        statusRows = TmuxStatusOption.lines(
+            tmuxPath: tmuxPath, socket: socket, sessionID: connection.sessionID
+        )
+        statusAtTop = TmuxStatusOption.isAtTop(
+            tmuxPath: tmuxPath, socket: socket, sessionID: connection.sessionID
+        )
 
         let base = TerminalConfiguration(startingFrom: .default) { builder in
             builder.withBackgroundOpacity(0)
@@ -107,7 +111,13 @@ final class EmbeddedSessionViewController: NSViewController {
             // cannot carry a quote of its own, which is what makes quoting it
             // safe rather than merely hopeful — the same reason this project
             // targets tmux by id everywhere.
-            builder.withCustom("command", "\(tmuxPath) attach -t '\(connection.sessionID)'")
+            // The socket fragment rides in front of the command word, quoted
+            // the same way and safe for the same reason: `TmuxSocket.parse`
+            // refuses values carrying a quote or a control character.
+            builder.withCustom(
+                "command",
+                "\(tmuxPath) \(socket.shellFragment)attach -t '\(connection.sessionID)'"
+            )
             // An attach that fails prints one line and exits; without this the
             // surface tears down before anyone can read it.
             builder.withCustom("wait-after-command", "true")

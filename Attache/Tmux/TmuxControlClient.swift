@@ -30,6 +30,7 @@ final class TmuxControlClient {
     var onExit: ((String?) -> Void)?
 
     private let tmuxPath: String
+    private let socket: TmuxSocket
     /// What this client attaches to and what every log line names it by.
     /// An id rather than a name because a name is not an identity: it can be
     /// changed from any terminal at any moment, including between the
@@ -104,10 +105,11 @@ final class TmuxControlClient {
     private var handshakeComplete = false
     private var queuedCommands = [(String, (([Data], Bool) -> Void)?)]()
 
-    init(tmuxPath: String, sessionID: String, sessionName: String,
+    init(tmuxPath: String, socket: TmuxSocket, sessionID: String, sessionName: String,
          callbackQueue: DispatchQueue = .main)
     {
         self.tmuxPath = tmuxPath
+        self.socket = socket
         self.sessionID = sessionID
         storedLabel = sessionName
         self.callbackQueue = callbackQueue
@@ -123,7 +125,7 @@ final class TmuxControlClient {
         // sessions and attaching to one of them, in which any terminal on the
         // machine is free to rename it — verified on tmux 3.6a that a session
         // id is accepted wherever a session target is.
-        process.arguments = ["-C", "attach", "-t", sessionID]
+        process.arguments = socket.arguments + ["-C", "attach", "-t", sessionID]
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = FileHandle.nullDevice
@@ -157,8 +159,8 @@ final class TmuxControlClient {
         // unknown. This record is what lets a later run collect one anyway.
         TmuxChildRegistry.record(childPID: process.processIdentifier, sessionID: sessionID)
         TmuxLog.lifecycle(
-            "spawned \(tmuxPath) -C attach -t \(sessionID) (\(sessionLabel),"
-                + " pid \(process.processIdentifier))",
+            "spawned \(tmuxPath) \((process.arguments ?? []).joined(separator: " "))"
+                + " (\(sessionLabel), pid \(process.processIdentifier))",
             session: sessionLabel
         )
     }
@@ -413,6 +415,27 @@ final class TmuxControlClient {
             if let completion {
                 callbackQueue.async { completion(lines, failed) }
             }
+            // A broken ~/.tmux.conf does not stop an attach — tmux reports it
+            // as `%config-error` lines instead, and those arrive *inside* the
+            // flags-0 handshake block, between its `%begin` and `%end`.
+            // Measured on 3.6a, 2026-08-04: they are block content as far as
+            // this parser is concerned, so the notification path above never
+            // sees them, and until this scan they were discarded with the rest
+            // of a block nobody asked for — leaving the user's settings
+            // silently unapplied with nothing anywhere saying so. Non-command
+            // blocks only: a *command* reply can legitimately carry the same
+            // bytes as content — `capture-pane` of a pane that happens to be
+            // displaying a control-mode transcript — and flags already tell
+            // the two apart.
+            if !isCommandReply {
+                let marker = Array("%config-error ".utf8)
+                for lineData in lines where lineData.starts(with: marker) {
+                    let text = String(decoding: lineData.dropFirst(marker.count), as: UTF8.self)
+                    callbackQueue.async { [weak self] in
+                        self?.onNotification?(.other(verb: "%config-error", rest: text))
+                    }
+                }
+            }
             // The diagnostics tap: any block, ours or not, proves the channel
             // still carries bytes in this direction — which is the whole
             // deaf-channel detector.
@@ -503,18 +526,45 @@ final class TmuxControlClient {
         )
     }
 
-    // A `-L <socket>` override was added here and deliberately removed. It
-    // would have let a debug build be pointed at a scratch tmux server so that
-    // testing a font change did not reflow the user's real windows — which is
-    // a genuine cost, since the app tells tmux how many columns it has. The
-    // owner of this project declined it anyway, and the reasoning is worth
-    // keeping: an app tested only against a server made for testing is tested
-    // against the easy case. The bugs that have actually hurt here — a pane
-    // reporting mouse positions into a live shell, a column count drifting by
-    // one — all needed a real session with real programs in it to show up.
-    // Test against the real thing and accept the reflow.
+    // Two different socket overrides have been proposed here and they met
+    // different fates, which is worth keeping straight. A *debug-only* `-L`
+    // hatch — point a test build at a scratch server so a font change does
+    // not reflow the user's real windows — was added and deliberately
+    // removed: an app tested only against a server made for testing is
+    // tested against the easy case, and the bugs that have actually hurt
+    // here all needed a real session with real programs in it. That
+    // reasoning stands; keep testing against the real thing.
+    //
+    // The `tmux_socket` *setting* (2026-08-04, `TmuxSocket`) is not that
+    // hatch coming back. It is for the user whose real sessions live on
+    // `tmux -L work` — for whom the default socket is the easy case and the
+    // named one is the real thing.
 
     // MARK: - Discovery
+
+    /// What asking the server for its sessions produced. Three answers, and
+    /// the difference between them is load-bearing on both call sites:
+    /// `TmuxServer` reconciles connections against `.sessions` (an empty list
+    /// drops everything) and `.noServer` (same event — a server whose last
+    /// session dies exits), but must change *nothing* on `.failed`, and the
+    /// startup path turns `.failed` into a dialog carrying tmux's own words.
+    /// Before `.failed` existed, "wrong socket permissions" and "server has no
+    /// sessions" were the same empty answer — an error the user never saw,
+    /// presented as every session having vanished.
+    enum SessionListResult {
+        /// tmux answered. Possibly with nothing, mid-teardown.
+        case sessions([TmuxSessionListing])
+        /// tmux answered: no server on this socket. Both spellings — `no
+        /// server running on <path>` for a socket file a dead server left
+        /// behind, `error connecting to <path> (No such file or directory)`
+        /// for one that never existed — measured on 3.6a, and both mean the
+        /// same thing here.
+        case noServer
+        /// The question could not be asked, or was refused for some other
+        /// reason: tmux would not spawn, or exited with an error that is not
+        /// "no server". The message is tmux's own stderr.
+        case failed(String)
+    }
 
     /// Every session on the running server, in tmux's own order.
     ///
@@ -526,27 +576,45 @@ final class TmuxControlClient {
     /// A one-shot `tmux list-sessions` rather than a control mode command:
     /// picking which session to attach to has to happen before there is a
     /// control mode client to ask.
-    ///
-    /// `nil` means the question could not be *asked*: `tmux` would not spawn.
-    /// An empty array is an answer, and a different one — tmux ran and listed
-    /// nothing, which here is the same event as the server being gone, because
-    /// a tmux server whose last session is killed exits. `TmuxServer`
-    /// reconciles its connections against this, so the two cannot share a
-    /// return value: one of them must drop every connection and the other must
-    /// change nothing.
-    static func listSessions(tmuxPath: String) -> [TmuxSessionListing]? {
+    static func listSessions(tmuxPath: String, socket: TmuxSocket) -> SessionListResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tmuxPath)
-        process.arguments = ["list-sessions", "-F", "#{session_id} #{session_name}"]
+        process.arguments = socket.arguments + ["list-sessions", "-F", "#{session_id} #{session_name}"]
         let pipe = Pipe()
+        let errorPipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return nil }
+        process.standardError = errorPipe
+        guard (try? process.run()) != nil else {
+            return .failed("tmux at \(tmuxPath) would not start")
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return String(decoding: data, as: UTF8.self)
+
+        if process.terminationStatus != 0 {
+            let message = String(decoding: errorData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // Anchored to the two complete connection-error forms tmux
+            // prints, not substring-matched. An unanchored ENOENT test
+            // classified *any* error mentioning a missing file — a hook or a
+            // command-alias running `source-file /missing`, say — as "no
+            // server", and `.noServer` is the answer that tears down every
+            // connection. Found in review before it shipped.
+            if message.hasPrefix("no server running on")
+                || (message.hasPrefix("error connecting to")
+                    && message.contains("No such file or directory"))
+            {
+                return .noServer
+            }
+            return .failed(
+                message.isEmpty
+                    ? "tmux exited with status \(process.terminationStatus)" : message
+            )
+        }
+
+        let sessions = String(decoding: data, as: UTF8.self)
             .split(separator: "\n")
-            .compactMap { line in
+            .compactMap { line -> TmuxSessionListing? in
                 // One split, so a name containing spaces arrives whole. A row
                 // with no id is not a session this app can address and is
                 // dropped rather than guessed at.
@@ -556,6 +624,32 @@ final class TmuxControlClient {
                     id: String(id), name: parts.count > 1 ? String(parts[1]) : ""
                 )
             }
+        return .sessions(sessions)
+    }
+
+    /// Create a detached session — and with it the server, when there is
+    /// none. Returns nil on success, otherwise what tmux said on stderr,
+    /// because "tmux could not create a session" with no reason attached is
+    /// the kind of silence this app has already paid for once: a refused
+    /// `new-session` used to send its explanation to `/dev/null` and present
+    /// as the + button doing nothing.
+    static func createDetachedSession(tmuxPath: String, socket: TmuxSocket) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tmuxPath)
+        process.arguments = socket.arguments + ["new-session", "-d"]
+        let errorPipe = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errorPipe
+        guard (try? process.run()) != nil else {
+            return "tmux at \(tmuxPath) would not start"
+        }
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus != 0 else { return nil }
+        let message = String(decoding: errorData, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return message.isEmpty
+            ? "tmux exited with status \(process.terminationStatus)" : message
     }
 
     /// Locate tmux. `Process` does not consult PATH, and a GUI app launched
