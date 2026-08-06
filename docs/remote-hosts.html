@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title><!-- TITLE --></title>
+<style>
+  :root {
+    --bg: #faf9f5;
+    --surface: #ffffff;
+    --ink: #1f1e1c;
+    --ink-soft: #5a5751;
+    --ink-faint: #8a857c;
+    --rule: #e6e2d4;
+    --rule-soft: #efece1;
+    --code-bg: #f3f0e6;
+    --accent: #d97757;
+    --accent-soft: #f4e2d6;
+    --good: #4f8a5c;
+    --warn: #b6711c;
+    --bad: #b14338;
+    --serif: "Tiempos", "Source Serif Pro", "Iowan Old Style", Georgia, serif;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Monaco, "Cascadia Code", monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .container {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 80px 40px 120px;
+  }
+
+  header.hero { margin-bottom: 56px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin-bottom: 18px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 48px;
+    line-height: 1.1;
+    margin: 0 0 20px;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+  }
+  .lede {
+    font-family: var(--serif);
+    font-size: 22px;
+    line-height: 1.45;
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: 640px;
+  }
+
+  h2 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 30px;
+    line-height: 1.2;
+    margin: 64px 0 16px;
+    letter-spacing: -0.01em;
+  }
+  h3 {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 17px;
+    margin: 36px 0 10px;
+    letter-spacing: -0.005em;
+  }
+  p { margin: 0 0 16px; }
+  p, li { color: var(--ink); }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+  a:hover { border-bottom-color: var(--accent); }
+
+  ul, ol { padding-left: 24px; margin: 0 0 16px; }
+  li { margin-bottom: 8px; }
+  li code { font-size: 0.92em; }
+
+  code {
+    font-family: var(--mono);
+    background: var(--code-bg);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+  pre {
+    background: #1f1e1c;
+    color: #f6f3eb;
+    padding: 20px 24px;
+    border-radius: 8px;
+    overflow-x: auto;
+    line-height: 1.55;
+    font-size: 13.5px;
+    margin: 20px 0 28px;
+  }
+  pre code {
+    background: transparent;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+  }
+  .tok-comment  { color: #9b9081; font-style: italic; }
+  .tok-keyword  { color: #e89b6f; }
+  .tok-fn       { color: #f0d68a; }
+  .tok-string   { color: #b8d49d; }
+  .tok-num      { color: #d8b9e3; }
+
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px 32px;
+    margin: 32px 0 48px;
+    padding: 18px 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-soft);
+  }
+  .meta-row b { color: var(--ink); font-weight: 500; margin-right: 8px; }
+
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 18px 22px;
+    margin: 28px 0;
+    border-radius: 0 6px 6px 0;
+    color: var(--ink);
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 6px;
+    display: block;
+  }
+
+  .figure {
+    margin: 36px 0;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 28px 24px 18px;
+  }
+  .figure svg { display: block; width: 100%; height: auto; }
+  .figure .caption {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--rule);
+  }
+  .figure .caption b { color: var(--ink-soft); font-weight: 600; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 24px 0 32px;
+    font-size: 14.5px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-weight: 600;
+    color: var(--ink-soft);
+    background: var(--rule-soft);
+    font-size: 13px;
+    letter-spacing: 0.01em;
+  }
+  td code { font-size: 0.88em; }
+
+  .pill {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .pill.good    { background: #e3f0e2; color: var(--good); }
+  .pill.warn    { background: #f5e7d0; color: var(--warn); }
+  .pill.bad     { background: #f5dad6; color: var(--bad); }
+  .pill.neutral { background: var(--rule-soft); color: var(--ink-soft); }
+
+  .footer {
+    margin-top: 96px;
+    padding-top: 24px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  /* SVG defaults */
+  svg text { font-family: var(--sans); font-size: 12.5px; fill: var(--ink); }
+  svg .label-mono  { font-family: var(--mono); font-size: 11.5px; fill: var(--ink-soft); }
+  svg .label-soft  { fill: var(--ink-soft); }
+  svg .label-faint { fill: var(--ink-faint); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header class="hero">
+  <div class="eyebrow">User guide &middot; Attach&eacute; &middot; 2026-08-06</div>
+  <h1>A second machine in the rail</h1>
+  <p class="lede">One <code>[[host]]</code> block in <code>attache.toml</code> puts another machine&rsquo;s tmux beside your local sessions &mdash; nothing installed over there, and the six features that matter (git, lazygit, the conversation rail, agent hooks, &#8984;V, &#8984;-click) follow the window to whichever machine it lives on.</p>
+</header>
+
+<div class="meta">
+  <span><b>Config</b><code>~/.config/attache.toml</code></span>
+  <span><b>Shipped</b><code>ce4857c + 5e6e6a9</code></span>
+  <span><b>Issue</b><code>#5</code></span>
+</div>
+
+<h2>1 &middot; What a host is</h2>
+
+<p>Attach&eacute;&rsquo;s one rule is that tmux owns everything and the app only renders what it is told. A remote host is the same rule over a longer wire: every command still goes to tmux &mdash; that tmux just runs on another machine, reached through ssh. The rail grows a machine tier only when a host is configured; with none, the app draws exactly what it always did.</p>
+
+<p>Per host the app keeps one <b>ssh master</b> (authenticates once, every later connection multiplexes over it), one <b>helper channel</b> (a small shell loop, shipped as a command argument on every connect &mdash; it reads files, checks git, classifies paths so the app never mistakes a remote path for a local one), one <b>control client per session</b>, and one <b>terminal surface</b> per shown session running <code>ssh&nbsp;-t &hellip; tmux attach</code>.</p>
+
+<div class="figure">
+<svg viewBox="0 0 800 250" xmlns="http://www.w3.org/2000/svg" aria-label="One host's connections">
+  <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8a857c"/></marker></defs>
+  <text x="0" y="18" font-weight="600" fill="#1f1e1c">Everything rides one authenticated master</text>
+  <rect x="0" y="40" width="200" height="190" rx="10" fill="#ffffff" stroke="#e6e2d4"/>
+  <text x="16" y="66" font-weight="600">This Mac</text>
+  <rect x="16" y="82" width="168" height="30" rx="6" fill="#f4e2d6"/>
+  <text x="26" y="102" class="label-mono" font-size="11.5">ssh master &middot; auth once</text>
+  <rect x="16" y="120" width="168" height="26" rx="6" fill="#f3f0e6"/>
+  <text x="26" y="138" class="label-mono" font-size="11.5">control client / session</text>
+  <rect x="16" y="152" width="168" height="26" rx="6" fill="#f3f0e6"/>
+  <text x="26" y="170" class="label-mono" font-size="11.5">helper channel</text>
+  <rect x="16" y="184" width="168" height="26" rx="6" fill="#f3f0e6"/>
+  <text x="26" y="202" class="label-mono" font-size="11.5">terminal: ssh -t attach</text>
+  <rect x="560" y="40" width="240" height="190" rx="10" fill="#ffffff" stroke="#e6e2d4"/>
+  <text x="576" y="66" font-weight="600">The host</text>
+  <rect x="576" y="82" width="208" height="30" rx="6" fill="#f4e2d6"/>
+  <text x="586" y="102" class="label-mono" font-size="11.5">sshd &middot; MaxSessions budget</text>
+  <rect x="576" y="120" width="208" height="42" rx="6" fill="#f3f0e6"/>
+  <text x="586" y="138" class="label-mono" font-size="11.5">tmux server + sessions</text>
+  <text x="586" y="154" class="label-faint" font-size="11">panes keep running on their own</text>
+  <rect x="576" y="170" width="208" height="26" rx="6" fill="#f3f0e6"/>
+  <text x="586" y="188" class="label-mono" font-size="11.5">sh loop (never installed)</text>
+  <line x1="200" y1="97" x2="560" y2="97" stroke="#d97757" stroke-width="2.5" marker-end="url(#arr)"/>
+  <text x="310" y="88" class="label-soft" font-size="11.5">one TCP connection, keepalives</text>
+  <line x1="200" y1="133" x2="576" y2="133" stroke="#e6e2d4" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="200" y1="165" x2="576" y2="181" stroke="#e6e2d4" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="200" y1="197" x2="576" y2="145" stroke="#e6e2d4" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="310" y="222" class="label-faint" font-size="11">dashed = multiplexed channels, no extra auth</text>
+</svg>
+<div class="caption"><b>Figure 1.</b> Why auth happens once and why a dead master takes every channel with it &mdash; and why the app then reconnects the master rather than the channels.</div>
+</div>
+
+<h2>2 &middot; Connecting a machine, step by step</h2>
+
+<ol>
+  <li><b>Make ssh passwordless first.</b> In a terminal, <code>ssh yourhost</code> must log in with no prompt (key or agent, or an alias in <code>~/.ssh/config</code>). Every connection the app makes forbids prompts &mdash; an auth question printed into a control pipe corrupts the protocol &mdash; so password/2FA-only hosts do not work yet (<a href="https://github.com/XueshiQiao/Attache/issues/29">#29</a>).</li>
+  <li><b>Add a block to <code>~/.config/attache.toml</code>:</b></li>
+</ol>
+
+<pre>[[host]]
+name = "mini"                          <span class="tok-comment"># what the rail calls it</span>
+ssh = "joey@192.168.8.68"              <span class="tok-comment"># or an ~/.ssh/config alias</span>
+tmux_path = "/opt/homebrew/bin/tmux"   <span class="tok-comment"># usually required, see below</span>
+<span class="tok-comment"># tmux_socket = ""                     # optional, same syntax as the global one</span>
+<span class="tok-comment"># git_tool_command = "lazygit"         # optional, what the Git tool runs there</span>
+<span class="tok-comment"># remote_open_command = ""             # optional, %h / %p, both pre-quoted</span></pre>
+
+<ol start="3">
+  <li><b>Relaunch the app.</b> Hosts are read once at launch; there is no hot reload yet (<a href="https://github.com/XueshiQiao/Attache/issues/28">#28</a>).</li>
+  <li><b>Optional, for agent badges and transcripts on that machine:</b> Settings &rarr; Behaviour &rarr; <i>Agent status on remote hosts</i> &rarr; Install. This writes the same hook script and status-line wrapper the local install writes, into <em>that machine&rsquo;s</em> <code>~/.claude/</code>, over ssh &mdash; with a timestamped backup, and it refuses to write if anything else edited the file meanwhile.</li>
+</ol>
+
+<div class="callout"><b>Why <code>tmux_path</code> is usually required.</b> A non-interactive ssh shell has no Homebrew on its PATH, so bare <code>tmux</code> is &ldquo;command not found&rdquo; on most Macs. The app probes <code>tmux -V</code> on connect and, when it fails, the host row says exactly this and names the fix.</div>
+
+<h3>Requirements on the host</h3>
+<ul>
+  <li>tmux &ge; 3.2 for the live decorations (activity dots, agent badges, git paths). Older tmux still gets sessions, windows and typing &mdash; the app says loudly that decorations are off. tmux 3.5&rsquo;s different wire encoding is handled automatically.</li>
+  <li><code>git</code> for the sidebar&rsquo;s branch line; <code>lazygit</code> only if you use the Git tool there.</li>
+  <li>Nothing else. The helper is not an install.</li>
+</ul>
+
+<h2>3 &middot; What works where</h2>
+
+<table>
+  <thead><tr><th>Feature</th><th>Local</th><th>Remote</th><th>Difference</th></tr></thead>
+  <tbody>
+    <tr><td>Sessions: list, switch, create, rename</td><td><span class="pill good">yes</span></td><td><span class="pill good">yes</span></td><td>None. &ldquo;+ New session&rdquo; acts on the machine you are looking at.</td></tr>
+    <tr><td>Windows: switch, create, rename, hide, kill</td><td><span class="pill good">yes</span></td><td><span class="pill good">yes</span></td><td>None; kill still confirms.</td></tr>
+    <tr><td>Drag to reorder / move between sessions</td><td><span class="pill good">yes</span></td><td><span class="pill good">yes</span></td><td>Within one machine only &mdash; a cross-machine drop is refused with a message (tmux cannot move a window between servers).</td></tr>
+    <tr><td>Panes: split, zoom, select, shortcuts</td><td><span class="pill good">yes</span></td><td><span class="pill good">yes</span></td><td>None &mdash; all control-channel commands.</td></tr>
+    <tr><td>The terminal picture</td><td>ghostty direct</td><td>ghostty over <code>ssh -t</code></td><td>Remote runs as <code>xterm-256color</code>; a few ghostty-specific terminal extras degrade.</td></tr>
+    <tr><td>&#8984;V paste</td><td><span class="pill good">yes</span></td><td><span class="pill warn">4 MB cap</span></td><td>Remote goes over stdin in one shot; failures are reported with the reason; the clipboard never touches a disk.</td></tr>
+    <tr><td>Dropping a Finder file</td><td><span class="pill good">yes</span></td><td><span class="pill bad">not yet</span></td><td>Pastes a local path that means nothing over there (<a href="https://github.com/XueshiQiao/Attache/issues/30">#30</a>).</td></tr>
+    <tr><td>Sidebar git branch / counts</td><td>instant (fs events)</td><td><span class="pill warn">~1 s poll</span></td><td>A failed remote read keeps the last answer &mdash; it never draws a clean repo it did not see.</td></tr>
+    <tr><td>git auto-fetch</td><td><span class="pill good">yes</span></td><td><span class="pill good">yes</span></td><td>Fetch runs on the host, with the host&rsquo;s own network and credentials.</td></tr>
+    <tr><td>lazygit tool</td><td>local process</td><td>runs on the host</td><td>Install it there; config does not travel; override per host with <code>git_tool_command</code>.</td></tr>
+    <tr><td>&#8984;-click a URL</td><td>local browser</td><td>local browser</td><td>None.</td></tr>
+    <tr><td>&#8984;-click a file / directory</td><td>Finder reveal</td><td><code>remote_open_command</code></td><td>Defaults to a local <code>code</code>/<code>cursor</code> CLI via Remote-SSH; says so if neither exists. <code>~/&hellip;</code> paths are refused rather than guessed.</td></tr>
+    <tr><td>Agent badges / status dots</td><td><span class="pill good">yes</span> (hooks installed)</td><td><span class="pill good">yes</span> (hooks installed there)</td><td>Each machine installs its own, from Settings.</td></tr>
+    <tr><td>Conversation rail (transcript)</td><td>instant (fs events)</td><td><span class="pill warn">~1 s poll</span></td><td>Same splice-proof reset logic on both; first open of a very large transcript is slow (<a href="https://github.com/XueshiQiao/Attache/issues/31">#31</a>).</td></tr>
+    <tr><td>Usage gauges (5h / week)</td><td><span class="pill good">yes</span></td><td><span class="pill good">yes</span></td><td>Freshest report across machines wins.</td></tr>
+    <tr><td>Quick Actions</td><td><span class="pill good">yes</span></td><td><span class="pill good">yes</span></td><td>Sent to the session&rsquo;s machine.</td></tr>
+    <tr><td>Startup target (<code>startup_session</code>)</td><td><span class="pill good">yes</span></td><td><span class="pill bad">local only</span></td><td><a href="https://github.com/XueshiQiao/Attache/issues/31">#31</a>.</td></tr>
+    <tr><td>Disconnects</td><td>&mdash;</td><td>auto-reconnect</td><td>1&rarr;30 s backoff, red dot + reason on the host row, click to retry now; sessions on the host are untouched.</td></tr>
+  </tbody>
+</table>
+
+<h2>4 &middot; When it breaks</h2>
+
+<p>The host row is where trouble is said out loud. A grey dot is a healthy heading; yellow is connecting; red carries the ssh error in its tooltip, and clicking retries immediately instead of waiting out the backoff. A half-open connection &mdash; network died, nobody said so &mdash; is caught by a 10-second heartbeat.</p>
+
+<div class="figure">
+<svg viewBox="0 0 800 170" xmlns="http://www.w3.org/2000/svg" aria-label="Host row states">
+  <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8a857c"/></marker></defs>
+  <text x="0" y="18" font-weight="600" fill="#1f1e1c">The host row&rsquo;s life</text>
+  <rect x="0" y="48" width="180" height="52" rx="10" fill="#ffffff" stroke="#b6711c"/>
+  <circle cx="24" cy="74" r="5" fill="#b6711c"/>
+  <text x="40" y="70" font-weight="600" font-size="13">connecting&hellip;</text>
+  <text x="40" y="88" class="label-faint" font-size="11">auth + tmux -V probe</text>
+  <rect x="310" y="48" width="180" height="52" rx="10" fill="#ffffff" stroke="#4f8a5c"/>
+  <circle cx="334" cy="74" r="5" fill="#8a857c"/>
+  <text x="350" y="70" font-weight="600" font-size="13">ready</text>
+  <text x="350" y="88" class="label-faint" font-size="11">heading only, plain grey dot</text>
+  <rect x="620" y="48" width="180" height="52" rx="10" fill="#ffffff" stroke="#b14338"/>
+  <circle cx="644" cy="74" r="5" fill="#b14338"/>
+  <text x="660" y="70" font-weight="600" font-size="13">down + reason</text>
+  <text x="660" y="88" class="label-faint" font-size="11">tooltip = full ssh error</text>
+  <line x1="180" y1="74" x2="310" y2="74" stroke="#8a857c" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <line x1="490" y1="66" x2="620" y2="66" stroke="#8a857c" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <text x="510" y="56" class="label-faint" font-size="11">exit / deaf 10 s</text>
+  <line x1="620" y1="86" x2="490" y2="86" stroke="#d97757" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="500" y="112" class="label-soft" font-size="11.5">click = retry now, else 1&rarr;30 s backoff</text>
+  <text x="0" y="150" class="label-faint" font-size="11.5">While a host is down: git numbers freeze honestly, the conversation rail says it cannot reach the machine, nothing pretends to be empty.</text>
+</svg>
+<div class="caption"><b>Figure 2.</b> The three states and who moves them. Honesty rule underneath: &ldquo;could not ask&rdquo; is never drawn as &ldquo;no data&rdquo;.</div>
+</div>
+
+<h2>5 &middot; Answers to the first questions everyone hits</h2>
+
+<h3>Scrolling in a remote shell moves through command history</h3>
+<p>Not an app bug: that host&rsquo;s tmux has <code>mouse</code> off (a fresh tmux does). Without it, scroll wheels are translated into arrow keys inside full-screen programs, and at a shell prompt arrows mean history. Fix on the host: <code>tmux set -g mouse on</code> now, and <code>set -g mouse on</code> in its <code>~/.tmux.conf</code> to keep it.</p>
+
+<h3>What the Install button on a host row does</h3>
+<p>Agents publish their state and transcript path through hooks in <em>their own machine&rsquo;s</em> <code>~/.claude/settings.json</code> &mdash; so a remote agent needs the hooks installed remotely, once per machine. The button does exactly what the local install does, over ssh: writes two short readable scripts, appends our entries (other tools&rsquo; entries untouched), backs the file up first, and refuses to write if the file changed under it. Remove undoes it and restores what was there, unknown fields included.</p>
+
+<h3>Two blocks for one machine</h3>
+<p>Legal &mdash; two <code>[[host]]</code> blocks may point at the same destination with different tmux sockets. They share one ssh master.</p>
+
+<h2>6 &middot; Not there yet</h2>
+<ul>
+  <li>No Settings UI to add or edit hosts, and no hot reload &mdash; TOML by hand, then relaunch (<a href="https://github.com/XueshiQiao/Attache/issues/28">#28</a>).</li>
+  <li>Password / 2FA ssh auth (<a href="https://github.com/XueshiQiao/Attache/issues/29">#29</a>).</li>
+  <li>Dropping files into remote windows (<a href="https://github.com/XueshiQiao/Attache/issues/30">#30</a>).</li>
+  <li>Linux hosts are written for but not yet verified against; large-transcript first fetch is uncapped; startup target is local-only (<a href="https://github.com/XueshiQiao/Attache/issues/31">#31</a>).</li>
+</ul>
+
+<div class="footer-note">Attach&eacute; remote hosts &middot; shipped in ce4857c, 5e6e6a9 (issue #5) &middot; verified against a Mac mini over LAN, tmux 3.5a &middot; 2026-08-06</div>
+
+</div>
+</body>
+</html>
