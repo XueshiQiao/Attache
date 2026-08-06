@@ -70,6 +70,14 @@ let spacedDumpPath = writeExecutable("space dir/dump", """
 for a in "$@"; do printf '%s\\0' "$a"; done
 """)
 
+/// Reports the TERM it inherited before its argv: what proves the remote
+/// assignment prefix actually reached the far side's environment.
+let termDumpPath = writeExecutable("term-dump", """
+#!/bin/sh
+printf '%s\\0' "TERM=$TERM"
+for a in "$@"; do printf '%s\\0' "$a"; done
+""")
+
 /// What OpenSSH does with a command, reduced to the two documented steps:
 /// take the words after the destination, join them with single spaces, and
 /// hand the string to a shell on the other side. Flags are skipped the way
@@ -110,6 +118,17 @@ func run(_ argv: [String]) -> (words: [String], status: Int32) {
 
 func runShellLine(_ line: String) -> (words: [String], status: Int32) {
     run(["/bin/sh", "-c", line])
+}
+
+/// The way ghostty actually runs a surface's `command` — measured from its
+/// own failure report, 2026-08-06: `login -flp <user> /bin/bash --noprofile
+/// --norc -c "exec -l <command>"`. The distinction from a plain `sh -c` is
+/// not academic: `exec` takes a program word, so a command string with a
+/// leading `TERM=…` assignment dies inside this wrapper while passing a
+/// plain-shell harness — which is exactly how that bug shipped once. Every
+/// surface-command case runs through this shape.
+func runGhosttyCommand(_ line: String) -> (words: [String], status: Int32) {
+    run(["/bin/bash", "--noprofile", "--norc", "-c", "exec -l \(line)"])
 }
 
 // MARK: - shellQuote through a real shell
@@ -228,21 +247,23 @@ do {
 // MARK: - End to end: two shell layers (local sh → fake ssh → remote sh)
 
 do {
-    let line = sshSpaced.attachShellCommand(sessionID: "$41")
-    // ssh copies the local TERM into the pty request, and xterm-ghostty is
-    // a terminfo entry most machines have never installed — measured live:
-    // the remote tmux exits with "missing or unsuitable terminal".
-    check("ssh attach travels with a TERM every machine knows",
-          line.hasPrefix("TERM=xterm-256color "))
-    let out = runShellLine(line)
-    check("ssh attach shell command survives both shells",
-          out.words == ["SSH-DEST=devbox", "-S", "/tmp/my sock/s", "attach", "-t", "$41"],
+    let termSSH = TmuxTransport(kind: .ssh(target), tmuxPath: termDumpPath, socket: pathSocket)
+    let out = runGhosttyCommand(termSSH.attachShellCommand(sessionID: "$41"))
+    // Through ghostty's own exec -l wrapper, with the "remote shell" (the
+    // fake ssh's sh -c) reporting the TERM it inherited: the override must
+    // arrive as the remote environment, because ssh copies the local
+    // xterm-ghostty into the pty request and most machines have no
+    // terminfo entry for it — measured live against the mini, where tmux
+    // answered "missing or unsuitable terminal" and exited.
+    check("ssh attach delivers TERM=xterm-256color to the far side, via exec -l",
+          out.words == ["SSH-DEST=devbox", "TERM=xterm-256color",
+                        "-S", "/tmp/my sock/s", "attach", "-t", "$41"],
           "got \(out.words.map(\.debugDescription))")
 }
 do {
     let localSpaced = TmuxTransport.local(tmuxPath: spacedDumpPath, socket: labelSocket)
-    let out = runShellLine(localSpaced.attachShellCommand(sessionID: "$41"))
-    check("local attach shell command survives the local shell",
+    let out = runGhosttyCommand(localSpaced.attachShellCommand(sessionID: "$41"))
+    check("local attach shell command survives ghostty's wrapper",
           out.words == ["-L", "work", "attach", "-t", "$41"],
           "got \(out.words.map(\.debugDescription))")
 }
@@ -250,6 +271,16 @@ do {
     let out = runShellLine(ssh.execShellCommand([dumpPath, "-p", "/tmp/repo's root"]))
     check("ssh exec shell command survives both shells",
           out.words == ["SSH-DEST=devbox", "-p", "/tmp/repo's root"],
+          "got \(out.words.map(\.debugDescription))")
+}
+do {
+    let termSSH = TmuxTransport(kind: .ssh(target), tmuxPath: "tmux", socket: plainSocket)
+    let line = termSSH.remoteToolShellCommand(
+        rawCommand: TmuxTransport.shellQuote(termDumpPath), quotedArguments: ["-p", "/tmp/r"]
+    )!
+    let out = runGhosttyCommand(line)
+    check("remote tool command delivers TERM and exact arguments, via exec -l",
+          out.words == ["SSH-DEST=devbox", "TERM=xterm-256color", "-p", "/tmp/r"],
           "got \(out.words.map(\.debugDescription))")
 }
 

@@ -147,17 +147,18 @@ nonisolated struct TmuxTransport: Equatable {
 
     // MARK: - Shell lines (for the embedded terminal's `command`)
 
-    /// The content half's `tmux attach`, as the string ghostty hands to a
-    /// local `/bin/sh -c`. The ssh form carries `-t`: the remote tmux needs
-    /// the pty that ghostty is already providing locally — and it travels
-    /// with `TERM=xterm-256color`, because ssh copies the local TERM into
-    /// the pty request and the surface's own `xterm-ghostty` is a terminfo
-    /// entry most remote machines have never heard of. Seen live: the mini's
-    /// tmux answered "missing or unsuitable terminal: xterm-ghostty" and
-    /// exited, which ghostty reports as the command failing to launch.
+    /// The content half's `tmux attach`, as the string ghostty embeds in
+    /// `bash --noprofile --norc -c "exec -l <this>"` — measured live, twice,
+    /// because both failure modes shipped once. The ssh form carries `-t`:
+    /// the remote tmux needs the pty ghostty is already providing locally.
+    ///
+    /// The TERM override rides as a *remote* word (see `tmuxArgv`), never a
+    /// local prefix: `exec` takes a program, not an assignment, so a local
+    /// `TERM=… ssh …` dies with "exec: TERM=…: not found" before ssh ever
+    /// runs — seen on screen 2026-08-06. `TransportCheck` runs this string
+    /// through the same `exec -l` wrapper ghostty uses.
     func attachShellCommand(sessionID: String) -> String {
-        let line = Self.shellLine(tmuxArgv(["attach", "-t", sessionID], pty: true))
-        return kind == .local ? line : "TERM=xterm-256color " + line
+        Self.shellLine(tmuxArgv(["attach", "-t", sessionID], pty: true))
     }
 
     /// The user's own command text run on the remote machine with
@@ -169,11 +170,13 @@ nonisolated struct TmuxTransport: Equatable {
     /// runs without any shell around its path on purpose.
     func remoteToolShellCommand(rawCommand: String, quotedArguments: [String]) -> String? {
         guard case .ssh(let target) = kind else { return nil }
-        let remoteLine = ([rawCommand] + quotedArguments.map(Self.shellQuote))
+        // The same remote-side TERM override the attach travels with, for
+        // the same reason — and inside the remote line, not prefixed to the
+        // local one, for the same `exec -l` reason too.
+        let remoteLine = (["TERM=xterm-256color", rawCommand]
+            + quotedArguments.map(Self.shellQuote))
             .joined(separator: " ")
-        // The same TERM the remote attach travels with, for the same reason.
-        return "TERM=xterm-256color "
-            + Self.shellLine(sshPrefix(target, pty: true) + [remoteLine])
+        return Self.shellLine(sshPrefix(target, pty: true) + [remoteLine])
     }
 
     /// An arbitrary command on tmux's machine, as a ghostty `command` string
@@ -217,7 +220,17 @@ nonisolated struct TmuxTransport: Equatable {
         case .local:
             return tmux
         case .ssh(let target):
-            return sshPrefix(target, pty: pty) + tmux.map(Self.shellQuote)
+            // With a pty, ssh copies the local TERM — the surface's own
+            // `xterm-ghostty` — into the pty request, and that is a terminfo
+            // entry most machines have never installed: the mini's tmux
+            // answered "missing or unsuitable terminal" and exited. The
+            // override is an *assignment prefix on the remote command*: it
+            // must be a bare word (quoting a word stops the remote shell
+            // reading it as an assignment), and it cannot be a local prefix
+            // (ghostty wraps the command in `exec -l`, which takes a
+            // program, not an assignment).
+            let env = pty ? ["TERM=xterm-256color"] : []
+            return sshPrefix(target, pty: pty) + env + tmux.map(Self.shellQuote)
         }
     }
 
