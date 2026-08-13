@@ -34,7 +34,9 @@ Two connections to the same tmux server, doing different jobs.
 `tmux attach` on a pty that [libghostty](https://ghostty.org) owns. The
 splitters, every pane and the cursor are tmux's own drawing; the app supplies a
 rectangle and nothing else. That is why copy mode, `display-popup` and anything
-else tmux puts on screen simply work.
+else tmux puts on screen simply work. libghostty is compiled into the app and
+it carries its own copy of the `xterm-ghostty` terminal description, so
+Ghostty.app does not need to be installed and nothing here reads it.
 
 **A control-mode connection drives the rail.** `tmux -C` makes tmux stop drawing
 and speak a plain-text protocol instead. That connection is where the session and
@@ -119,7 +121,8 @@ tmux 回报之后才会真正生效 —— 所以你在另一个终端里敲 `pr
 **面板是 tmux 自己画的。** 内容那一半就是一个终端，跑着普通的 `tmux attach`，pty 归
 [libghostty](https://ghostty.org) 所有。分隔线、每个面板、光标，全是 tmux 自己画的；app 只
 提供一个矩形，别的什么都不做。所以复制模式、`display-popup`，以及 tmux 会往屏幕上放的任何
-东西，都是直接就能用的。
+东西，都是直接就能用的。libghostty 是编译进 app 里的，`xterm-ghostty` 这份终端描述文件
+也由 app 自己带着 —— 不需要装 Ghostty.app，这里也不会去读它。
 
 **左栏由一条控制模式连接驱动。** `tmux -C` 让 tmux 停止绘制，改用纯文本协议对话。会话列表和
 窗口列表来自这条连接，每一次点击也变成这条连接上的命令；左栏里的活动状态、工作目录、agent

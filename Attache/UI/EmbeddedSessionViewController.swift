@@ -113,6 +113,18 @@ final class EmbeddedSessionViewController: NSViewController {
             builder.withCustom("window-padding-x", "0")
             builder.withCustom("window-padding-y", "0")
             builder.withCustom("window-padding-balance", "false")
+            // libghostty calls the child `xterm-ghostty` and points its
+            // `TERMINFO` at whatever `GHOSTTY_RESOURCES_DIR` names — this
+            // app's own bundle, since `adoptOwnResourcesAtLaunch` took that
+            // variable over. Normally nothing is pinned here. When the entry
+            // cannot be found, or the takeover did not take, the attach below
+            // would die with `missing or unsuitable terminal` and leave an
+            // empty rectangle while the rail carried on from its own
+            // connection — so a name every machine can resolve is pinned
+            // instead. See `GhosttyTerminfo` for the measurements.
+            if let term = GhosttyTerminfo.termForSurface() {
+                builder.withCustom("term", term)
+            }
             // The transport renders this line, and the quoting in it is not
             // decoration: ghostty hands the value to `/bin/sh -c`, a remote
             // attach adds ssh's own join-and-reparse on top, and a session id

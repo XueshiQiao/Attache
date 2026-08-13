@@ -275,6 +275,32 @@ swiftc -O -o /tmp/linktargetcheck Attache/UI/TerminalLinkTarget.swift \
 /tmp/linktargetcheck
 ```
 
+**`GhosttyTerminfo` has one, and what it decides is whether a pane comes up at
+all.** libghostty tells the child it is `xterm-ghostty` and points `TERMINFO`
+at whatever `GHOSTTY_RESOURCES_DIR` names — which is now this app's own
+bundle, and used to be an inherited path inside *Ghostty.app*. Two rules are
+under test and they fail differently. Pinning `xterm-256color` when the entry
+was really there costs a few terminal capabilities; *not* pinning it when the
+entry is gone is a blank content half with no explanation anywhere. And the
+variable, once taken over, must name something inside this bundle or nothing
+at all — a branch that lets the inherited value stand reinstates the whole
+dependency on another application. The file system and the environment are both
+injected, so those cases run with no disk and no variables of their own —
+including the ones that model a `setenv` that quietly fails.
+
+Its last part is the exception and touches the real disk on purpose. The
+compiled entries in `Resources/terminfo` are **committed, not built**, so
+editing the source without recompiling would change nothing at runtime and no
+fixture could notice; that part runs `tic` on the source and compares byte for
+byte against what is committed. It therefore has to be run **from the
+repository root** (or given the root as `argv[1]`):
+
+```sh
+swiftc -O -o /tmp/terminfocheck Attache/UI/GhosttyTerminfo.swift \
+  Tools/TerminfoCheck/main.swift
+/tmp/terminfocheck
+```
+
 **Screenshots need an awake display, and there is no way to wake one from
 here.** `screencapture` answers `could not create image from display` and the
 inspector's `/shot` composites the window to plain white — both of which read
@@ -429,6 +455,51 @@ one of them presents as "the code is obviously correct and yet".
   settled it. And **do not turn `link-url` off** to stop it competing with
   hand-written detection — that key deletes the whole default matcher, paths
   included. Measured 2026-07-31 against the linked binary.
+- **The app used to get its `TERM` out of Ghostty.app, and the variable that
+  did it is inherited — so do not let it be inherited again.** libghostty
+  names the child `xterm-ghostty` and writes its `TERMINFO` from
+  `GHOSTTY_RESOURCES_DIR`. That variable was never set by this app; it arrived
+  from whatever shell launched it and named a path inside *Ghostty.app*, an
+  unrelated application. libghostty checks nothing before choosing the name,
+  so a Ghostty that had moved left every pane with a terminal nothing could
+  look up: `tmux attach` answers `missing or unsuitable terminal` and exits,
+  the rail keeps working from its own connection, and the app reads as alive
+  with a blank content half. Measured 2026-08-09 with an isolated config and
+  an isolated server: pointed at a directory that does not exist, **only the
+  control client ever attached**.
+  The description is vendored now (`Resources/xterm-ghostty.terminfo`, its
+  compiled form in `Resources/terminfo`, both copied into the bundle as folder
+  references) and `GhosttyTerminfo.adoptOwnResourcesAtLaunch` takes the
+  variable over before the first surface exists.
+  **`TERMINFO` has to be taken over in the same breath, and missing it is easy.**
+  libghostty rewrites `TERMINFO` only for the surfaces *it* spawns; every other
+  child of this app — the control-mode `tmux -C`, ssh, the git tool's program —
+  gets it by plain inheritance. A first version of this change took only
+  `GHOSTTY_RESOURCES_DIR`, and the live app's control client was still measured
+  carrying `TERMINFO=/Applications/Ghostty.app/…`. The two are **cleared first
+  and only then filled**, never overwritten in place, and each write is
+  **read back**: `setenv` can fail, and a single failed write over the
+  inherited pair leaves this bundle on one name and another application's on
+  the other — a half-owned environment that reads as owned from either name
+  alone, and that every child inherits. Clearing first makes the worst case
+  "neither is set", which libghostty and ncurses both already handle.
+  `Decision.unownedVariable` reports what the environment actually says rather
+  than what was intended, and the surfaces pin `xterm-256color` when it is set. What is
+  deliberately *not* scrubbed: `PATH`, `MANPATH`, `XDG_DATA_DIRS` and
+  `GHOSTTY_BIN_DIR` still mention Ghostty on a machine that has it, because
+  those are the user's own shell exports and rewriting them would change what
+  their panes can run. Four measurements hold the rest up
+  and none are guessable: `TERMINFO` is **written** from the variable rather
+  than passed on (a dead resources dir plus a valid inherited `TERMINFO` still
+  failed); the resources directory itself is **never opened** — `TERMINFO` is
+  `<dir>/../terminfo` by string arithmetic, which is why the directory this
+  app names holds only a README; an absent variable and a present-but-empty
+  one both take libghostty's own `xterm-256color` branch; and the compiled
+  entry this repository ships is byte-identical to Ghostty's, from the same
+  pinned commit. The rule to keep: **no branch may fall back to the inherited
+  value.** A missing bundled entry *unsets* the variable, because restoring
+  Ghostty.app's path there would quietly reinstate the whole dependency, and
+  only on the machines where something was already wrong.
 - **tmux answers a control client with reply blocks it never asked for, and the
   `%begin` flags field is the only thing that says so.** `%begin <time> <number>
   <flags>`: flags is 1 when the block is the reply to a command *this* client

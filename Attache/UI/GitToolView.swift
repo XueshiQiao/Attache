@@ -368,6 +368,17 @@ final class GitToolView: NSView {
             // clipped when they touch the rail's edge.
             builder.withCustom("window-padding-x", "4")
             builder.withCustom("window-padding-y", "2")
+            // The same terminfo question the tmux surface asks, kept here for
+            // a weaker reason and worth saying so: lazygit itself *survives*
+            // an unresolvable terminal name — measured 2026-08-09, it drew its
+            // whole interface with `TERM=xterm-ghostty` and `TERMINFO` pointed
+            // at nothing, because tcell carries a table of its own rather than
+            // reading terminfo the way tmux does. But `git_tool_command` is a
+            // setting, and an ncurses program in that slot would exit with one
+            // line. See `GhosttyTerminfo`.
+            if let term = GhosttyTerminfo.termForSurface() {
+                builder.withCustom("term", term)
+            }
             builder.withCustom("command", command)
             // The path goes through ghostty's own config key rather than a
             // `cd` in the command line, so a root with a space or a quote in

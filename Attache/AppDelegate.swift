@@ -48,6 +48,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     }
 
     func applicationDidFinishLaunching(_: Notification) {
+        // First, before anything can build a surface: take
+        // `GHOSTTY_RESOURCES_DIR` away from whatever launched this app and
+        // point it at the copy of the terminfo database inside this bundle.
+        // Inherited, it named a directory inside *Ghostty.app* — an unrelated
+        // application whose removal then left every pane blank. See
+        // `GhosttyTerminfo`. The answer is kept rather than re-derived because
+        // the notice below has to wait for the sink two blocks down, and this
+        // has to happen before the first `TerminalController` exists.
+        let terminfo = GhosttyTerminfo.adoptOwnResourcesAtLaunch()
         // Before anything draws: pin the process appearance if the user asked
         // for one, then derive the chrome colours from whichever half of the
         // theme that leaves showing. Both are read-only with respect to the
@@ -92,6 +101,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             DiagnosticsCenter.shared.notice(AppNotice(
                 severity: .warning,
                 title: "Cleaned up after a previous run", body: body
+            ))
+        }
+
+        // Said once, at launch, rather than per surface: every pane and every
+        // tool answers this question the same way, and the thing reported is
+        // one fact about this build. It can only mean the app's own bundle is
+        // incomplete now that the database is shipped inside it — which is
+        // worth a notice rather than only a log line, because the terminal is
+        // quietly less capable than it should be and nothing else on screen
+        // would ever say so.
+        if let unowned = terminfo.unownedVariable {
+            // The environment refused the write, so it still holds whatever
+            // launched this app put there — a path into another application.
+            // Nothing downstream may trust it, which `termForSurface` enforces
+            // by pinning a name the system database can always resolve. An
+            // error rather than a warning: it is the invariant this app is
+            // supposed to hold, not a degraded nicety.
+            TmuxLog.destructive("could not take \(unowned) over — surfaces pinned")
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .error,
+                title: "This app could not take over its own \(unowned)",
+                body: "The value it was launched with is still in place, so panes and tools"
+                    + " run as \(GhosttyTerminfo.fallbackTerm) rather than trust it."
+            ))
+        } else if terminfo.term != nil {
+            let location = terminfo.missingFrom ?? "this app's bundle"
+            TmuxLog.lifecycle(
+                "no \(GhosttyTerminfo.ghosttyTerm) entry under \(location)"
+                    + " — surfaces pinned to \(GhosttyTerminfo.fallbackTerm)"
+            )
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .warning,
+                title: "This app's copy of its terminal description is missing",
+                body: "\(location) holds no \(GhosttyTerminfo.ghosttyTerm) entry, which means"
+                    + " an incomplete build or bundle. Panes and tools run as"
+                    + " \(GhosttyTerminfo.fallbackTerm) instead."
             ))
         }
 

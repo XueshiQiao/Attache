@@ -48,6 +48,29 @@ targets:
       # whole for the same reason.
       - path: Attache
         type: syncedFolder
+      # Folder references (`type: folder`), not groups, and that is the whole
+      # point: ncurses looks a terminal up at <TERMINFO>/78/xterm-ghostty, so
+      # the directory has to arrive in the bundle with its shape intact. A
+      # group would flatten both files into Resources/ and the lookup would
+      # find nothing.
+      #
+      # `terminfo` is the description of the terminal libghostty *is*, which
+      # ships with Ghostty.app and not with the library — so without this the
+      # app read another application's bundle through an inherited environment
+      # variable, and moving that application left every pane blank (issue
+      # #12). `ghostty` is the directory the app names as GHOSTTY_RESOURCES_DIR
+      # so that the sibling above is the one libghostty finds; its README says
+      # why it holds nothing else.
+      #
+      # Copied rather than compiled at build time on purpose: a build phase
+      # running `tic` would write into the bundle with no declared outputs,
+      # which is exactly what ENABLE_USER_SCRIPT_SANDBOXING stops in Release.
+      - path: Resources/terminfo
+        type: folder
+        buildPhase: resources
+      - path: Resources/ghostty
+        type: folder
+        buildPhase: resources
     dependencies:
       # The package vends four libraries and the app links all four. `product:`
       # (singular) takes one name; a bare `- package: libghostty-spm` would look
