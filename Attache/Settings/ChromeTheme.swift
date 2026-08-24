@@ -87,8 +87,28 @@ struct ChromeTheme {
         // the opposite of what the divider is there to say.
         railBackground = Self.blend(background, toward: .black, by: 0.22)
         text = foreground
-        mutedText = Self.blend(background, toward: foreground, by: 0.60)
-        faintText = Self.blend(background, toward: foreground, by: 0.40)
+        // 0.80 and 0.62, not the 0.60/0.40 these started at, and the reason is
+        // that the surface underneath is not the colour they are derived from.
+        // These blends assume the text lands on `background`. It lands on the
+        // rail, and the rail is translucent — what it composites to is pulled
+        // toward whatever is behind the window, while the text is drawn opaque
+        // and is not pulled anywhere. Neither the wallpaper nor the opacity
+        // setting is visible from in here.
+        //
+        // Measured 2026-08-24 on the Ayu scheme at 54.5% window opacity over a
+        // mid-grey desktop: the rail composited to (62,63,67) where the
+        // derivation assumed (17,19,23) — nearly four times the luminance —
+        // and the two roles came out at 2.48:1 and 1.53:1 against it. Both are
+        // under the 3:1 floor for even large text. At these fractions the same
+        // measurement gives 3.8:1 and 2.7:1, and the three steps stay far
+        // enough apart to still read as a hierarchy.
+        //
+        // A floor, not a solution: no fixed fraction can be right for every
+        // wallpaper. These are chosen to fail toward "brighter than strictly
+        // needed" on a dark backdrop rather than toward unreadable on a light
+        // one.
+        mutedText = Self.blend(background, toward: foreground, by: 0.80)
+        faintText = Self.blend(background, toward: foreground, by: 0.62)
         separator = Self.blend(background, toward: foreground, by: 0.18)
         hover = Self.blend(background, toward: foreground, by: 0.09)
 
