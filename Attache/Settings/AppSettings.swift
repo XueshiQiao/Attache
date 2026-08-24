@@ -192,7 +192,16 @@ enum AppSettings {
     /// threshold — it is a floor that keeps the degenerate value off the
     /// track.
     static let windowOpacityRange: ClosedRange<CGFloat> = 0.01 ... 1.0
-    static let defaultWindowOpacity: CGFloat = 0.35
+
+    /// 55%, dialled in by looking rather than derived.
+    ///
+    /// It was 35%, from when a system material sat under the fill and supplied
+    /// most of the window's opacity by itself. With the materials gone the fill
+    /// is the only thing between the text and the desktop, so the same number
+    /// buys far less: what shows through is `1 - opacity` now instead of a
+    /// fraction of that. 55% is where the desktop still reads as present
+    /// without the rail's secondary text having to compete with it.
+    static let defaultWindowOpacity: CGFloat = 0.55
 
     /// How much less of the desktop the rail lets through than the panes do.
     ///
