@@ -142,8 +142,8 @@
                 changed.append("liquidGlassIsClear")
             }
             if let raw = parameters["rail"], let value = Double(raw) {
-                AppSettings.railExtraTint = CGFloat(value)
-                changed.append("railExtraTint")
+                AppSettings.railExtraOpacity = CGFloat(value)
+                changed.append("railExtraOpacity")
             }
             if let raw = parameters["blur"], let value = Double(raw) {
                 AppSettings.blurRadius = CGFloat(value)

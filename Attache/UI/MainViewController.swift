@@ -1103,7 +1103,7 @@ final class MainViewController: NSSplitViewController {
     /// `.underWindowBackground` rather than `.sidebar`: the two are different
     /// materials, and using the sidebar's on both halves makes the divider
     /// disappear entirely. The rail is supposed to read a little deeper — see
-    /// `AppSettings.railExtraTint` — and starting from the same material is
+    /// `AppSettings.railExtraOpacity` — and starting from the same material is
     /// what leaves that difference to the tint rather than to two system
     /// materials that shift independently across appearances.
     private let contentBackdrop = GlassBackdropView()

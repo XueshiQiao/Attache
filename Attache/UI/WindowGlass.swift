@@ -36,9 +36,11 @@ enum WindowGlass {
         /// What `PaneGridView` fills, and what the window's background colour
         /// must match — see the 66pt overhang note at that fill.
         let paneFill: NSColor
-        /// What the rail fills. Deeper than `paneFill` by
-        /// `AppSettings.railExtraTint`, which since the divider line went away
-        /// is the only thing marking where one half ends.
+        /// What the rail fills, at the alpha a *second* coat needs to reach
+        /// `AppSettings.railOpacity` over the window's own — see
+        /// `AppSettings.railFillAlpha`. Deeper than `paneFill` by
+        /// `AppSettings.railExtraOpacity`, which since the divider line went
+        /// away is the only thing marking where one half ends.
         let railFill: NSColor
         /// Radius for the backdrop blur, or 0 for none.
         let blurRadius: CGFloat
@@ -59,13 +61,18 @@ enum WindowGlass {
     static func resolved() -> Resolved {
         let theme = ChromeTheme.current
         let opacity = AppSettings.windowOpacity
-        let railOpacity = min(1, opacity + AppSettings.railExtraTint)
+        // Two alphas, and using the wrong one is the double-coat defect this
+        // was fixed for. `railFillAlpha` is what a *second* coat has to go on
+        // at to land the rail on `railOpacity` overall; `railOpacity` itself is
+        // right only where the rail's tint is the first thing painted.
+        let railFillAlpha = AppSettings.railFillAlpha
+        let railOpacity = AppSettings.railOpacity
 
         switch AppSettings.glassStyle {
         case .blur:
             return Resolved(
                 paneFill: theme.background.withAlphaComponent(opacity),
-                railFill: theme.railBackground.withAlphaComponent(railOpacity),
+                railFill: theme.railBackground.withAlphaComponent(railFillAlpha),
                 blurRadius: AppSettings.blurRadius,
                 paneEffect: nil,
                 railEffect: nil
@@ -93,7 +100,7 @@ enum WindowGlass {
             }
             return Resolved(
                 paneFill: theme.background.withAlphaComponent(opacity),
-                railFill: theme.railBackground.withAlphaComponent(railOpacity),
+                railFill: theme.railBackground.withAlphaComponent(railFillAlpha),
                 blurRadius: 0,
                 paneEffect: effect,
                 railEffect: effect

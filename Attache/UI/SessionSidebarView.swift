@@ -735,9 +735,15 @@ final class SessionSidebarView: NSView {
     /// was opaque and a material with nothing behind it samples the window's
     /// own fill. Measured then: rail (43,46,56), panes (42,46,56) — the same
     /// colour to the eye, both solid. It follows the opacity setting now, plus
-    /// `railExtraTint`, which is what keeps the rail reading a little deeper
+    /// `railExtraOpacity`, which is what keeps the rail reading a little deeper
     /// than the panes. That difference is the only thing marking where the list
     /// ends and the terminal begins once neither has a fill of its own.
+    ///
+    /// **This fill lands on top of the window's own `backgroundColor`, not on
+    /// the desktop.** That is why `railFill` carries `railFillAlpha` and not
+    /// `railOpacity` — a second coat at the first one's alpha squares how much
+    /// backdrop is left, and the rail spent a long time far deeper than it was
+    /// ever asked to be. See `AppSettings.railFillAlpha` for the measurement.
     override func draw(_ dirtyRect: NSRect) {
         WindowGlass.resolved().railFill.setFill()
         dirtyRect.fill()

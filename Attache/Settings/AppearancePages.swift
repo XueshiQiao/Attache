@@ -191,16 +191,16 @@ struct AppearancePage: View {
                 .pickerStyle(.segmented)
 
                 glassSlider(
-                    "circle.lefthalf.striped.horizontal", .teal, "Window tint",
+                    "circle.lefthalf.striped.horizontal", .teal, "Window opacity",
                     value: store.windowOpacity, in: AppSettings.windowOpacityRange,
                     format: { "\(Int(($0 * 100).rounded()))%" }
                 ) { store.setWindowOpacity($0) }
 
                 glassSlider(
-                    "sidebar.left", .indigo, "Sidebar depth",
-                    value: store.railExtraTint, in: AppSettings.railExtraTintRange,
+                    "sidebar.left", .indigo, "Extra sidebar opacity",
+                    value: store.railExtraOpacity, in: AppSettings.railExtraOpacityRange,
                     format: { $0 <= 0 ? "same" : "+\(Int(($0 * 100).rounded()))%" }
-                ) { store.setRailExtraTint($0) }
+                ) { store.setRailExtraOpacity($0) }
 
                 switch store.glassStyle {
                 case .blur:

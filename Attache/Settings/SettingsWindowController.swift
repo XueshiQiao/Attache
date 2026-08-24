@@ -248,7 +248,7 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var windowOpacity: CGFloat
     @Published private(set) var backgroundBlur: Bool
     @Published private(set) var blurRadius: CGFloat
-    @Published private(set) var railExtraTint: CGFloat
+    @Published private(set) var railExtraOpacity: CGFloat
     @Published private(set) var frostiness: CGFloat
     @Published private(set) var chromeMaterial: AppSettings.ChromeMaterial
     @Published private(set) var glassStyle: AppSettings.GlassStyle
@@ -278,7 +278,7 @@ final class SettingsStore: ObservableObject {
         windowOpacity = AppSettings.windowOpacity
         backgroundBlur = AppSettings.backgroundBlur
         blurRadius = AppSettings.blurRadius
-        railExtraTint = AppSettings.railExtraTint
+        railExtraOpacity = AppSettings.railExtraOpacity
         frostiness = AppSettings.frostiness
         chromeMaterial = AppSettings.chromeMaterial
         glassStyle = AppSettings.glassStyle
@@ -460,9 +460,9 @@ final class SettingsStore: ObservableObject {
         AppSettings.notifyChanged()
     }
 
-    func setRailExtraTint(_ tint: CGFloat) {
-        AppSettings.railExtraTint = tint
-        railExtraTint = AppSettings.railExtraTint
+    func setRailExtraOpacity(_ tint: CGFloat) {
+        AppSettings.railExtraOpacity = tint
+        railExtraOpacity = AppSettings.railExtraOpacity
         AppSettings.notifyChanged()
     }
 
@@ -494,14 +494,14 @@ final class SettingsStore: ObservableObject {
     func resetGlass() {
         AppSettings.windowOpacity = AppSettings.defaultWindowOpacity
         AppSettings.blurRadius = AppSettings.defaultBlurRadius
-        AppSettings.railExtraTint = AppSettings.defaultRailExtraTint
+        AppSettings.railExtraOpacity = AppSettings.defaultRailExtraOpacity
         AppSettings.frostiness = AppSettings.defaultFrostiness
         AppSettings.chromeMaterial = AppSettings.defaultChromeMaterial
         AppSettings.glassStyle = AppSettings.defaultGlassStyle
         AppSettings.liquidGlassIsClear = true
         windowOpacity = AppSettings.windowOpacity
         blurRadius = AppSettings.blurRadius
-        railExtraTint = AppSettings.railExtraTint
+        railExtraOpacity = AppSettings.railExtraOpacity
         frostiness = AppSettings.frostiness
         chromeMaterial = AppSettings.chromeMaterial
         glassStyle = AppSettings.glassStyle

@@ -47,7 +47,7 @@ enum AppSettings {
         static let chromeMaterial         = "chrome_material"
         static let frostiness             = "frostiness"
         static let blurRadius             = "blur_radius"
-        static let railExtraTint          = "rail_extra_tint"
+        static let railExtraOpacity       = "sidebar_extra_opacity"
         static let glassStyle             = "glass_style"
         static let sidebarShowsGit        = "sidebar_shows_git"
         static let sidebarShowsAgent      = "sidebar_shows_agent"
@@ -106,7 +106,7 @@ enum AppSettings {
         "TmuxGUIChromeMaterial": "chrome_material",
         "TmuxGUIFrostiness": "frostiness",
         "TmuxGUIBlurRadius": "blur_radius",
-        "TmuxGUIRailExtraTint": "rail_extra_tint",
+        "TmuxGUIRailExtraTint": "sidebar_extra_opacity",
         "TmuxGUIGlassStyle": "glass_style",
         "TmuxGUISidebarShowsGit": "sidebar_shows_git",
         "TmuxGUISidebarShowsAgent": "sidebar_shows_agent",
@@ -187,45 +187,54 @@ enum AppSettings {
     /// reachable: a terminal that cannot be made solid is unusable over a busy
     /// desktop, and this is a preference, not a look the app imposes.
     ///
-    /// The floor is 0 now, and it took a wrong turn to get there. It was 0.3,
-    /// on the reasoning that a fully transparent window is text on a wallpaper.
-    /// That was only true while this was the *only* control: the material
+    /// The floor is 1%, and it has been 0.3 and 0 before that. 0.3 was on the
+    /// reasoning that a fully transparent window is text on a wallpaper, and
+    /// that was only true while this was the *only* control: the material
     /// underneath has an opacity of its own, and it turned out to be nearly all
     /// of the opacity — dialled to 0.15, the window still barely showed the
-    /// desktop. With `frostiness` separated out, a tint of 0 over a frosted
-    /// sheet is a perfectly readable window, so the floor has nothing left to
-    /// protect.
-    static let windowOpacityRange: ClosedRange<CGFloat> = 0 ... 1.0
+    /// desktop. With `frostiness` separated out there was nothing left for a
+    /// 0.3 floor to protect, so it went to 0.
+    ///
+    /// 0 itself is the case that had to come back, and it is not the same
+    /// argument. Under the `.blur` style there is no material: 0 means the
+    /// window contributes no colour of its own at all, so every pane is
+    /// glyphs sitting directly on the wallpaper with nothing behind them. That
+    /// is not a dim window, it is an unreadable one, and it is reachable by
+    /// dragging one slider to its end. 1% is not a readability threshold — it
+    /// is a floor that keeps the degenerate value off the track.
+    static let windowOpacityRange: ClosedRange<CGFloat> = 0.01 ... 1.0
     static let defaultWindowOpacity: CGFloat = 0.35
 
     /// How much less of the desktop the rail lets through than the panes do.
     ///
-    /// Added to the tint's alpha rather than applied as a darker colour, and
-    /// the difference is visible: over a material, more alpha reads as *deeper
-    /// glass* — darker and a little less frosted — where a darker colour at the
-    /// same alpha reads as a different paint on the same glass. The first is
-    /// what the mockup this was dialled in on does, and it is the one that was
-    /// picked.
+    /// Added to the window's own opacity rather than applied as a darker
+    /// colour, and the difference is visible: over a material, more alpha reads
+    /// as *deeper glass* — darker and a little less frosted — where a darker
+    /// colour at the same alpha reads as a different paint on the same glass.
+    /// The first is what the mockup this was dialled in on does, and it is the
+    /// one that was picked.
     ///
     /// Small on purpose: it is now the *only* thing separating the two halves,
     /// since the line between them is gone, but a rail that reads as a
     /// different window rather than a deeper part of this one is worse than no
-    /// distinction at all.
-    static let railExtraTintRange: ClosedRange<CGFloat> = 0 ... 0.5
-    static let defaultRailExtraTint: CGFloat = 0.10
+    /// distinction at all. That is literal since the double-coat fix — at 0 the
+    /// rail and the panes are the same colour and there is no boundary drawn
+    /// anywhere, which is what the slider's own "same" reads as at that end.
+    static let railExtraOpacityRange: ClosedRange<CGFloat> = 0 ... 0.5
+    static let defaultRailExtraOpacity: CGFloat = 0.10
 
-    static var railExtraTint: CGFloat {
+    static var railExtraOpacity: CGFloat {
         get {
             clamp(
-                (store.object(forKey: Key.railExtraTint) as? Double).map { CGFloat($0) }
-                    ?? defaultRailExtraTint,
-                to: railExtraTintRange, fallback: defaultRailExtraTint
+                (store.object(forKey: Key.railExtraOpacity) as? Double).map { CGFloat($0) }
+                    ?? defaultRailExtraOpacity,
+                to: railExtraOpacityRange, fallback: defaultRailExtraOpacity
             )
         }
         set {
             store.set(
-                Double(clamp(newValue, to: railExtraTintRange, fallback: defaultRailExtraTint)),
-                forKey: Key.railExtraTint
+                Double(clamp(newValue, to: railExtraOpacityRange, fallback: defaultRailExtraOpacity)),
+                forKey: Key.railExtraOpacity
             )
         }
     }
@@ -556,9 +565,45 @@ enum AppSettings {
         set { store.set(newValue.rawValue, forKey: Key.chromeMaterial) }
     }
 
-    /// The alpha the rail's tint goes on at. See `railExtraTint`.
+    /// The opacity the rail is meant to *end up* at — the window's own plus
+    /// the sidebar's extra. What the rail's fill is painted with is
+    /// `railFillAlpha`, not this, wherever something else has already put a
+    /// coat down.
     static var railOpacity: CGFloat {
-        min(1.0, windowOpacity + railExtraTint)
+        min(1.0, windowOpacity + railExtraOpacity)
+    }
+
+    /// The alpha the rail's own fill goes on at, corrected for the coat that is
+    /// already underneath it.
+    ///
+    /// **The rail is painted twice and the panes once.** AppKit fills the whole
+    /// window with `paneFill` — the window's `backgroundColor` — and then
+    /// `SessionSidebarView.draw` puts the rail's fill on top of that. Two coats
+    /// at alpha `a` leave `(1-a)²` of the desktop showing where one leaves
+    /// `(1-a)`, so a rail asked for the panes' opacity came out far deeper than
+    /// asked, and the gap widened with the slider instead of staying constant.
+    ///
+    /// Measured 2026-08-24 on the running app, reading both halves either side
+    /// of the boundary where the same blurred backdrop is behind both: at a
+    /// window opacity of 67% the panes let 33% of the backdrop through and the
+    /// rail 11%. Solving each half for the backdrop colour it implies settled
+    /// it — one coat put the rail's backdrop 2.5x away from the panes', two
+    /// coats put them 0.4% apart.
+    ///
+    /// Solving `(1-a)(1-s) = 1-(a+extra)` for the second coat gives
+    /// `s = extra/(1-a)`, which is this. Two consequences worth knowing:
+    /// `extra = 0` paints nothing at all, so the rail is exactly the panes'
+    /// colour and the halves stop being distinguishable; and the correction is
+    /// on the alpha only, so the composite is a blend of `background` and
+    /// `railBackground` rather than pure `railBackground` — computed across the
+    /// slider's range that is under 3/255, which is below what the eye resolves
+    /// on a flat field.
+    static var railFillAlpha: CGFloat {
+        let base = windowOpacity
+        // An opaque window has no backdrop left to protect; the fill simply has
+        // to cover, or the rail cannot differ from the panes at all.
+        guard base < 1 else { return railExtraOpacity > 0 ? 1 : 0 }
+        return min(1, railExtraOpacity / (1 - base))
     }
 
     /// How much of the frosted sheet is there at all, 0 to 1.
