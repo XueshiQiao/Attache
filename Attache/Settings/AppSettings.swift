@@ -39,7 +39,6 @@ enum AppSettings {
         static let scrollbackPrimeLines   = "scrollback_prime_lines"
         static let sidebarWidth           = "sidebar_width"
         static let closingTabKills        = "closing_tab_kills_window"
-        static let paneFocusRing          = "pane_focus_ring"
         static let copyOnSelect           = "copy_on_select"
         static let quickActions           = "quick_actions"
         static let windowOpacity          = "window_opacity"
@@ -93,7 +92,6 @@ enum AppSettings {
         "TmuxGUIScrollbackPrimeLines": "scrollback_prime_lines",
         "TmuxGUISidebarWidth": "sidebar_width",
         "TmuxGUIClosingTabKills": "closing_tab_kills_window",
-        "TmuxGUIPaneFocusRing": "pane_focus_ring",
         "TmuxGUICopyOnSelect": "copy_on_select",
         "TmuxGUIQuickActions": "quick_actions",
         "TmuxGUIWindowOpacity": "window_opacity",
@@ -660,19 +658,6 @@ enum AppSettings {
             return min(max(stored, gitAutoFetchMinutesRange.lowerBound), gitAutoFetchMinutesRange.upperBound)
         }
         set { store.set(newValue, forKey: Key.gitAutoFetchMinutes) }
-    }
-
-    /// Whether the split window marks its active pane with an outline.
-    ///
-    /// Absent reads as `true`: with a split, keystrokes go to one pane and
-    /// nothing else on screen says which. Off is for people who find any mark
-    /// around the pane they are reading a distraction and would rather find
-    /// the cursor — nothing is drawn at all, not a fainter version.
-    /// `object(forKey:) as? Bool` rather than `bool(forKey:)`, because only the
-    /// former can tell an absent key from a stored `false`.
-    static var showsPaneFocusRing: Bool {
-        get { store.object(forKey: Key.paneFocusRing) as? Bool ?? true }
-        set { store.set(newValue, forKey: Key.paneFocusRing) }
     }
 
     /// Whether releasing the mouse after selecting text puts it on the

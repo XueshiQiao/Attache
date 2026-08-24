@@ -160,10 +160,6 @@
                 AppSettings.scrollbackPrimeLines = value
                 changed.append("scrollbackPrimeLines")
             }
-            if let raw = parameters["paneFocusRing"] {
-                AppSettings.showsPaneFocusRing = raw == "1" || raw.lowercased() == "true"
-                changed.append("paneFocusRing")
-            }
 
             if !changed.isEmpty {
                 TmuxLog.lifecycle("inspector changed settings: \(changed.joined(separator: ", "))")
@@ -480,7 +476,6 @@
             let scrollbackPrimeLines: Int
             let sidebarWidth: Double
             let closingTabKillsWindow: Bool
-            let showsPaneFocusRing: Bool
             /// The derived chrome, as hex. Every one of these is a blend of the
             /// scheme's own foreground and background except `accent`, which is
             /// picked from the scheme's highlight colours and has to clear a
@@ -503,7 +498,6 @@
                 scrollbackPrimeLines = AppSettings.scrollbackPrimeLines
                 sidebarWidth = Double(AppSettings.sidebarWidth)
                 closingTabKillsWindow = AppSettings.closingTabKillsWindow
-                showsPaneFocusRing = AppSettings.showsPaneFocusRing
 
                 let theme = ChromeTheme.current
                 chrome = [

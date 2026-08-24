@@ -38,7 +38,6 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var scrollbackPrimeLines: Int
     @Published private(set) var sidebarWidth: CGFloat
     @Published private(set) var closingTabKillsWindow: Bool
-    @Published private(set) var showsPaneFocusRing: Bool
     @Published private(set) var copyOnSelect: Bool
     @Published private(set) var quickActions: [QuickAction]
     @Published private(set) var sidebarShowsGit: Bool
@@ -258,7 +257,6 @@ final class SettingsStore: ObservableObject {
         scrollbackPrimeLines = AppSettings.scrollbackPrimeLines
         sidebarWidth = AppSettings.sidebarWidth
         closingTabKillsWindow = AppSettings.closingTabKillsWindow
-        showsPaneFocusRing = AppSettings.showsPaneFocusRing
         copyOnSelect = AppSettings.copyOnSelect
         quickActions = AppSettings.quickActions
         sidebarShowsGit = AppSettings.sidebarShowsGit
@@ -361,12 +359,6 @@ final class SettingsStore: ObservableObject {
         )
         AppSettings.closingTabKillsWindow = kills
         closingTabKillsWindow = kills
-        AppSettings.notifyChanged()
-    }
-
-    func setShowsPaneFocusRing(_ shows: Bool) {
-        AppSettings.showsPaneFocusRing = shows
-        showsPaneFocusRing = shows
         AppSettings.notifyChanged()
     }
 
