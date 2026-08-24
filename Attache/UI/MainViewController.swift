@@ -44,7 +44,7 @@ final class MainViewController: NSSplitViewController {
     var server: TmuxServer { hosts[0].server }
 
     private let sidebar = SessionSidebarView(frame: .zero)
-    private lazy var content = Content(backdrop: contentBackdrop)
+    private lazy var content = Content()
     /// Keyed by tmux's `$N`, like `TmuxServer.connections`. Keyed by name, a
     /// rename read as "that session is gone" and threw the controller away —
     /// GPU surfaces, primed scrollback and the hidden-window set with it.
@@ -753,7 +753,7 @@ final class MainViewController: NSSplitViewController {
         applyBackdropSettings()
 
         let sidebarItem = NSSplitViewItem(
-            viewController: Hosting(view: sidebar, backdrop: railBackdrop)
+            viewController: Hosting(view: sidebar)
         )
         // Not collapsible. Collapsing is standard sidebar behaviour and comes
         // free, but the only ways back are a toolbar button and a View menu
@@ -770,7 +770,7 @@ final class MainViewController: NSSplitViewController {
         // window is one sheet of glass and a third treatment on the right would
         // read as a separate window pasted on.
         let conversationItem = NSSplitViewItem(
-            viewController: Hosting(view: rail, backdrop: railBackdrop)
+            viewController: Hosting(view: rail)
         )
         conversationItem.minimumThickness = AppSettings.conversationWidthRange.lowerBound
         conversationItem.maximumThickness = AppSettings.conversationWidthRange.upperBound
@@ -1035,10 +1035,7 @@ final class MainViewController: NSSplitViewController {
     }
 
     private func applyBackdropSettings() {
-        let glass = WindowGlass.resolved()
-        applyBackdropBlur(radius: glass.blurRadius)
-        railBackdrop.apply(glass.railEffect)
-        contentBackdrop.apply(glass.paneEffect)
+        applyBackdropBlur(radius: WindowGlass.resolved().blurRadius)
     }
 
     /// Blur the desktop behind the whole window, at a radius this app chooses.
@@ -1059,69 +1056,28 @@ final class MainViewController: NSSplitViewController {
     /// split view item requires.
     private final class Hosting: NSViewController {
         private let hosted: NSView
-        private let backdrop: GlassBackdropView
 
-        init(view: NSView, backdrop: GlassBackdropView) {
+        init(view: NSView) {
             hosted = view
-            self.backdrop = backdrop
             super.init(nibName: nil, bundle: nil)
         }
 
         @available(*, unavailable)
         required init?(coder _: NSCoder) { fatalError("not supported") }
 
-        /// The rail is the panel's content; the panel and its material belong
-        /// to the sidebar split view item. Supplying a backdrop here was an
-        /// attempt to fill the column edge to edge, which is exactly what the
-        /// inset panel is not supposed to do.
         override func loadView() {
             let container = NSView()
-            backdrop.translatesAutoresizingMaskIntoConstraints = false
             hosted.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(backdrop)
             container.addSubview(hosted)
-            for child in [backdrop, hosted] {
-                NSLayoutConstraint.activate([
-                    child.topAnchor.constraint(equalTo: container.topAnchor),
-                    child.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                    child.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                    child.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                ])
-            }
+            NSLayoutConstraint.activate([
+                hosted.topAnchor.constraint(equalTo: container.topAnchor),
+                hosted.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                hosted.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                hosted.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            ])
             view = container
         }
     }
-
-    /// The material the panes are drawn over.
-    ///
-    /// The sidebar half gets one of these free — `NSSplitViewItem`'s sidebar
-    /// behaviour supplies it, and that is where the rail's translucency has
-    /// always come from. The content half gets nothing, so it had to be added,
-    /// and adding it is most of what makes the window read as one sheet of
-    /// glass rather than as a frosted rail glued to a solid terminal.
-    ///
-    /// `.underWindowBackground` rather than `.sidebar`: the two are different
-    /// materials, and using the sidebar's on both halves makes the divider
-    /// disappear entirely. The rail is supposed to read a little deeper — see
-    /// `AppSettings.railExtraOpacity` — and starting from the same material is
-    /// what leaves that difference to the tint rather than to two system
-    /// materials that shift independently across appearances.
-    private let contentBackdrop = GlassBackdropView()
-    /// The rail's own material, over AppKit's.
-    ///
-    /// `NSSplitViewItem`'s sidebar behaviour installs an `NSVisualEffectView`
-    /// with the `.sidebar` material and there is no supported way to ask it not
-    /// to. So this one goes *inside* the rail, on top of it. That works because
-    /// `.behindWindow` blending samples what is behind the **window**, not what
-    /// is behind the view — so this one reaches the desktop directly and the
-    /// system's sheet underneath contributes nothing.
-    ///
-    /// Without it the two halves cannot match: the rail was stuck on
-    /// AppKit's material while the panes were on whatever this app chose, and
-    /// the visible result was a nearly opaque sidebar panel beside a nearly
-    /// opaque terminal, with only the inset margin between them — the window's
-    /// own background — actually letting anything through.
-    private let railBackdrop = GlassBackdropView()
 
     /// The right-hand half, and the parent of whichever session is on screen.
     ///
@@ -1132,28 +1088,9 @@ final class MainViewController: NSSplitViewController {
     /// area and an empty 792pt one beside it. Session controllers are children
     /// of this instead, where `addChild` means what it says.
     private final class Content: NSViewController {
-        /// Installed by `MainViewController`, behind every session's view.
-        let backdrop: GlassBackdropView
-
-        init(backdrop: GlassBackdropView) {
-            self.backdrop = backdrop
-            super.init(nibName: nil, bundle: nil)
-        }
-
-        @available(*, unavailable)
-        required init?(coder _: NSCoder) { fatalError("not supported") }
-
         override func loadView() {
             let view = NSView()
             view.wantsLayer = true
-            backdrop.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(backdrop)
-            NSLayoutConstraint.activate([
-                backdrop.topAnchor.constraint(equalTo: view.topAnchor),
-                backdrop.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                backdrop.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                backdrop.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            ])
             self.view = view
         }
 

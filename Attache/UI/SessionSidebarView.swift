@@ -717,24 +717,22 @@ final class SessionSidebarView: NSView {
     /// to grab. Rows and buttons handle their own clicks and opt out.
     override var mouseDownCanMoveWindow: Bool { true }
 
-    /// A tint over the sidebar material, not a fill instead of it.
+    /// A tint over what is behind the window, not a fill instead of it.
     ///
     /// The rail used to paint `ChromeTheme.background` opaque, which made the
-    /// chrome follow the terminal theme — asked for — but also painted over the
-    /// system's sidebar material, so the window lost the translucency every
-    /// other Mac sidebar has. Also asked for. The two are only in conflict if
-    /// the theme colour is opaque.
+    /// chrome follow the terminal theme — asked for — but left the window with
+    /// none of the translucency every other Mac sidebar has. Also asked for.
+    /// The two are only in conflict if the theme colour is opaque.
     ///
-    /// So it goes on at partial alpha: the material still samples what is
-    /// behind the window and still shifts as things move under it, and the
-    /// theme still decides what colour that glass reads as. `NSVisualEffectView`
-    /// draws first because it is the split view item's own backing view; this
-    /// only has to leave enough of it showing.
+    /// So it goes on at partial alpha: the blurred desktop still shows through
+    /// and still shifts as things move under it, and the theme still decides
+    /// what colour the result reads as.
     ///
     /// The alpha was a constant 0.55 and produced nothing, because the window
-    /// was opaque and a material with nothing behind it samples the window's
-    /// own fill. Measured then: rail (43,46,56), panes (42,46,56) — the same
-    /// colour to the eye, both solid. It follows the opacity setting now, plus
+    /// was opaque back then and there was nothing behind the fill but the
+    /// window's own. Measured then: rail (43,46,56), panes (42,46,56) — the
+    /// same colour to the eye, both solid. It follows the opacity setting now,
+    /// plus
     /// `railExtraOpacity`, which is what keeps the rail reading a little deeper
     /// than the panes. That difference is the only thing marking where the list
     /// ends and the terminal begins once neither has a fill of its own.

@@ -43,12 +43,8 @@ enum AppSettings {
         static let copyOnSelect           = "copy_on_select"
         static let quickActions           = "quick_actions"
         static let windowOpacity          = "window_opacity"
-        static let backgroundBlur         = "background_blur"
-        static let chromeMaterial         = "chrome_material"
-        static let frostiness             = "frostiness"
         static let blurRadius             = "blur_radius"
         static let railExtraOpacity       = "sidebar_extra_opacity"
-        static let glassStyle             = "glass_style"
         static let sidebarShowsGit        = "sidebar_shows_git"
         static let sidebarShowsAgent      = "sidebar_shows_agent"
         static let sidebarShowsAgentText  = "sidebar_shows_agent_text"
@@ -58,7 +54,6 @@ enum AppSettings {
         static let logsAgentTransitions   = "logs_agent_transitions"
         static let gitAutoFetch           = "git_auto_fetch"
         static let gitAutoFetchMinutes    = "git_auto_fetch_minutes"
-        static let liquidGlassClear       = "liquid_glass_clear"
         static let linkClick              = "link_click"
         static let linkModifier           = "link_modifier"
         static let showsConversation      = "shows_conversation"
@@ -102,12 +97,8 @@ enum AppSettings {
         "TmuxGUICopyOnSelect": "copy_on_select",
         "TmuxGUIQuickActions": "quick_actions",
         "TmuxGUIWindowOpacity": "window_opacity",
-        "TmuxGUIBackgroundBlur": "background_blur",
-        "TmuxGUIChromeMaterial": "chrome_material",
-        "TmuxGUIFrostiness": "frostiness",
         "TmuxGUIBlurRadius": "blur_radius",
         "TmuxGUIRailExtraTint": "sidebar_extra_opacity",
-        "TmuxGUIGlassStyle": "glass_style",
         "TmuxGUISidebarShowsGit": "sidebar_shows_git",
         "TmuxGUISidebarShowsAgent": "sidebar_shows_agent",
         "TmuxGUISidebarShowsAgentText": "sidebar_shows_agent_text",
@@ -117,7 +108,6 @@ enum AppSettings {
         "TmuxGUILogsAgentTransitions": "logs_agent_transitions",
         "TmuxGUIGitAutoFetch": "git_auto_fetch",
         "TmuxGUIGitAutoFetchMinutes": "git_auto_fetch_minutes",
-        "TmuxGUILiquidGlassClear": "liquid_glass_clear",
     ]
 
     /// Posted after any setting changes, with `ChromeTheme.current` already
@@ -188,20 +178,19 @@ enum AppSettings {
     /// desktop, and this is a preference, not a look the app imposes.
     ///
     /// The floor is 1%, and it has been 0.3 and 0 before that. 0.3 was on the
-    /// reasoning that a fully transparent window is text on a wallpaper, and
-    /// that was only true while this was the *only* control: the material
-    /// underneath has an opacity of its own, and it turned out to be nearly all
-    /// of the opacity — dialled to 0.15, the window still barely showed the
-    /// desktop. With `frostiness` separated out there was nothing left for a
-    /// 0.3 floor to protect, so it went to 0.
+    /// reasoning that a fully transparent window is text on a wallpaper. That
+    /// was true only while a system material sat under the fill and supplied an
+    /// opacity of its own — nearly all of it, as it turned out: dialled to
+    /// 0.15, the window still barely showed the desktop, so the floor was
+    /// protecting nothing and went to 0.
     ///
-    /// 0 itself is the case that had to come back, and it is not the same
-    /// argument. Under the `.blur` style there is no material: 0 means the
-    /// window contributes no colour of its own at all, so every pane is
-    /// glyphs sitting directly on the wallpaper with nothing behind them. That
-    /// is not a dim window, it is an unreadable one, and it is reachable by
-    /// dragging one slider to its end. 1% is not a readability threshold — it
-    /// is a floor that keeps the degenerate value off the track.
+    /// The materials are gone and 0 is now exactly what the old floor was
+    /// afraid of: nothing is under the fill, so 0 means the window contributes
+    /// no colour of its own at all and every pane is glyphs sitting directly on
+    /// the wallpaper. That is not a dim window, it is an unreadable one, and it
+    /// is reachable by dragging one slider to its end. 1% is not a readability
+    /// threshold — it is a floor that keeps the degenerate value off the
+    /// track.
     static let windowOpacityRange: ClosedRange<CGFloat> = 0.01 ... 1.0
     static let defaultWindowOpacity: CGFloat = 0.35
 
@@ -451,120 +440,6 @@ enum AppSettings {
         }
     }
 
-    /// Which of the three ways of showing the desktop the window uses.
-    ///
-    /// Three, and they are kept side by side on purpose: they are not settings
-    /// of one mechanism but three different mechanisms, and which one looks
-    /// right is not a question anyone can answer by reading. See `WindowGlass`
-    /// for what each does and which knobs belong to it.
-    enum GlassStyle: String, CaseIterable {
-        /// This app's own: a gaussian blur at any radius, plus a tint.
-        case blur
-        /// macOS 26's `NSGlassEffectView` — what Ghostty calls
-        /// `macos-glass-regular` and `macos-glass-clear`.
-        case liquidGlass
-        /// The classic `NSVisualEffectView` materials.
-        case material
-
-        var title: String {
-            switch self {
-            case .blur: "Blur"
-            case .liquidGlass: "Liquid Glass"
-            case .material: "System material"
-            }
-        }
-
-        /// Liquid Glass needs macOS 26. Offering it where it cannot be built
-        /// would be a picker entry that silently does nothing.
-        var isAvailable: Bool {
-            guard case .liquidGlass = self else { return true }
-            if #available(macOS 26.0, *) { return true }
-            return false
-        }
-    }
-
-    static let defaultGlassStyle: GlassStyle = .blur
-
-    static var glassStyle: GlassStyle {
-        get {
-            let stored = store.string(forKey: Key.glassStyle).flatMap(GlassStyle.init(rawValue:))
-            // A style stored by a newer OS and read back on an older one falls
-            // back rather than rendering nothing.
-            return (stored?.isAvailable == true ? stored : nil) ?? defaultGlassStyle
-        }
-        set { store.set(newValue.rawValue, forKey: Key.glassStyle) }
-    }
-
-    /// Which of `NSGlassEffectView`'s two styles. Clear is the more transparent
-    /// of the two; regular carries more of its own material.
-    static var liquidGlassIsClear: Bool {
-        get { store.object(forKey: Key.liquidGlassClear) as? Bool ?? true }
-        set { store.set(newValue, forKey: Key.liquidGlassClear) }
-    }
-
-    /// The system material the whole window is drawn over, or none at all.
-    ///
-    /// Exists because a macOS "material" is not a pane of glass. It is a mostly
-    /// opaque frosted sheet with a colour of its own, and which one is chosen
-    /// decides how much of the desktop survives it — far more than the tint
-    /// painted on top does. The first build of this had `.underWindowBackground`
-    /// on the content half and AppKit's `.sidebar` on the rail, and the result
-    /// was a window whose opacity slider visibly did almost nothing.
-    ///
-    /// `none` is the Ghostty answer: no material, so the fill is the only thing
-    /// between the text and the desktop. Sharpest, and the only one where the
-    /// opacity setting means exactly what it says.
-    enum ChromeMaterial: String, CaseIterable {
-        case none
-        case underWindowBackground
-        case windowBackground
-        case sidebar
-        case menu
-        case popover
-        case hudWindow
-        case fullScreenUI
-
-        var title: String {
-            switch self {
-            case .none: "No material — clearest"
-            case .underWindowBackground: "Under window"
-            case .windowBackground: "Window"
-            case .sidebar: "Sidebar"
-            case .menu: "Menu"
-            case .popover: "Popover"
-            case .hudWindow: "HUD"
-            case .fullScreenUI: "Full screen"
-            }
-        }
-    }
-
-    /// `.sidebar`, and not for its looks.
-    ///
-    /// While the rail is a real `NSSplitViewItem` sidebar, AppKit paints the
-    /// column it lives in — the inset margin around the panel — with this
-    /// material, and there is no supported way to ask it not to. Anything else
-    /// on the content half is therefore a *second* kind of frost next to the
-    /// first, which is exactly the "three sheets of glass" this setting exists
-    /// to end. Matching it is the only way both halves can look like one
-    /// window while that panel is there.
-    /// None, now that the blur is this app's own.
-    ///
-    /// A material was the only way to get any blur at all while the rail was a
-    /// system sidebar, and it brought its own opacity with it — most of the
-    /// window's, as it turned out. With `blurRadius` doing the blurring there
-    /// is nothing left for a material to contribute except that opacity, so the
-    /// default is to have none and let the two settings mean what they say.
-    /// The others stay reachable for anyone who wants the system's look.
-    static let defaultChromeMaterial: ChromeMaterial = .none
-
-    static var chromeMaterial: ChromeMaterial {
-        get {
-            (store.string(forKey: Key.chromeMaterial)).flatMap(ChromeMaterial.init(rawValue:))
-                ?? defaultChromeMaterial
-        }
-        set { store.set(newValue.rawValue, forKey: Key.chromeMaterial) }
-    }
-
     /// The opacity the rail is meant to *end up* at — the window's own plus
     /// the sidebar's extra. What the rail's fill is painted with is
     /// `railFillAlpha`, not this, wherever something else has already put a
@@ -606,38 +481,6 @@ enum AppSettings {
         return min(1, railExtraOpacity / (1 - base))
     }
 
-    /// How much of the frosted sheet is there at all, 0 to 1.
-    ///
-    /// The second of the two dimensions, and the one that was missing. A macOS
-    /// material is a thick sheet of frost with an opacity of its own that no
-    /// tint painted on top can reduce — so with only the tint to turn, the
-    /// window had a floor it could not go below, and that floor was most of the
-    /// way to opaque. This is the sheet's own alpha.
-    ///
-    /// The two together are what every other terminal calls "opacity" and
-    /// "blur", and they are genuinely independent: `frostiness` decides how
-    /// much the desktop is *blurred and lightened*, `windowOpacity` decides how
-    /// much of the terminal's own colour is laid over the result. Frost 0 is
-    /// clear glass — sharp desktop, no blur.
-    static let frostinessRange: ClosedRange<CGFloat> = 0 ... 1.0
-    static let defaultFrostiness: CGFloat = 0.7
-
-    static var frostiness: CGFloat {
-        get {
-            clamp(
-                (store.object(forKey: Key.frostiness) as? Double).map { CGFloat($0) }
-                    ?? defaultFrostiness,
-                to: frostinessRange, fallback: defaultFrostiness
-            )
-        }
-        set {
-            store.set(
-                Double(clamp(newValue, to: frostinessRange, fallback: defaultFrostiness)),
-                forKey: Key.frostiness
-            )
-        }
-    }
-
     /// How far the desktop behind the window is blurred, in points.
     ///
     /// The dimension `NSVisualEffectView` does not have. A material's blur is
@@ -673,18 +516,6 @@ enum AppSettings {
                 forKey: Key.blurRadius
             )
         }
-    }
-
-    /// Whether the material behind the window blurs the desktop.
-    ///
-    /// Absent reads as `true`: translucency without blur is a window you can
-    /// read the desktop's text through, which is the effect nobody wants. Off
-    /// still leaves the window translucent — it is the difference between
-    /// frosted and plain glass — and it is the setting to reach for if the blur
-    /// ever costs measurable frames.
-    static var backgroundBlur: Bool {
-        get { store.object(forKey: Key.backgroundBlur) as? Bool ?? true }
-        set { store.set(newValue, forKey: Key.backgroundBlur) }
     }
 
     /// Whether the ✕ on a tab kills the tmux window instead of hiding it.

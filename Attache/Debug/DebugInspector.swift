@@ -131,16 +131,6 @@
                 AppSettings.windowOpacity = CGFloat(value)
                 changed.append("windowOpacity")
             }
-            if let raw = parameters["style"],
-               let value = AppSettings.GlassStyle(rawValue: raw), value.isAvailable
-            {
-                AppSettings.glassStyle = value
-                changed.append("glassStyle")
-            }
-            if let raw = parameters["liquidClear"], let value = Bool(raw) {
-                AppSettings.liquidGlassIsClear = value
-                changed.append("liquidGlassIsClear")
-            }
             if let raw = parameters["rail"], let value = Double(raw) {
                 AppSettings.railExtraOpacity = CGFloat(value)
                 changed.append("railExtraOpacity")
@@ -148,20 +138,6 @@
             if let raw = parameters["blur"], let value = Double(raw) {
                 AppSettings.blurRadius = CGFloat(value)
                 changed.append("blurRadius")
-            }
-            if let raw = parameters["frost"], let value = Double(raw) {
-                AppSettings.frostiness = CGFloat(value)
-                changed.append("frostiness")
-            }
-            if let raw = parameters["material"],
-               let value = AppSettings.ChromeMaterial(rawValue: raw)
-            {
-                AppSettings.chromeMaterial = value
-                changed.append("material")
-            }
-            if let raw = parameters["backgroundBlur"], let value = Bool(raw) {
-                AppSettings.backgroundBlur = value
-                changed.append("backgroundBlur")
             }
             if let raw = parameters["appearance"], let value = AppSettings.Appearance(rawValue: raw) {
                 AppSettings.appearance = value

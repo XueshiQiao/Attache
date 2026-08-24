@@ -492,16 +492,35 @@ one of them presents as "the code is obviously correct and yet".
   re-classes the instance AppKit already made instead — safe only because the
   subclass adds no stored properties and the instance really is a plain
   `NSSplitView`, which is checked on every launch.
-- **A macOS material is not a pane of glass, and the two things people mean by
-  "transparency" are separate.** `NSVisualEffectView` is a frosted sheet with an
+- **A macOS material is not a pane of glass, and it is why the window's
+  translucency is hand-rolled.** `NSVisualEffectView` is a frosted sheet with an
   opacity of its own that no tint painted over it can reduce — a window at 15%
   tint over one still barely shows the desktop — and its blur is fixed per
-  material with no API to change it. `CALayer.backgroundFilters` with a
-  `CIGaussianBlur` is the public way to blur a window's backdrop at a radius of
-  your choosing (public on macOS, not on iOS); `NSGlassEffectView` is macOS 26's
-  own, and it tints the backdrop itself, so anything painted on top applies the
-  colour twice. `WindowGlass` keeps all three apart and every drawing site asks
-  it rather than deciding.
+  material with no API to change it. `NSGlassEffectView`, macOS 26's own, tints
+  the backdrop itself, so anything painted on top applies the colour twice.
+  Both were offered as choices next to this app's own blur and both were
+  removed on 2026-08-24: a blur radius the user can actually turn is what
+  neither will give up, and three mechanisms meant every drawing site had to
+  ask which one was live before it knew whether to paint. `git log` before that
+  date is where they are if they are ever wanted again.
+  The blur is the **window server's**, not `CALayer.backgroundFilters` —
+  `WindowServerBlur` records why: a backdrop filter cannot reach under the
+  panes' Metal layers, so it blurs the window's edges and not its middle.
+- **The rail is painted twice and the panes once, and the second coat has to
+  know it.** AppKit fills the whole window with the window's `backgroundColor`;
+  `SessionSidebarView.draw` then puts the rail's fill on top of *that*. Two
+  coats at alpha `a` leave `(1-a)²` of the desktop where one leaves `(1-a)`, so
+  a rail painted at the panes' alpha squares what it lets through and the gap
+  widens with the opacity slider instead of staying constant. Measured
+  2026-08-24 at 67% window opacity: panes 33% of the backdrop through, rail
+  11%. `AppSettings.railFillAlpha` is the corrected alpha — `extra/(1-a)` — and
+  anything painting a *second* coat over the window's own must use it rather
+  than the total it wants to reach.
+  Two halves of one window can only be compared this way: solve each
+  independently for the backdrop colour it implies and see which model makes
+  them agree. Here one coat put them 2.5x apart and two coats 0.4% apart, which
+  is what settled it. Do not compare the halves by eye or by a single reading —
+  the backdrop is the user's wallpaper and it is not a constant.
 - **libghostty claims ⌘ keys.** Its terminal view treats them as candidates for
   its own keybinds before the main menu is consulted. `TmuxTerminalView`
   overrides `performKeyEquivalent` to give the menu first refusal.

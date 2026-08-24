@@ -87,27 +87,15 @@ struct TerminalPage: View {
 
 // MARK: - Appearance
 
-/// What each way of making the window transparent actually is. Three sentences
-/// rather than one, because they are three mechanisms and the differences are
-/// what a person choosing between them needs.
-private func glassFooter(_ style: AppSettings.GlassStyle) -> String {
-    let common = "The tint is how much of the terminal's own colour is laid over what shows "
-        + "through. 100% is a solid window and costs nothing to draw. "
-    switch style {
-    case .blur:
-        return common + "This app's own: the desktop behind the window is blurred at whatever "
-            + "radius you ask for, which is the one thing macOS's own materials will not let "
-            + "anyone change."
-    case .liquidGlass:
-        return common + "macOS 26's Liquid Glass, the same effect the system uses for its own "
-            + "sidebars. It does the tinting itself, so the tint above feeds into the glass "
-            + "rather than being painted over it."
-    case .material:
-        return common + "macOS's classic frosted sheets. Each blurs by a fixed amount that "
-            + "cannot be changed and brings an opacity of its own that the tint cannot reduce, "
-            + "which is why the other two exist."
-    }
-}
+/// What the two sliders above actually control. The window's translucency is
+/// this app's own — a window-server blur at a radius the user picks, with a
+/// tint over it — and saying so is the only way "tint" and "blur radius" read
+/// as two knobs rather than one.
+private let glassFooter =
+    "The tint is how much of the terminal's own colour is laid over what shows "
+        + "through. 100% is a solid window and costs nothing to draw. The desktop "
+        + "behind the window is blurred at whatever radius you ask for, which is the "
+        + "one thing macOS's own materials will not let anyone change."
 
 /// One labelled slider with a live readout/// One labelled slider with a live readout and nothing else. Five of these in
 /// a row is the whole glass section, and writing them out longhand made the
@@ -178,18 +166,6 @@ struct AppearancePage: View {
             }
 
             Section {
-                Picker(selection: Binding(
-                    get: { store.glassStyle },
-                    set: { store.setGlassStyle($0) }
-                )) {
-                    ForEach(AppSettings.GlassStyle.allCases.filter(\.isAvailable), id: \.self) {
-                        Text($0.title).tag($0)
-                    }
-                } label: {
-                    iconLabel("square.on.square.dashed", .teal, "Glass")
-                }
-                .pickerStyle(.segmented)
-
                 glassSlider(
                     "circle.lefthalf.striped.horizontal", .teal, "Window opacity",
                     value: store.windowOpacity, in: AppSettings.windowOpacityRange,
@@ -202,51 +178,18 @@ struct AppearancePage: View {
                     format: { $0 <= 0 ? "same" : "+\(Int(($0 * 100).rounded()))%" }
                 ) { store.setRailExtraOpacity($0) }
 
-                switch store.glassStyle {
-                case .blur:
-                    glassSlider(
-                        "drop.fill", .cyan, "Blur radius",
-                        value: store.blurRadius, in: AppSettings.blurRadiusRange,
-                        format: { "\(Int($0.rounded()))pt" }
-                    ) { store.setBlurRadius($0) }
-
-                case .liquidGlass:
-                    Toggle(isOn: Binding(
-                        get: { store.liquidGlassIsClear },
-                        set: { store.setLiquidGlassIsClear($0) }
-                    )) {
-                        iconLabel(
-                            "sparkles", store.liquidGlassIsClear ? .cyan : .gray,
-                            "Clear rather than regular"
-                        )
-                    }
-
-                case .material:
-                    Picker(selection: Binding(
-                        get: { store.chromeMaterial },
-                        set: { store.setChromeMaterial($0) }
-                    )) {
-                        ForEach(AppSettings.ChromeMaterial.allCases, id: \.self) {
-                            Text($0.title).tag($0)
-                        }
-                    } label: {
-                        iconLabel("square.stack.3d.down.right", .gray, "Material")
-                    }
-
-                    glassSlider(
-                        "square.stack.3d.up", .gray, "Material amount",
-                        value: store.frostiness, in: AppSettings.frostinessRange,
-                        format: { "\(Int(($0 * 100).rounded()))%" }
-                    ) { store.setFrostiness($0) }
-                    .disabled(store.chromeMaterial == .none)
-                }
+                glassSlider(
+                    "drop.fill", .cyan, "Blur radius",
+                    value: store.blurRadius, in: AppSettings.blurRadiusRange,
+                    format: { "\(Int($0.rounded()))pt" }
+                ) { store.setBlurRadius($0) }
 
                 HStack {
                     Spacer()
                     Button("Reset to defaults") { store.resetGlass() }
                 }
             } footer: {
-                Text(glassFooter(store.glassStyle))
+                Text(glassFooter)
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
