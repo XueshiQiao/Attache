@@ -318,21 +318,6 @@ nonisolated final class RemoteHelper {
         child.standardOutput = stdout
         child.standardError = stderr
 
-        stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let self else { return }
-            self.queue.async { self.consume(data, from: child) }
-        }
-        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let self else { return }
-            self.queue.async {
-                self.stderrTail.append(data)
-                if self.stderrTail.count > 4096 {
-                    self.stderrTail.removeFirst(self.stderrTail.count - 4096)
-                }
-            }
-        }
         child.terminationHandler = { [weak self] child in
             guard let self else { return }
             self.queue.async {
@@ -350,11 +335,58 @@ nonisolated final class RemoteHelper {
         do {
             try child.run()
         } catch {
+            // Nothing is attached to the pipes yet, and that ordering is the
+            // whole point — see the readers below.
             channelFailed("helper would not start: \(error.localizedDescription)")
             return
         }
         process = child
         stdinHandle = stdin.fileHandleForWriting
+
+        // The readers go in *after* the launch succeeded, and `child` is held
+        // weakly. Both halves are load-bearing and neither is obvious.
+        //
+        // `readUntilEOF` rather than `readabilityHandler` because a channel
+        // that dies is the ordinary case here — the helper is stateless and
+        // `channelFailed` replaces it — so a reader that kept firing after its
+        // child exited accumulated one saturated core per dead channel, for the
+        // life of the app. See `PipeRead.swift`.
+        //
+        // But that self-repair runs on EOF, and **there is no EOF when the
+        // launch itself fails**: no child ever existed to close the write ends,
+        // which this process is holding open through the `Pipe`s. A reader
+        // installed before `run()` therefore never fires and never clears, and
+        // the stdout closure strongly capturing `child` closed the loop —
+        // `child` → `Pipe` → `FileHandle` → handler → `child` — with nothing
+        // left to break it, because `process` is still nil on that path and so
+        // `tearDown`'s `process = nil` clears nothing. `channelFailed` then
+        // schedules another attempt, so a helper whose command cannot be
+        // executed leaks a `Process` and six descriptors every retry, forever,
+        // at a floor of one attempt per thirty seconds. It also accelerates:
+        // descriptor exhaustion is itself a reason `posix_spawn` fails.
+        // Found by an independent review 2026-08-23; the leak predates
+        // `readUntilEOF` and was reachable through the old code the same way.
+        //
+        // Installing after the launch removes the window; the weak capture
+        // removes the cycle even if a future edit reintroduces one. Nothing
+        // is lost by reading late — bytes the child wrote in between sit in
+        // the pipe buffer and the source fires on them as soon as it exists.
+        // The capture may be weak because `child` is only ever used for the
+        // identity test in `consume`, and a deallocated `Process` is by
+        // definition not the current channel.
+        stdout.fileHandleForReading.readUntilEOF { [weak self, weak child] data in
+            guard let self, let child else { return }
+            self.queue.async { self.consume(data, from: child) }
+        }
+        stderr.fileHandleForReading.readUntilEOF { [weak self] data in
+            guard let self else { return }
+            self.queue.async {
+                self.stderrTail.append(data)
+                if self.stderrTail.count > 4096 {
+                    self.stderrTail.removeFirst(self.stderrTail.count - 4096)
+                }
+            }
+        }
         buffer.removeAll()
         stderrTail.removeAll()
         helloSeen = false

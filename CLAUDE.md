@@ -251,10 +251,21 @@ reads through; `RemoteHelper` is the frame parser that trusts nothing it did
 not length-prefix. The check bootstraps the exact shipped script through a
 local `/bin/sh` — sh is sh, ssh is only the pipe — and drives it with the
 exact shipped client, including the byte-exactness cases a spliced transcript
-or a wrong `git status` would come from. Run it after touching either file:
+or a wrong `git status` would come from.
+
+It also owns the **failed-launch** case, which is not about framing at all: it
+drives twenty `start()`/`stop()` cycles against an executable that does not
+exist and counts this process's open descriptors on both sides. That is the
+one path with no EOF in it — see the trap below — so it is the one path a
+self-clearing reader cannot repair, and descriptors are the unit it fails in.
+Confirm it still bites by putting the readers back before `run()`: measured
+2026-08-23, 160 descriptors held after 20 attempts, 8 per attempt.
+
+Run it after touching either file:
 
 ```sh
 swiftc -O -o /tmp/helpercheck Attache/Tmux/TmuxLog.swift \
+  Attache/Tmux/PipeRead.swift \
   Attache/Remote/RemoteHelperScript.swift Attache/Remote/RemoteHelper.swift \
   Attache/Remote/PosixChecksum.swift Attache/Status/GitStatus.swift \
   Tools/HelperCheck/main.swift
@@ -299,6 +310,62 @@ repository root** (or given the root as `argv[1]`):
 swiftc -O -o /tmp/terminfocheck Attache/UI/GhosttyTerminfo.swift \
   Tools/TerminfoCheck/main.swift
 /tmp/terminfocheck
+```
+
+**`PipeRead` has one, and what it protects is a single line whose absence
+costs whole cores.** `readUntilEOF` is how every pipe in this app is read, and
+it exists rather than `readabilityHandler` because the raw API keeps firing
+forever once the child exits — silently, with nothing on screen and nothing in
+the log.
+
+The check observes two things, and both are the invariant itself rather than a
+proxy: the handler is **read back after EOF and must be nil**, which is the
+cancellation (and which a handler that deadlocked before the assignment also
+fails), and the **process's own CPU time across the settle window**, which is
+the production symptom in the units it was reported in. Both are asserted in
+*both* directions — the hand-written unfixed shape must leave the handler
+installed and must burn a core — because a check that only exercises the fixed
+path cannot tell "repaired" from "instrument broken".
+
+The first version made exactly that mistake and it is worth knowing why, since
+it looked complete: it counted deliveries, and `readUntilEOF` filters the empty
+EOF callbacks before `onData`, so "no deliveries after the child exited" stayed
+true with the self-clear **deleted**. Caught by an independent review, then
+settled by mutation — remove the `readabilityHandler = nil` line and rebuild
+the check against it. That is the way to confirm any change here still works:
+
+```sh
+sed 's|handle.readabilityHandler = nil|// gone|' Attache/Tmux/PipeRead.swift > /tmp/mutant.swift
+swiftc -O -o /tmp/mut /tmp/mutant.swift Tools/PipeReadCheck/main.swift && /tmp/mut
+```
+
+Measured 2026-08-23: before, `11 cases, all pass`, exit 0. After, 10 of 29
+cases fail and each names the burn — 0.303s to 0.309s of CPU per 0.3s window,
+one full core.
+
+**The premise that empty means EOF is measured here too, and it is the half
+that would fail silently.** `readUntilEOF` turns "no bytes" into "stop reading,
+forever" — so if a read could come back empty with the writer still open, this
+is not a CPU bug traded for a smaller one, it is a pane losing the rest of its
+output with nothing said anywhere. Three things hold it up and each is a case:
+the descriptor is **blocking** (asked directly at three moments, since POSIX
+only promises "0 means EOF" on a blocking fd and Foundation installs its
+monitor lazily — a future version setting `O_NONBLOCK` would falsify the whole
+file with no other symptom); a **signal delivered mid-read** does not surface
+as empty, tested with `sigaction` and **no SA_RESTART**, because `signal(3)` on
+BSD sets it and the kernel would otherwise restart the read for us — 19,383
+signals across 300KB, nothing lost; and a **lull with the writer open** is not
+mistaken for the end. Every reader in `Attache/` is on an anonymous `Pipe`, not
+a pty — checked, and there is no `openpty`/`forkpty` anywhere in the Swift
+sources; the pane pty belongs to libghostty and never reaches these handlers.
+
+Unlike the other checks here it spawns real children and watches a real clock;
+the margins are orders of magnitude wide, so scheduler noise cannot move it:
+
+```sh
+swiftc -O -o /tmp/pipereadcheck Attache/Tmux/PipeRead.swift \
+  Tools/PipeReadCheck/main.swift
+/tmp/pipereadcheck
 ```
 
 **Screenshots need an awake display, and there is no way to wake one from
@@ -633,6 +700,45 @@ one of them presents as "the code is obviously correct and yet".
   server version (`TmuxVersion.escapesControlModeReplies`), because a decode
   applied to a 3.6 reply would corrupt content that legitimately contains
   backslash-digit runs.
+- **A `readabilityHandler` that ignores empty data never stops running.** A
+  dispatch read source on a pipe is *permanently readable* once the write end
+  closes: `read` returns zero bytes at once and keeps doing so. The obvious
+  handler — `guard !data.isEmpty else { return }` — therefore does not go quiet
+  when the child exits; it is re-entered as fast as the queue can run it. There
+  is no error, no log line and nothing on screen. The only symptom is a warm
+  machine. Measured 2026-08-23 against `/bin/echo`: **1,552,268 calls in the
+  two seconds after the child exited.** The live app the same day, up fourteen
+  days, was at **1313% CPU** — 18 of its 39 threads spinning, 16 of them from
+  helper channels to the `mini` host that had died and been replaced in the
+  ordinary way and 2 from a control client that exited on its own, two pipes
+  each — with 83% of the whole machine in the kernel. Clearing the handler is
+  what cancels the source, so `FileHandle.readUntilEOF` does it in one place
+  and nothing else in `Attache/` may set `readabilityHandler` directly. Note
+  what let it survive: all three sites looked correct, `stop()` on the control
+  client *did* clear its stdout handler, and the case that leaks is the one
+  where teardown is never reached at all.
+- **A reader installed before `run()` is not covered by its own self-clear,
+  because a launch that fails produces no EOF.** `readUntilEOF` repairs itself
+  when the write end closes — and when `Process.run()` throws, *no child ever
+  existed to close it*. This process is still holding the write ends open
+  through the `Pipe`s, so the source never fires, never clears, and keeps the
+  handle alive. In `RemoteHelper` the stdout closure also captured `child`
+  strongly, closing `child` → `Pipe` → `FileHandle` → handler → `child`, with
+  nothing left to break it: `process` is still nil on that path, so
+  `tearDown`'s `process = nil` clears nothing. `channelFailed` then schedules
+  another attempt. Measured 2026-08-23 by reverting the fix: **160 descriptors
+  held after 20 failed launches, 8 per attempt** — at the retry floor of one
+  per thirty seconds that is roughly 960 an hour, and it accelerates, because
+  descriptor exhaustion is itself a reason `posix_spawn` fails. The rule now:
+  **every pipe reader goes in after its `run()` succeeded, never before**, at
+  all three sites. `RemoteHelper` also holds `child` weakly, since the capture
+  is only ever used for the identity test in `consume` and a deallocated
+  `Process` is by definition not the current channel. `SSHPreflight` retries
+  the same way and leaked two an attempt; `TmuxControlClient` does not retry
+  today — `TmuxSessionConnection.start` reports the failure and stops — so it
+  was bounded, and would stop being bounded the moment issue #4 adds a retry.
+  Found by an independent review, not by the check: the leak predates
+  `readUntilEOF` and the CPU work did not touch it.
 - **`capture-pane` returns one line per row including blanks.** Painting all of
   them parks the cursor on the bottom row, so a prompt redrawn after SIGWINCH
   lands at the bottom of an empty screen. Trim trailing blanks.

@@ -161,16 +161,6 @@ final class SSHPreflight {
         let stderr = Pipe()
         child.standardError = stderr
         stderrLock.lock(); stderrTail.removeAll(); stderrLock.unlock()
-        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let self else { return }
-            self.stderrLock.lock()
-            self.stderrTail.append(data)
-            if self.stderrTail.count > 4096 {
-                self.stderrTail.removeFirst(self.stderrTail.count - 4096)
-            }
-            self.stderrLock.unlock()
-        }
         child.terminationHandler = { [weak self] child in
             DispatchQueue.main.async {
                 guard let self, self.master === child else { return }
@@ -180,10 +170,29 @@ final class SSHPreflight {
         do {
             try child.run()
         } catch {
+            // Nothing is reading the pipe yet, deliberately — see below.
             failed("ssh would not start: \(error.localizedDescription)")
             return
         }
         master = child
+
+        // The reader goes in after the launch, not before. `readUntilEOF`
+        // clears itself at EOF, but a launch that never happened produces no
+        // EOF — this process is holding the write end open through the `Pipe`
+        // and no child exists to close it — so a reader installed early stays
+        // installed, keeps the handle alive, and `failed` schedules another
+        // attempt at a floor of one per thirty seconds. Two descriptors an
+        // attempt, forever. Same shape as the one measured in `RemoteHelper`
+        // on 2026-08-23 at eight descriptors an attempt; see `PipeRead.swift`.
+        stderr.fileHandleForReading.readUntilEOF { [weak self] data in
+            guard let self else { return }
+            self.stderrLock.lock()
+            self.stderrTail.append(data)
+            if self.stderrTail.count > 4096 {
+                self.stderrTail.removeFirst(self.stderrTail.count - 4096)
+            }
+            self.stderrLock.unlock()
+        }
         // Recorded like a control client: an orphaned master holds a network
         // connection and the mux socket, and the sweep's exact-command match
         // is what lets a later run collect it. An *adopted* master is never

@@ -143,23 +143,6 @@ final class TmuxControlClient {
         // connection errors go, and discarding it turns every one of them
         // into a silent immediate exit.
         process.standardError = stderrPipe
-        stderrPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let self else { return }
-            self.stderrLock.lock()
-            self.stderrTail.append(data)
-            if self.stderrTail.count > 4096 {
-                self.stderrTail.removeFirst(self.stderrTail.count - 4096)
-            }
-            self.stderrLock.unlock()
-        }
-
-        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            self?.consume(data)
-        }
-
         process.terminationHandler = { [weak self] process in
             // Cleared here rather than only in `stop()`, because a client that
             // exits on its own — tmux killed the session, the server went away —
@@ -191,6 +174,32 @@ final class TmuxControlClient {
         // `TmuxChildRegistry`, including the part where the mechanism is still
         // unknown. This record is what lets a later run collect one anyway.
         TmuxChildRegistry.record(childPID: process.processIdentifier, sessionID: sessionID)
+
+        // The readers go in after the launch. `readUntilEOF` clears itself at
+        // EOF, but a `run()` that throws produces no EOF — no child exists to
+        // close the write ends this process is holding through the `Pipe`s —
+        // so a reader installed early stays installed and keeps two
+        // descriptors alive per failed start. Bounded here today, because
+        // `TmuxSessionConnection.start` reports the failure and does not retry;
+        // it stops being bounded the moment issue #4 adds one.
+        //
+        // `readUntilEOF` rather than `readabilityHandler` also matters most on
+        // *this* pipe pair: a client that exits on its own never reaches
+        // `stop()`, which was the only place that ever cleared a handler here
+        // — and it only ever cleared stdout. See `PipeRead.swift`.
+        stderrPipe.fileHandleForReading.readUntilEOF { [weak self] data in
+            guard let self else { return }
+            self.stderrLock.lock()
+            self.stderrTail.append(data)
+            if self.stderrTail.count > 4096 {
+                self.stderrTail.removeFirst(self.stderrTail.count - 4096)
+            }
+            self.stderrLock.unlock()
+        }
+
+        stdoutPipe.fileHandleForReading.readUntilEOF { [weak self] data in
+            self?.consume(data)
+        }
         TmuxLog.lifecycle(
             "spawned \(argv.joined(separator: " "))"
                 + " (\(sessionLabel), pid \(process.processIdentifier))",

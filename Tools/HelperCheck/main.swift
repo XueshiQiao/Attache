@@ -29,6 +29,10 @@
 //  - The third outcome. A stopped channel answers `unavailable`, never
 //    `absent` — the difference between "no data" and "could not ask" is the
 //    honesty rule the whole remote design hangs on.
+//  - The launch that fails. `spawn` retries forever, so anything it holds on
+//    to on the way out is held once per attempt, at a floor of one attempt
+//    per thirty seconds. Counted in descriptors, because descriptors are what
+//    ran out.
 //
 
 import Foundation
@@ -396,6 +400,65 @@ do {
     } else {
         check("a stopped channel answers unavailable, never absent", false)
     }
+}
+
+// MARK: - A launch that fails must not hold anything
+
+// The path this guards has no EOF in it, which is what made it survive the
+// repair that gave every reader a self-clear: when `run()` throws, no child
+// ever existed to close the write ends, so a reader installed before the
+// launch never fires and never clears itself. The stdout closure captured
+// `child` strongly, and `process` is still nil on that path, so nothing was
+// left to break `child` -> `Pipe` -> `FileHandle` -> handler -> `child`.
+// Every retry then leaked a `Process` and six descriptors.
+//
+// Counted rather than reasoned about: descriptor exhaustion is the failure,
+// so the assertion is on the descriptor count. It is also the one measurement
+// that stays true if the retain graph is rearranged again.
+
+func openDescriptors() -> Int {
+    var count = 0
+    for fd in 0..<Int32(getdtablesize()) where fcntl(fd, F_GETFD) != -1 {
+        count += 1
+    }
+    return count
+}
+
+do {
+    let doomed = RemoteHelper(label: "nolaunch") {
+        ["/nonexistent/attache-helper-check-should-not-exist", "-x"]
+    }
+
+    // One cycle first, uncounted: the queue, the log and Foundation's own
+    // lazy state all allocate once, and that is not the leak under test.
+    doomed.start()
+    doomed.stop()
+    _ = doomed.isUp                       // `queue.sync` — drains the queue
+
+    let before = openDescriptors()
+    let rounds = 20
+    for _ in 0..<rounds {
+        doomed.start()                    // start() spawns immediately
+        doomed.stop()                     // and stop() tears the attempt down
+    }
+    _ = doomed.isUp
+    let after = openDescriptors()
+    let leaked = after - before
+
+    // Six per attempt is what the defect cost — three pipes, two ends each.
+    // The margin is deliberately loose: a couple of descriptors of ordinary
+    // churn is not this bug, and 120 is not ordinary churn.
+    check(
+        "a launch that fails leaks no descriptors",
+        leaked < rounds,
+        "\(leaked) descriptors held after \(rounds) failed launches"
+            + " (\(String(format: "%.1f", Double(leaked) / Double(rounds))) per attempt;"
+            + " the defect this guards cost 6)"
+    )
+    check(
+        "and the channel still reports itself down, not up",
+        !doomed.isUp
+    )
 }
 
 // MARK: - Verdict
