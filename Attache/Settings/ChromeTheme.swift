@@ -96,12 +96,30 @@ struct ChromeTheme {
     /// existing install looks like at a setting nobody touched.
     private static let railStep: CGFloat = 5.5
 
-    /// Contrast floors for the two quiet text roles, against the rail they are
-    /// drawn on. 4.5:1 is the WCAG floor for body text and 3:1 for large text;
-    /// these sit deliberately below both, because these roles are *meant* to
-    /// recede and a floor that forced them to the body-text ratio would flatten
-    /// the hierarchy into three copies of the same tone. They are a floor on
-    /// "still legible", not a target.
+    /// Contrast floors for the two quiet text roles. 4.5:1 is the WCAG floor
+    /// for body text and 3:1 for large text; these sit deliberately below both,
+    /// because these roles are *meant* to recede and a floor that forced them
+    /// to the body-text ratio would flatten the hierarchy into three copies of
+    /// the same tone. They are a floor on "still legible", not a target.
+    ///
+    /// **Measured against `railBackground`, which is the colour the rail is
+    /// painted in and not the colour it ends up.** The rail is translucent, so
+    /// what these tones land on is that paint over a blurred desktop, and
+    /// neither the wallpaper nor either opacity slider is visible from in here
+    /// — the same limitation the comment in `init` records, and one these
+    /// floors narrow rather than remove. Measured 2026-08-25 on Ayu at the
+    /// shipped 55% / 10%: the rail composites to (14,15,19) over a black
+    /// desktop, where the tertiary tone is 4.7:1, and to (103,105,108) over a
+    /// white one, where the same two colours are 1.4:1. A factor of three,
+    /// decided by the wallpaper.
+    ///
+    /// So this is a floor on the derivation, not a promise about a pixel, and
+    /// `ChromeThemeCheck` asserts exactly that and no more. Raised by an
+    /// independent review, which read the first version of this comment as
+    /// claiming the stronger thing. Doing better needs the composite, which
+    /// means the floors would have to move with the opacity sliders and be
+    /// solved against a worst-case backdrop — a change to when the theme is
+    /// rebuilt, not to the arithmetic here.
     private static let mutedFloor: CGFloat = 4.0
     private static let faintFloor: CGFloat = 3.0
 

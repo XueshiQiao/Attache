@@ -303,8 +303,14 @@ Four properties are under test and none can be stated about a single scheme: the
 rail is never lighter than the panes (the "flip when there is no room" variant
 reverses it on 56 dark schemes), the step is the same L* everywhere it fits, the
 three text roles never swap order, and the contrast floors are actually reached
-wherever the scheme has the headroom. It links the package products a normal
-build already made, because reading the real catalog is the point:
+wherever the scheme has the headroom. All four are statements about the colours
+the chrome is *painted* in. The rail is translucent and what the text lands on
+is that paint over a blurred desktop, which no check here can see: measured
+2026-08-25 on Ayu at 55% / 10%, the tertiary tone is 4.7:1 over a black desktop
+and 1.4:1 over a white one. The floors narrow that range; they do not close it.
+
+It links the package products a normal build already made, because reading the
+real catalog is the point:
 
 ```sh
 swiftc -O -o /tmp/chromethemecheck -I /tmp/dd/Build/Products/Debug \
