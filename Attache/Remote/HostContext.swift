@@ -70,6 +70,40 @@ final class HostContext {
 
     var onStateChange: (() -> Void)?
 
+    /// Set once by `retire()`, and checked on every path that could bring
+    /// this host back to life. It exists because the ssh pre-flight is
+    /// *shared* per ControlPath and its observers are append-only: a context
+    /// replaced by an edit still hears the shared master come up, and
+    /// without this flag its `probeTmux` would restart the helper and the
+    /// server of a host the rail no longer lists — two live connections for
+    /// one machine, one of them invisible.
+    private(set) var retired = false
+
+    /// False until `start()`. The other half of sharing a pre-flight: its
+    /// `addObserver` delivers the *current* state at registration, so a
+    /// replacement context built while its predecessor still holds the
+    /// master up would probe immediately — against a master retirement is
+    /// about to tear down. The failed probe then parks `state` on `.down`,
+    /// and the guard in `probeAnswered` discards the real probe that
+    /// follows reconnection: a reachable host stuck reading as down, found
+    /// in review. Until `start()`, this context only listens.
+    private var started = false
+
+    /// Which `probeTmux` the next `probeAnswered` belongs to. Two probes
+    /// can be in flight across a reconnect, and their answers can cross;
+    /// only the latest may set the state. Also bumped whenever the
+    /// pre-flight *leaves* `.up` and on `stop()`/`reconnect()`: a probe
+    /// launched against a master that has since died must not hand back a
+    /// `.ready` over a connection that is not there.
+    private var probeGeneration = 0
+
+    /// One retain on the shared pre-flight, held from `start()` to the
+    /// first `stop()`. Tracked so the pair balances exactly once whatever
+    /// path teardown takes — the count is shared across hosts on one
+    /// master, and an unbalanced pair either strands the master or kills
+    /// it under another host.
+    private var preflightRetained = false
+
     /// The remote server's version, once probed. nil until known — and
     /// callers gate *loudly* on the definite no, not on the unknown.
     private(set) var tmuxVersion: TmuxVersion?
@@ -148,7 +182,7 @@ final class HostContext {
     /// an ssh destination), so it is filesystem-safe verbatim; only a
     /// pathological length falls back to a digest, because `sun_path` caps at
     /// 104 bytes on macOS.
-    private static func controlPath(destination: String) -> String {
+    static func controlPath(destination: String) -> String {
         let directory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/attache/ssh", isDirectory: true)
         try? FileManager.default.createDirectory(
@@ -170,8 +204,21 @@ final class HostContext {
     // MARK: - Lifecycle
 
     func start() {
+        // Idempotent, and not as a nicety: every unguarded call would
+        // increment the shared pre-flight's retain count, and retirement
+        // balances exactly one — a double start leaves the master running
+        // after its last host is gone (Codex review, round 4).
+        guard !retired, !started else { return }
+        started = true
         if let preflight {
+            preflightRetained = true
             preflight.start()
+            // The observer's initial delivery arrived before `started` and
+            // was dropped on purpose; ask again now. A master another host
+            // already holds up delivers no transition on `start()`, so
+            // without this a replacement context would sit connecting
+            // forever under a healthy master.
+            preflightChanged(preflight.state)
         } else {
             // The local host probes too: the version decides whether reply
             // blocks need the `\ooo` decode, and that is as true of a local
@@ -182,25 +229,75 @@ final class HostContext {
     }
 
     func stop() {
+        // Anything still in flight answers to nobody now.
+        probeGeneration &+= 1
         helper?.stop()
-        preflight?.stop()
+        // Exactly one decrement per start, however many times stop runs:
+        // the count is shared with every other host on this master, and an
+        // extra decrement here takes the master out from under *them*.
+        if preflightRetained {
+            preflightRetained = false
+            preflight?.stop()
+        }
         server.stop()
+    }
+
+    /// Take this host out of service for good — the settings said so, either
+    /// by deleting its block or by replacing it with an edited one. `stop()`
+    /// alone is not retirement: the shared pre-flight keeps this context on
+    /// its observer list, and the flag is what makes every later callback a
+    /// no-op. A retired context is never restarted; an edit builds a fresh
+    /// one.
+    func retire() {
+        guard !retired else { return }
+        retired = true
+        stop()
     }
 
     /// The host row was clicked while down: skip the backoff and try now.
     func retry() {
+        guard !retired else { return }
         preflight?.retryNow()
     }
 
+    /// Tear this host's own machinery down and bring it up again, on request
+    /// — the "Reconnect" menu item and nothing else. The shared ssh master is
+    /// deliberately left alone: it may be carrying another host to the same
+    /// machine, it has its own heartbeat for the case where it is the broken
+    /// part, and `stop()`/`start()` on a master someone else holds would not
+    /// cycle it anyway — the refcount just dips and returns with no observer
+    /// ever hearing a change, which is exactly the silence that would leave
+    /// this host stopped forever.
+    func reconnect() {
+        guard !retired, !isLocal else { return }
+        probeGeneration &+= 1
+        helper?.stop()
+        server.stop()
+        state = .connecting
+        if let preflight, preflight.state == .up {
+            probeTmux()
+        } else {
+            // Down: retry now instead of waiting out the backoff. Still
+            // connecting: the pre-flight's own observer will land in
+            // `preflightChanged` and probe from there.
+            preflight?.retryNow()
+        }
+    }
+
     private func preflightChanged(_ preflightState: SSHPreflight.State) {
+        guard !retired, started else { return }
         switch preflightState {
         case .idle:
             break
         case .connecting:
+            // The master is gone or going; whatever a probe over the old
+            // one answers is about a connection that no longer exists.
+            probeGeneration &+= 1
             state = .connecting
         case .up:
             probeTmux()
         case .down(let reason):
+            probeGeneration &+= 1
             // The mux refusal has a text all its own, and it must read as
             // what it is — the *host's* limit, not tmux going away.
             let said = reason.contains("refused by peer")
@@ -218,6 +315,8 @@ final class HostContext {
     /// non-interactive PATHs — and is it new enough for subscriptions.
     private func probeTmux() {
         state = .connecting
+        probeGeneration &+= 1
+        let generation = probeGeneration
         let argv = transport.oneShotArgv(["-V"])
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let process = Process()
@@ -238,13 +337,19 @@ final class HostContext {
                 status = process.terminationStatus
             }
             DispatchQueue.main.async { [weak self] in
-                self?.probeAnswered(status: status, version: answer, problem: problem)
+                self?.probeAnswered(
+                    generation: generation, status: status, version: answer, problem: problem
+                )
             }
         }
     }
 
-    private func probeAnswered(status: Int32, version: String, problem: String) {
-        guard case .connecting = state else { return }
+    private func probeAnswered(generation: Int, status: Int32, version: String, problem: String) {
+        guard !retired, generation == probeGeneration, case .connecting = state else { return }
+        // Belt to the generation's braces: a remote host's result only
+        // counts while the master it rode is still up. The local host has
+        // no pre-flight and no such condition.
+        if let preflight, preflight.state != .up { return }
         guard status == 0, let parsed = TmuxVersion.parse(version) ?? Self.masterBuild(version)
         else {
             let path = transport.tmuxPath

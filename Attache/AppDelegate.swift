@@ -199,11 +199,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         let sshPath = AppSettings.sshPath
         let hosts = [HostContext.local(transport: transport)]
             + hostConfigs.map { HostContext.remote(config: $0, sshPath: sshPath) }
-        // The Settings window is made on demand and needs the same hosts the
-        // rail shows, for the per-host agent-setup rows.
-        SettingsStore.remoteHostsProvider = { hosts }
 
         let controller = MainViewController(hosts: hosts)
+        // The Settings window is made on demand and needs the same hosts the
+        // rail shows, for the Hosts page's status and agent-setup rows. Asked
+        // of the controller each time rather than captured: the list changes
+        // whenever a `[[host]]` block is edited, and a captured copy would
+        // hand the settings window retired contexts.
+        SettingsStore.remoteHostsProvider = { [weak controller] in controller?.hosts ?? [] }
         controller.onStatusChange = { [weak self] status in
             self?.status = status
             self?.refreshTitle()
@@ -714,6 +717,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     @objc private func showSettings() {
         if settings == nil { settings = SettingsWindowController() }
         settings?.show()
+    }
+
+    /// The rail's "Edit Host…" lands here: the Hosts page, with that host
+    /// already selected. Through `showSettings` for the same reason the
+    /// quick-actions door is — one construction site.
+    func showHostsSettings(selecting hostName: String?) {
+        showSettings()
+        settings?.select(page: .hosts)
+        if let hostName { settings?.selectHost(named: hostName) }
     }
 
     // MARK: - Debug inspection

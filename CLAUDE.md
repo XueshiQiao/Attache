@@ -245,6 +245,22 @@ swiftc -O -o /tmp/transportcheck Attache/Tmux/TmuxSocket.swift \
 /tmp/transportcheck
 ```
 
+**The `[[host]]` writer in `SettingsFile` has one, and what it protects is
+the user's own config file.** `saveHostBlock`/`removeHostBlock` edit blocks
+in a file the owner hand-edits and keeps in dotfiles, so the failure mode is
+data loss that reads as formatting: a comment eaten, an unknown key
+re-encoded (`retries = 3` coming back as a string), an inline `# note`
+dropped from an edited line, or a deleted file resurrected from the cache or
+from the TmuxGUI-era legacy file. Every case asserts the file's exact bytes.
+Run it after touching the host-block code in `SettingsFile.swift`:
+
+```sh
+swiftc -O -o /tmp/hostblockscheck Attache/Tmux/TmuxLog.swift \
+  Attache/Settings/QuickAction.swift Attache/Settings/SettingsFile.swift \
+  Tools/HostBlocksCheck/main.swift
+/tmp/hostblockscheck
+```
+
 **The remote helper has one, and it runs the real script against the real
 parser.** `RemoteHelperScript` is the stateless `sh` loop every remote feature
 reads through; `RemoteHelper` is the frame parser that trusts nothing it did

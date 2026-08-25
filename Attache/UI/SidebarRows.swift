@@ -32,6 +32,10 @@ final class SidebarHostRow: NSView {
 
     /// What a down row's click means. Wired only when the host is down.
     var onRetry: (() -> Void)?
+    /// The heading's context menu — reconnect, edit, remove. Wired only for
+    /// remote hosts; the local heading has no menu at all rather than a menu
+    /// of disabled items.
+    var onContextMenu: ((NSPoint) -> Void)?
 
     static let height: CGFloat = 22
     static let topGap: CGFloat = 14
@@ -118,6 +122,11 @@ final class SidebarHostRow: NSView {
         guard pressed, let onRetry,
               bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
         onRetry()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let onContextMenu else { return super.rightMouseDown(with: event) }
+        onContextMenu(convert(event.locationInWindow, from: nil))
     }
 
     override var mouseDownCanMoveWindow: Bool { onRetry == nil }
@@ -1231,12 +1240,15 @@ final class SidebarWindowRow: NSView {
     }
 }
 
-// MARK: - Hidden count
+// MARK: - Small action rows
 
-/// The way back from hiding. One row per session that has hidden windows,
-/// under that session's list — the counter the tab strip kept in its corner.
+/// A quiet one-line row that does one thing when clicked: the "N hidden"
+/// counter under a session's list, and the "+ New session" a connected host
+/// with nothing to show offers instead of an empty block. Generalised from
+/// the hidden-count row when the second caller appeared; the hover wash and
+/// press-on-mouse-up rules are the rail's usual ones.
 @MainActor
-final class SidebarHiddenRow: NSView {
+final class SidebarActionRow: NSView {
     var onClick: (() -> Void)?
     /// Reported so the rail's double-click bookkeeping stays honest — see
     /// `SessionSidebarView.isDoubleClick(on:clickCount:)`. This row has no
@@ -1247,22 +1259,30 @@ final class SidebarHiddenRow: NSView {
     static let height: CGFloat = 20
 
     private let label = NSTextField(labelWithString: "")
+    private let indent: CGFloat
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
     private var pressed = false
 
-    init(count: Int) {
+    init(text: String, toolTip: String, indent: CGFloat = 32) {
+        self.indent = indent
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 5
 
-        label.stringValue = "\(count) hidden"
+        label.stringValue = text
         label.font = .systemFont(ofSize: 10.5)
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
 
-        toolTip = "Bring every hidden window back"
+        self.toolTip = toolTip
         applyColors()
+    }
+
+    /// The hidden-count reading, exactly as it always was.
+    convenience init(count: Int) {
+        // Lined up with the window names above it, not with their indices.
+        self.init(text: "\(count) hidden", toolTip: "Bring every hidden window back", indent: 32)
     }
 
     @available(*, unavailable)
@@ -1279,8 +1299,10 @@ final class SidebarHiddenRow: NSView {
 
     override func layout() {
         super.layout()
-        // Lined up with the window names above it, not with their indices.
-        label.frame = CGRect(x: 32, y: (bounds.height - 13) / 2, width: max(0, bounds.width - 40), height: 13)
+        label.frame = CGRect(
+            x: indent, y: (bounds.height - 13) / 2,
+            width: max(0, bounds.width - indent - 8), height: 13
+        )
     }
 
     override func viewDidChangeEffectiveAppearance() {

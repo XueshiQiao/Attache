@@ -70,8 +70,20 @@ final class SettingsStore: ObservableObject {
 
     @Published private(set) var remoteSetups: [RemoteSetupRow] = []
 
+    /// A host the Hosts page should open on — the rail's "Edit Host…"
+    /// arriving from the other window. The page consumes it and puts it
+    /// back to nil, so it is a hand-off, not a second selection state.
+    @Published var hostsPageSelection: String?
+
     private func remoteHosts() -> [HostContext] {
         (Self.remoteHostsProvider?() ?? []).filter { !$0.isLocal }
+    }
+
+    /// The live context behind a host name, for the Hosts page's status row
+    /// and reconnect button. nil while the host is only a draft, or after
+    /// its block was removed.
+    func liveHost(named name: String) -> HostContext? {
+        remoteHosts().first { $0.id == name }
     }
 
     func refreshRemoteSetups() {
@@ -512,6 +524,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// Move to a page, for callers that opened this window to edit one thing.
     func select(page: SettingsPage) {
         store.page = page
+    }
+
+    /// Point the Hosts page at one host — the rail's "Edit Host…".
+    func selectHost(named name: String) {
+        store.hostsPageSelection = name
     }
 
     func windowShouldClose(_: NSWindow) -> Bool {

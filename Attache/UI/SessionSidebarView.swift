@@ -83,6 +83,11 @@ final class SessionSidebarView: NSView {
     var onHostReconnect: ((String) -> Void)?
     var onHostEdit: ((String) -> Void)?
     var onHostRemove: ((String) -> Void)?
+    /// Make a session on this host — the row an empty connected block
+    /// offers, and the first item on the heading's menu. The footer's
+    /// "+ New session" cannot reach a host with no sessions: it targets the
+    /// machine being *looked at*, and an empty block has nothing to look at.
+    var onHostNewSession: ((String) -> Void)?
 
     /// One machine's heading, when the rail draws the host tier at all — it
     /// exists only while a `[[host]]` is configured, so a local-only rail
@@ -249,7 +254,10 @@ final class SessionSidebarView: NSView {
         case host(SidebarHostRow)
         case session(SidebarSessionRow, id: String)
         case window(SidebarWindowRow, session: String)
-        case hidden(SidebarHiddenRow, session: String)
+        case hidden(SidebarActionRow, session: String)
+        /// The "+ New session" a connected, empty host block shows. Belongs to
+        /// no session, like a heading — never a drop target.
+        case hostAction(SidebarActionRow, host: String)
 
         var view: NSView {
             switch self {
@@ -257,6 +265,7 @@ final class SessionSidebarView: NSView {
             case .session(let view, _): view
             case .window(let view, _): view
             case .hidden(let view, _): view
+            case .hostAction(let view, _): view
             }
         }
 
@@ -265,7 +274,7 @@ final class SessionSidebarView: NSView {
         /// and a host row answering some session would make it a drop target.
         var session: String? {
             switch self {
-            case .host: nil
+            case .host, .hostAction: nil
             case .session(_, let id): id
             case .window(_, let session): session
             case .hidden(_, let session): session
@@ -280,7 +289,8 @@ final class SessionSidebarView: NSView {
             // .rowHeight`. The type's answer follows the setting live and the
             // row on screen was built under whatever it said at the time.
             case .window(let view, _): view.rowHeight
-            case .hidden: SidebarHiddenRow.height
+            case .hidden: SidebarActionRow.height
+            case .hostAction: SidebarActionRow.height
             }
         }
     }
@@ -560,6 +570,27 @@ final class SessionSidebarView: NSView {
                 }
                 rowsView.addSubview(row)
                 rows.append(.host(row))
+
+                // A connected machine with nothing to list gets its way to a
+                // first session, where the sessions will appear. The footer
+                // button cannot mean this host — it follows the session on
+                // screen, and there is none here. Not offered while down or
+                // connecting: the click would only queue a command for a
+                // server that is not answering.
+                if host.tone == .ready, groupEntries.isEmpty {
+                    let action = SidebarActionRow(
+                        text: "+  New session",
+                        toolTip: "Create the first tmux session on \(host.name)",
+                        indent: 20
+                    )
+                    action.onPress = { [weak self] in self?.notePressElsewhere() }
+                    action.onClick = { [weak self] in
+                        self?.onHostNewSession?(host.id)
+                        self?.resumeUpdates()
+                    }
+                    rowsView.addSubview(action)
+                    rows.append(.hostAction(action, host: host.id))
+                }
             }
             for entry in groupEntries {
                 // Captured, not read back later: from here on these rows belong to
@@ -642,7 +673,7 @@ final class SessionSidebarView: NSView {
                 }
 
                 if !entry.hiddenIDs.isEmpty {
-                    let row = SidebarHiddenRow(count: entry.hiddenIDs.count)
+                    let row = SidebarActionRow(count: entry.hiddenIDs.count)
                     row.onPress = { [weak self] in self?.notePressElsewhere() }
                     row.onClick = { [weak self] in
                         self?.onRestoreHidden?(session)
@@ -915,6 +946,7 @@ final class SessionSidebarView: NSView {
     private func showMenu(forHost id: String, at point: NSPoint, from row: NSView) {
         let menu = NSMenu()
         for (title, action) in [
+            ("New Session", #selector(newSessionOnHostFromMenu(_:))),
             ("Reconnect", #selector(reconnectHostFromMenu(_:))),
             ("Edit Host…", #selector(editHostFromMenu(_:))),
         ] {
@@ -931,6 +963,11 @@ final class SessionSidebarView: NSView {
         remove.representedObject = id
         menu.addItem(remove)
         menu.popUp(positioning: nil, at: point, in: row)
+    }
+
+    @objc private func newSessionOnHostFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        onHostNewSession?(id)
     }
 
     @objc private func reconnectHostFromMenu(_ sender: NSMenuItem) {

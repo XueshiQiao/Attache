@@ -43,6 +43,19 @@ final class SettingsFile {
     /// The two names, in the order they are consulted.
     private static let overrideNames = ["ATTACHE_CONFIG", "TMUXGUI_CONFIG"]
 
+    /// A scratch stand-in for the TmuxGUI-era file, and test-only, exactly
+    /// like `ATTACHE_CONFIG`: legacy adoption is disabled under an active
+    /// override *unless* the legacy path is overridden too, because a test
+    /// that adopts the user's real `~/.config/tmux-gui.toml` into its
+    /// scratch file has broken the very isolation the override grants. With
+    /// both set, adoption runs between the two scratch paths — which is the
+    /// only way `HostBlocksCheck` can exercise it at all.
+    private static var legacyOverrideURL: URL? {
+        guard let override = ProcessInfo.processInfo.environment["ATTACHE_LEGACY_CONFIG"],
+              !override.isEmpty else { return nil }
+        return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
+    }
+
     /// Whatever an environment variable names, or nil when neither is set.
     private static var overrideURL: URL? {
         let environment = ProcessInfo.processInfo.environment
@@ -70,7 +83,7 @@ final class SettingsFile {
     /// repository — and a rename that silently starts from defaults is exactly
     /// the loss the move off `UserDefaults` was meant to end.
     static var legacyURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        legacyOverrideURL ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/tmux-gui.toml")
     }
 
@@ -94,15 +107,27 @@ final class SettingsFile {
     /// "nothing is owed here, carry on".
     @discardableResult
     private static func adoptLegacyFileIfNeeded() -> Bool {
-        guard overrideURL == nil else { return true }
+        // Both overridden, or neither: those are the only two worlds where
+        // source and destination belong to the same owner. A lone
+        // ATTACHE_CONFIG must not adopt the user's real legacy file into a
+        // scratch one — and a lone ATTACHE_LEGACY_CONFIG must not adopt a
+        // scratch fixture into the user's real config, which an OR of the
+        // two conditions quietly allowed (Codex review, round 5).
+        guard (overrideURL == nil) == (legacyOverrideURL == nil) else { return true }
+        // `url`, not `defaultURL`: with no override they are the same file,
+        // and with both overrides set — the only way past the guard above —
+        // source and destination are both scratch. Copying to `defaultURL`
+        // here would aim a test's legacy fixture at the real config path of
+        // whoever runs the check tool.
+        let destination = url
         let manager = FileManager.default
-        guard !manager.fileExists(atPath: defaultURL.path),
+        guard !manager.fileExists(atPath: destination.path),
               manager.fileExists(atPath: legacyURL.path) else { return true }
         try? manager.createDirectory(
-            at: defaultURL.deletingLastPathComponent(), withIntermediateDirectories: true
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
         )
         do {
-            try manager.copyItem(at: legacyURL, to: defaultURL)
+            try manager.copyItem(at: legacyURL, to: destination)
             return true
         } catch {
             // Loud, and the caller stops. A swallowed failure here used to hand
@@ -112,7 +137,7 @@ final class SettingsFile {
             // launch then sees a destination that exists, skips this, and the
             // user's real settings are gone with nothing to say so.
             TmuxLog.lifecycle(
-                "could not copy \(legacyURL.path) to \(defaultURL.path): \(error)"
+                "could not copy \(legacyURL.path) to \(destination.path): \(error)"
                     + " — leaving settings where they are rather than starting a new file"
             )
             return false
@@ -163,18 +188,91 @@ final class SettingsFile {
     /// a hand-written comment and an unknown key vanished when the font size
     /// was changed. The file is a few hundred bytes; reading it again costs
     /// nothing next to being the thing that eats the user's notes.
-    private func reload() {
+    ///
+    /// What the read found. Three answers, not two, because two different
+    /// callers need two different halves of the distinction: a *missing*
+    /// file is the ordinary first launch, while a file that exists and
+    /// cannot be read is a disk to stop trusting — and the host editor must
+    /// also tell "missing" apart from "read fine", because a file deleted
+    /// after the cache warmed up must not be resurrected from that cache by
+    /// the next host edit (Codex review, round 3). The scalar writers keep
+    /// their old shape and ignore all of it — for them the cache *is* the
+    /// best available answer, and quietly recreating a deleted file has
+    /// been their behaviour since the file existed.
+    private enum ReadOutcome {
+        case ok
+        case missing
+        case unreadable(String)
+    }
+
+    /// True once this process has seen the active file exist — read from
+    /// disk, or created by a flush. From that point on, the file going
+    /// missing means *deleted*, and the legacy adoption below must not run
+    /// again: on a migrated install the TmuxGUI-era file is deliberately
+    /// still on disk, and re-adopting it turned "the user deleted their
+    /// config" into "every pre-rename setting quietly came back" — found in
+    /// review, one layer beneath the missing-file fix it bypassed.
+    private var activeFileHasExisted = false
+
+    /// Read the file again, discarding what was cached — except on failure,
+    /// where the cache is all there is.
+    @discardableResult
+    private func reload() -> ReadOutcome {
         // Before the read, not at launch: `reload` is the one path every read
         // and every write goes through, so there is no order of operations that
-        // can reach the file ahead of the rename.
-        Self.adoptLegacyFileIfNeeded()
-        guard let text = try? String(contentsOf: Self.url, encoding: .utf8) else {
+        // can reach the file ahead of the rename. Skipped once the active
+        // file is known to have existed — adoption is a first-launch
+        // migration, not something a mid-run deletion may retrigger.
+        if !activeFileHasExisted, !Self.adoptLegacyFileIfNeeded() {
+            // Legacy settings exist and could not be copied. For a host
+            // edit this must be a hard stop: proceeding reads as "no file"
+            // and the first write would strand the legacy settings forever.
+            return .unreadable(
+                "the settings from \(Self.legacyURL.path) could not be copied into place"
+            )
+        }
+        do {
+            let text = try String(contentsOf: Self.url, encoding: .utf8)
+            lines = text.components(separatedBy: "\n")
+            parse()
+            activeFileHasExisted = true
+            return .ok
+        } catch let error as NSError
+            where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError
+        {
             // No file yet. Everything answers with its default until something
             // is written, and the first write creates the file.
-            return
+            return .missing
+        } catch {
+            // Any failure other than not-found means the path *exists* —
+            // that is why the read got far enough to fail — and existence
+            // is what retires legacy adoption. Without this, an unreadable
+            // active file followed by its deletion re-armed the adoption
+            // and resurrected the legacy config after all.
+            activeFileHasExisted = true
+            TmuxLog.lifecycle("could not read \(Self.url.path): \(error)")
+            return .unreadable(error.localizedDescription)
         }
-        lines = text.components(separatedBy: "\n")
-        parse()
+    }
+
+    /// The host editor's entry to `reload`: refuse an unreadable disk, and
+    /// treat a *confirmed* missing file as the empty document it is. Without
+    /// the reset, a config deleted while the app runs would come back from
+    /// the cache on the next host edit — every setting and block of it.
+    private func reloadForHostEdit() -> String? {
+        switch reload() {
+        case .ok:
+            return nil
+        case .missing:
+            lines = []
+            parse()
+            return nil
+        case .unreadable(let reason):
+            // Proceeding on the cache here is not a degraded save, it is a
+            // different action: writing a stale copy of the file over
+            // whatever the unreadable file really holds.
+            return "could not read \(Self.url.path): \(reason) — nothing was changed."
+        }
     }
 
     private func parse() {
@@ -331,6 +429,252 @@ final class SettingsFile {
         rewriteQuickActionBlocks()
     }
 
+    // MARK: - Host blocks
+
+    /// The `[[host]]` keys the Hosts settings page manages. Everything else in
+    /// a block — keys a newer build wrote, comments, blank lines — is carried
+    /// through an edit **byte for byte**, never re-encoded: `retries = 3`
+    /// re-encoded through `decodeValue`/`encode` would come back as a string,
+    /// which is exactly the flattening the raw-carry contract forbids. The
+    /// same is true *within* a managed line: only the value span is replaced,
+    /// so `ssh = "u@h"  # via the bastion` keeps its indentation and its
+    /// comment through an edit of the value beside them.
+    static let hostManagedKeys = [
+        "name", "ssh", "tmux_path", "tmux_socket", "git_tool_command", "remote_open_command",
+    ]
+
+    /// The host editor's read of the file, for the caller about to validate
+    /// against `hostTables`: same semantics as the mutations themselves —
+    /// a confirmed-missing file empties the cache, an unreadable one is the
+    /// returned refusal. Anything softer re-creates the bug it replaced:
+    /// validating against the cache of a deleted file refused to re-add a
+    /// host name the disk no longer holds (Codex review, round 4).
+    func refreshHostEditView() -> String? {
+        loadIfNeeded()
+        return reloadForHostEdit()
+    }
+
+    /// One `[[host]]` block as it sits in the file right now: its header
+    /// line, the line after its last assignment, and the name it carries.
+    /// Blocks are found by scanning the raw lines at the moment of the edit
+    /// — never by an index computed earlier against another read of the
+    /// file, which is how a concurrent hand edit turns "edit mini" into
+    /// "overwrite whichever block sits where mini used to".
+    private struct RawHostBlock {
+        let header: Int
+        /// One past the last assignment line. Trailing comments and blanks
+        /// below that belong to the surrounding file, not to the block — so
+        /// removing a block cannot eat a note somebody wrote under it.
+        let end: Int
+        let name: String?
+    }
+
+    private func scanHostBlocks() -> [RawHostBlock] {
+        var blocks: [RawHostBlock] = []
+        var header: Int?
+        var lastAssignment: Int?
+        var name: String?
+
+        func close() {
+            guard let opened = header else { return }
+            blocks.append(RawHostBlock(
+                header: opened, end: (lastAssignment ?? opened) + 1, name: name
+            ))
+            header = nil
+            lastAssignment = nil
+            name = nil
+        }
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == "[[host]]" {
+                close()
+                header = index
+                continue
+            }
+            guard header != nil else { continue }
+            if trimmed.hasPrefix("[") {
+                close()
+                continue
+            }
+            if let (key, value) = Self.splitAssignment(trimmed) {
+                lastAssignment = index
+                if key == "name" {
+                    // The *last* assignment wins, because that is what
+                    // `parse` answers for a duplicated key — a scanner that
+                    // kept the first would resolve "edit victim" to a block
+                    // the parser calls something else, and overwrite it
+                    // (Codex review). One semantics, everywhere.
+                    name = ((value as? String) ?? String(describing: value))
+                        .trimmingCharacters(in: .whitespaces)
+                }
+            }
+        }
+        close()
+        return blocks
+    }
+
+    /// Write one host's managed fields into its block — `originalName` nil
+    /// appends a new block instead. Everything is resolved against the file
+    /// as it is on disk *now*, inside this one call: reload, find the block
+    /// by name, edit in place, write. Blocks not named are not touched at
+    /// all, empty or nameless ones included. Returns what went wrong — a
+    /// vanished block, a failed write — or nil once the file is on disk.
+    @discardableResult
+    func saveHostBlock(
+        named originalName: String?, fields: [(key: String, value: String)]
+    ) -> String? {
+        loadIfNeeded()
+        if let refused = reloadForHostEdit() { return refused }
+        let snapshot = lines
+        let blocks = scanHostBlocks()
+
+        // Uniqueness is asked of the same read the write acts on — asked any
+        // earlier, another instance can slip a block in between the check
+        // and the write, and the file ends up with two blocks one name, of
+        // which `HostConfig.parseAll` will silently keep only the first.
+        let newName = fields.first { $0.key == "name" }?
+            .value.trimmingCharacters(in: .whitespaces)
+        if let newName, newName != originalName,
+           blocks.contains(where: { $0.name == newName })
+        {
+            return "Another host is already named \"\(newName)\"."
+        }
+
+        if let originalName {
+            guard let block = blocks.first(where: { $0.name == originalName }) else {
+                return "\"\(originalName)\" is no longer in \(Self.url.path) — "
+                    + "it was removed while this editor was open."
+            }
+            var rebuilt: [String] = []
+            var written = Set<String>()
+            let managed = Set(Self.hostManagedKeys)
+            let values = Dictionary(fields.map { ($0.key, $0.value) }) { first, _ in first }
+            for raw in lines[(block.header + 1) ..< block.end] {
+                let trimmed = raw.trimmingCharacters(in: .whitespaces)
+                if let (key, old) = Self.splitAssignment(trimmed), managed.contains(key) {
+                    // First occurrence carries the value, in place; a
+                    // duplicate somebody wrote by hand is dropped rather
+                    // than left to shadow it.
+                    guard !written.contains(key) else { continue }
+                    written.insert(key)
+                    guard let value = values[key] else { continue }
+                    if (old as? String) == value {
+                        // Unchanged: the raw line survives byte for byte,
+                        // odd spacing, inline comment and all.
+                        rebuilt.append(raw)
+                    } else {
+                        rebuilt.append(Self.replacingValueSpan(in: raw, with: Self.encode(value)))
+                    }
+                } else {
+                    rebuilt.append(raw)
+                }
+            }
+            for (key, value) in fields where !written.contains(key) {
+                rebuilt.append("\(key) = \(Self.encode(value))")
+            }
+            lines.replaceSubrange((block.header + 1) ..< block.end, with: rebuilt)
+        } else {
+            var block = ["[[host]]"]
+            for (key, value) in fields { block.append("\(key) = \(Self.encode(value))") }
+            // After the last existing block, else at the end of the file —
+            // in front of the final empty element that carries the trailing
+            // newline, not behind it.
+            var at = blocks.last?.end ?? lines.count
+            if at == lines.count, lines.last?.isEmpty == true { at -= 1 }
+            // A blank line above the new block, except at the top of the
+            // file or under a comment — a separator inserted between
+            // somebody's note and what follows leaves the note pointing at
+            // nothing, the same rule `writeLine` follows.
+            if at > 0 {
+                let above = lines[at - 1].trimmingCharacters(in: .whitespaces)
+                if !above.isEmpty, !above.hasPrefix("#") { block.insert("", at: 0) }
+            }
+            lines.insert(contentsOf: block, at: at)
+        }
+        if lines.last?.isEmpty != true { lines.append("") }
+        return flushHostEdit(rollbackTo: snapshot)
+    }
+
+    /// Delete one block by name. Absent is success — the block being gone is
+    /// the state the caller asked for. The blank separator above the block
+    /// goes with it, so repeated add/remove cannot pile blank lines up where
+    /// blocks used to be.
+    @discardableResult
+    func removeHostBlock(named name: String) -> String? {
+        loadIfNeeded()
+        if let refused = reloadForHostEdit() { return refused }
+        let snapshot = lines
+        guard let block = scanHostBlocks().first(where: { $0.name == name }) else { return nil }
+        var start = block.header
+        if start > 0, lines[start - 1].trimmingCharacters(in: .whitespaces).isEmpty {
+            start -= 1
+        }
+        lines.removeSubrange(start ..< block.end)
+        // A block removed from the very top of the file leaves its former
+        // separator as a leading blank; nothing above owns it, so it goes.
+        while start == 0, lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+            lines.removeFirst()
+        }
+        return flushHostEdit(rollbackTo: snapshot)
+    }
+
+    /// Replace only the value span of a `key = value  # comment` line,
+    /// keeping the indentation, the spacing around `=`, and any unquoted
+    /// comment suffix exactly as they were typed.
+    private static func replacingValueSpan(in line: String, with encoded: String) -> String {
+        guard let equals = line.firstIndex(of: "=") else { return line }
+        var valueStart = line.index(after: equals)
+        while valueStart < line.endIndex, line[valueStart] == " " || line[valueStart] == "\t" {
+            valueStart = line.index(after: valueStart)
+        }
+        // The first unquoted `#` starts the comment — the same walk
+        // `splitAssignment` does, kept as indices so the suffix survives.
+        var commentStart = line.endIndex
+        var inQuotes = false
+        var escaped = false
+        var index = valueStart
+        while index < line.endIndex {
+            let character = line[index]
+            if escaped {
+                escaped = false
+            } else if character == "\\", inQuotes {
+                escaped = true
+            } else if character == "\"" {
+                inQuotes.toggle()
+            } else if character == "#", !inQuotes {
+                commentStart = index
+                break
+            }
+            index = line.index(after: index)
+        }
+        var valueEnd = commentStart
+        while valueEnd > valueStart {
+            let before = line.index(before: valueEnd)
+            if line[before] == " " || line[before] == "\t" { valueEnd = before } else { break }
+        }
+        return String(line[line.startIndex ..< valueStart]) + encoded + String(line[valueEnd...])
+    }
+
+    /// Land a host edit on disk, or undo it honestly. A failed write puts
+    /// the lines back to the snapshot the edit was built on — in memory, not
+    /// by reading the disk again, because a disk that just refused a write
+    /// is not a disk to depend on for the rollback — and hands the reason
+    /// up. The alternative was observed in review: the UI closes, the rail
+    /// reconnects, and the disk still holds yesterday's block, so the whole
+    /// change silently reverses on the next launch.
+    private func flushHostEdit(rollbackTo snapshot: [String]) -> String? {
+        if let failure = flush() {
+            lines = snapshot
+            parse()
+            return "could not write \(Self.url.path): \(failure)"
+        }
+        // Every cached view of the file — `parsedHostTables` above all — is
+        // rebuilt from the lines just written, so the next read agrees with
+        // the disk without waiting for another reload.
+        parse()
+        return nil
+    }
+
     private static func encode(_ value: Any) -> String {
         if let number = value as? NSNumber {
             // The Core Foundation type, not `as? Bool` — see the migration for
@@ -454,7 +798,14 @@ final class SettingsFile {
     /// `.atomic` because the alternative — truncate, then write — leaves an
     /// empty config file if anything goes wrong between the two, which for this
     /// file means every setting silently back to its default.
-    private func flush() {
+    ///
+    /// The failure comes back as prose rather than being swallowed, because
+    /// one caller must not ignore it: a host edit that never reached the disk
+    /// has to be reported and rolled back, not applied to live connections.
+    /// The scalar-setting writers keep their old fire-and-forget shape — the
+    /// log line was always their only witness — so the result is discardable.
+    @discardableResult
+    private func flush() -> String? {
         let text = lines.joined(separator: "\n")
         let url = Self.url
         do {
@@ -462,8 +813,13 @@ final class SettingsFile {
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true
             )
             try text.write(to: url, atomically: true, encoding: .utf8)
+            // The write is how the file first comes to exist on a fresh
+            // install, and existence is what retires legacy adoption.
+            activeFileHasExisted = true
+            return nil
         } catch {
             TmuxLog.lifecycle("could not write \(url.path): \(error)")
+            return error.localizedDescription
         }
     }
 

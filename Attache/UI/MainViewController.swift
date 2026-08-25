@@ -37,7 +37,16 @@ final class MainViewController: NSSplitViewController {
     /// ids repeat across them, so everything here keys by `SessionKey`
     /// composites and only ever hands a bare `$N` to the one server it
     /// belongs to.
-    let hosts: [HostContext]
+    ///
+    /// Mutable for exactly one writer: `applyHostConfigs`, which reconciles
+    /// this list with the `[[host]]` blocks whenever the settings change.
+    /// Everything else still reads it as the fixed list it used to be.
+    private(set) var hosts: [HostContext]
+    /// The `[[host]]` problems already turned into notices, so a broken
+    /// hand-written block warns once — not again on every font change, since
+    /// every settings write funnels through `applyHostConfigs`. Seeded in
+    /// `viewDidLoad` with what `AppDelegate` already announced at launch.
+    private var noticedHostProblems = [String]()
     /// The local server. Kept as a name because a handful of features are
     /// local by nature — the startup target, the debug inspector — and
     /// reading `hosts[0]` at those sites would bury the *why*.
@@ -292,14 +301,12 @@ final class MainViewController: NSSplitViewController {
         }
 
         for host in hosts {
-            host.server.onChange = { [weak self] in self?.refreshSidebar() }
-            host.onStateChange = { [weak self] in self?.refreshSidebar() }
-            // A repository changed under a row. Routed through the same
-            // rebuild every tmux notification uses, so the rail has exactly
-            // one way to be redrawn and the rebuild's own guards hold.
-            host.gitStatus.onChange = { [weak self] in self?.refreshSidebar() }
+            wire(host)
             host.start()
         }
+        // What launch already said about broken blocks must not be said again
+        // by the first settings change that comes through.
+        noticedHostProblems = AppSettings.hosts.problems
 
         settingsObserver = NotificationCenter.default.addObserver(
             forName: AppSettings.didChange, object: nil, queue: .main
@@ -467,6 +474,20 @@ final class MainViewController: NSSplitViewController {
             target.server.newSession()
         }
         sidebar.onHostRetry = { [weak self] hostID in self?.host(id: hostID)?.retry() }
+        sidebar.onAddServer = { [weak self] in self?.presentAddServerSheet() }
+        sidebar.onHostReconnect = { [weak self] hostID in self?.host(id: hostID)?.reconnect() }
+        sidebar.onHostEdit = { [weak self] hostID in
+            guard let host = self?.host(id: hostID), !host.isLocal else { return }
+            (NSApp.delegate as? AppDelegate)?.showHostsSettings(selecting: host.id)
+        }
+        sidebar.onHostRemove = { [weak self] hostID in self?.confirmRemoveHost(id: hostID) }
+        // The same detached create the footer button sends, aimed by the row
+        // instead of by whatever session is on screen — it is how a freshly
+        // added host, whose machine may not even have a tmux server running
+        // yet, gets its first session.
+        sidebar.onHostNewSession = { [weak self] hostID in
+            self?.host(id: hostID)?.server.newSession()
+        }
         sidebar.onRename = { [weak self] id, new in
             self?.connection(id: id)?.renameSession(to: new)
         }
@@ -519,6 +540,45 @@ final class MainViewController: NSSplitViewController {
         }
         sidebar.onRestoreHidden = { [weak self] session in
             self?.inSession(session) { $0.restoreHiddenWindows() }
+        }
+    }
+
+    // MARK: - Host management
+
+    /// The Add Server sheet, over this window. Saving is the sheet's own
+    /// job; a successful save notifies settings and `applyHostConfigs`
+    /// connects — the sheet never touches a connection itself.
+    private func presentAddServerSheet() {
+        guard presentedViewControllers?.contains(where: { $0 is AddServerSheetController }) != true
+        else { return }
+        presentAsSheet(AddServerSheetController())
+    }
+
+    /// Remove a `[[host]]` after the person has read what that means. The
+    /// deletion is of *this app's* configuration: the wording says so
+    /// plainly, because "remove host" could be read as reaching over ssh,
+    /// and nothing here does.
+    private func confirmRemoveHost(id: String) {
+        guard let host = host(id: id), !host.isLocal, let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Remove \(host.displayName) from Attaché?"
+        alert.informativeText =
+            "This disconnects Attaché from \(host.displayName) and deletes its [[host]] block "
+            + "from ~/.config/attache.toml.\n\ntmux on \(host.displayName) keeps running — every "
+            + "session, window and agent there is untouched, and adding the host back shows "
+            + "them again."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Remove Host")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            if let refused = AppSettings.removeHost(named: id) {
+                DiagnosticsCenter.shared.notice(AppNotice(
+                    severity: .error,
+                    title: "Could not remove \(id)",
+                    body: refused
+                ))
+            }
         }
     }
 
@@ -1114,6 +1174,96 @@ final class MainViewController: NSSplitViewController {
 
     // MARK: - Settings
 
+    /// The one wiring a host gets, extracted because two callers must agree:
+    /// launch, and every host `applyHostConfigs` creates later.
+    private func wire(_ host: HostContext) {
+        host.server.onChange = { [weak self] in self?.refreshSidebar() }
+        host.onStateChange = { [weak self] in self?.refreshSidebar() }
+        // A repository changed under a row. Routed through the same
+        // rebuild every tmux notification uses, so the rail has exactly
+        // one way to be redrawn and the rebuild's own guards hold.
+        host.gitStatus.onChange = { [weak self] in self?.refreshSidebar() }
+    }
+
+    /// Reconcile the running host list with the `[[host]]` blocks as they
+    /// now stand — the piece that makes editing hosts a settings change
+    /// rather than a relaunch.
+    ///
+    /// Diffed by name, because the name is the host's identity: sessions,
+    /// caches and the rail all key by it. An unchanged block keeps its
+    /// context untouched — its connections, its sessions on screen — so a
+    /// font change cannot reconnect anything. A changed block retires the
+    /// old context and builds a fresh one, which is the reconnect the
+    /// settings UI promised; a removed block just retires. Retiring is
+    /// `retire()`, not `stop()`: the shared ssh pre-flight keeps old
+    /// contexts on its observer list, and an un-retired one would restart
+    /// itself the next time that master came up.
+    ///
+    /// tmux on the other machine is never touched by any of this — retiring
+    /// closes this app's connections and nothing else.
+    private func applyHostConfigs() {
+        let (configs, problems) = AppSettings.hosts
+        // A broken block warns when it *becomes* broken, not on every pass.
+        for reason in problems where !noticedHostProblems.contains(reason) {
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .warning,
+                title: "A [[host]] block was skipped",
+                body: "A [[host]] block in ~/.config/attache.toml \(reason)."
+            ))
+        }
+        noticedHostProblems = problems
+
+        var existing = [String: HostContext]()
+        for host in hosts where !host.isLocal { existing[host.id] = host }
+
+        let sshPath = AppSettings.sshPath
+        var next = [hosts[0]]
+        var made = [HostContext]()
+        var retiring = [HostContext]()
+        for config in configs {
+            // Read, compare, and only then remove — a `removeValue` inside
+            // the `if let` condition takes the context out even when the
+            // comparison after the comma fails, and an edited host's old
+            // context then never reaches the retiring list: a live
+            // connection with nothing left holding it.
+            if let current = existing[config.name], current.config == config {
+                existing.removeValue(forKey: config.name)
+                next.append(current)
+                continue
+            }
+            if let edited = existing.removeValue(forKey: config.name) {
+                retiring.append(edited)
+            }
+            let fresh = HostContext.remote(config: config, sshPath: sshPath)
+            wire(fresh)
+            made.append(fresh)
+            next.append(fresh)
+        }
+        // Whatever is left has no block any more.
+        retiring.append(contentsOf: existing.values)
+
+        let orderChanged = !next.elementsEqual(hosts, by: { $0 === $1 })
+        guard !made.isEmpty || !retiring.isEmpty || orderChanged else { return }
+
+        // Retire before starting replacements: an edited host's old context
+        // and its replacement share one ssh master, and the retired one must
+        // be off the master's refcount before the fresh one counts itself in.
+        for host in retiring {
+            TmuxLog.lifecycle("host \(host.id) retired — its [[host]] block changed or was removed")
+            host.retire()
+        }
+        hosts = next
+        for host in made {
+            TmuxLog.lifecycle("host \(host.id) added from settings — connecting")
+            host.gitStatus.applySettings()
+            host.start()
+        }
+        // Rows for retired hosts leave the rail, and their session
+        // controllers go with them, through the same reconcile every tmux
+        // notification uses.
+        refreshSidebar()
+    }
+
     /// One place where a settings change fans out, so the order is fixed and
     /// visible: chrome first, then each session's own terminal controller.
     ///
@@ -1132,6 +1282,9 @@ final class MainViewController: NSSplitViewController {
                 + " \(AppSettings.fontFamily.isEmpty ? "default" : AppSettings.fontFamily)"
                 + " \(Int(AppSettings.fontSize))pt"
         )
+        // Hosts first, so a host added by this very change is in `hosts`
+        // before the per-host loops below hand out the new settings.
+        applyHostConfigs()
         // Only when the *setting* moved. Comparing against the rail's current
         // width instead would undo the user's own divider drag on the next
         // theme change, which is a thing a drag-resizable sidebar must not do
@@ -1201,7 +1354,8 @@ final class MainViewController: NSSplitViewController {
             }
             return SessionSidebarView.HostDescriptor(
                 id: host.id, name: host.displayName,
-                state: state, tone: tone, canRetry: canRetry
+                state: state, tone: tone, canRetry: canRetry,
+                isRemote: !host.isLocal
             )
         }
     }

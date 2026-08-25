@@ -288,51 +288,8 @@ struct BehaviourPage: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
 
-            if !store.remoteSetups.isEmpty {
-                Section {
-                    ForEach(store.remoteSetups) { row in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                iconLabel(
-                                    remoteSetupSymbol(row),
-                                    remoteSetupColor(row),
-                                    row.name + " — " + remoteSetupText(row)
-                                )
-                                Spacer()
-                                remoteSetupButtons(row)
-                            }
-                            if let wrapped = row.wrapped, !wrapped.isEmpty {
-                                Text("Would wrap: " + wrapped)
-                                    .font(.caption).foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            if let message = row.message {
-                                Label(
-                                    message,
-                                    systemImage: row.failed
-                                        ? "exclamationmark.triangle.fill"
-                                        : "checkmark.circle.fill"
-                                )
-                                .font(.caption)
-                                .foregroundStyle(row.failed ? .red : .secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Agent status on remote hosts")
-                } footer: {
-                    Text(
-                        "Each [[host]] machine has its own ~/.claude/settings.json, and "
-                            + "agents there report state and transcripts only once it carries "
-                            + "the same entries. Install writes the hooks, the status line "
-                            + "wrapper and a timestamped backup on that machine, over ssh."
-                    )
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                .onAppear { store.refreshRemoteSetups() }
-            }
+            // The per-host agent setup used to be a section here; it lives on
+            // the Hosts page now, beside everything else about that machine.
 
             Section {
                 HStack {
@@ -511,54 +468,4 @@ struct BehaviourPage: View {
         .navigationTitle("Behaviour")
     }
 
-    // ─── Remote setup row rendering ──────────────────────────────────────────
-
-    private func remoteSetupSymbol(_ row: SettingsStore.RemoteSetupRow) -> String {
-        switch (row.hookState, row.statusLineState) {
-        case (.installed, .installed): "checkmark.seal.fill"
-        case (.unreachable, _): "bolt.horizontal.circle"
-        case (.refused, _), (_, .refused): "exclamationmark.triangle.fill"
-        case (.unknown, .unknown): "circle.dotted"
-        default: "seal"
-        }
-    }
-
-    private func remoteSetupColor(_ row: SettingsStore.RemoteSetupRow) -> Color {
-        switch (row.hookState, row.statusLineState) {
-        case (.installed, .installed): .green
-        case (.unreachable, _): .orange
-        case (.refused, _), (_, .refused): .red
-        default: .gray
-        }
-    }
-
-    private func remoteSetupText(_ row: SettingsStore.RemoteSetupRow) -> String {
-        switch (row.hookState, row.statusLineState) {
-        case (.unknown, .unknown): "checking…"
-        case (.unreachable(let reason), _): reason
-        case (.refused(let reason), _), (_, .refused(let reason)): reason
-        case (.installed, .installed): "agents there report state and transcripts"
-        case (.notInstalled, _): "not installed there"
-        default: "installed by an older version — update to refresh"
-        }
-    }
-
-    @ViewBuilder
-    private func remoteSetupButtons(_ row: SettingsStore.RemoteSetupRow) -> some View {
-        switch (row.hookState, row.statusLineState) {
-        case (.unreachable, _), (.unknown, .unknown), (.refused, _), (_, .refused):
-            EmptyView()
-        case (.installed, .installed):
-            Button("Remove") { store.uninstallRemoteSetup(hostID: row.id) }
-                .disabled(row.busy)
-        case (.notInstalled, _):
-            Button("Install…") { store.installRemoteSetup(hostID: row.id) }
-                .disabled(row.busy)
-        default:
-            Button("Update…") { store.installRemoteSetup(hostID: row.id) }
-                .disabled(row.busy)
-            Button("Remove") { store.uninstallRemoteSetup(hostID: row.id) }
-                .disabled(row.busy)
-        }
-    }
 }
