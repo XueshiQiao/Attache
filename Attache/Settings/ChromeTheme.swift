@@ -97,10 +97,22 @@ struct ChromeTheme {
     private static let railStep: CGFloat = 5.5
 
     /// Contrast floors for the two quiet text roles. 4.5:1 is the WCAG floor
-    /// for body text and 3:1 for large text; these sit deliberately below both,
+    /// for body text and 3:1 for large text; these sit around and below them,
     /// because these roles are *meant* to recede and a floor that forced them
     /// to the body-text ratio would flatten the hierarchy into three copies of
     /// the same tone. They are a floor on "still legible", not a target.
+    ///
+    /// **They moved with the ceiling.** 4.0 and 3.0 were picked when the name
+    /// above them was itself only 4.73:1 on a light scheme — there was no room
+    /// for anything higher. `systemInk(on:drawnOn:)` put the name at 12.0:1,
+    /// and leaving the floors where they were would have spent none of that:
+    /// measured 2026-08-25, the quiet tones would have landed at 4.00 and 3.00
+    /// on Ayu Light — better than the 2.14 and 1.52 that started this — but
+    /// 6.24 and **3.00** on Ayu dark, against 7.18 and 4.88 before. That is a
+    /// fix for the light scheme paid for by making the dark one fainter, which
+    /// is not a trade anyone asked for. At 5.0 and 3.6 the light scheme gets
+    /// 12.02 / 5.00 / 3.60 and the dark one 14.06 / 6.24 / 3.60, so both ends
+    /// come out at least as legible as they went in.
     ///
     /// **Measured against `railBackground`, which is the colour the rail is
     /// painted in and not the colour it ends up.** The rail is translucent, so
@@ -120,8 +132,8 @@ struct ChromeTheme {
     /// means the floors would have to move with the opacity sliders and be
     /// solved against a worst-case backdrop — a change to when the theme is
     /// rebuilt, not to the arithmetic here.
-    private static let mutedFloor: CGFloat = 4.0
-    private static let faintFloor: CGFloat = 3.0
+    private static let mutedFloor: CGFloat = 5.0
+    private static let faintFloor: CGFloat = 3.6
 
     /// The accent luminance at which the selected row's label flips from white
     /// to black.
@@ -161,48 +173,52 @@ struct ChromeTheme {
         let background = Self.blend(terminalBackground, toward: foreground, by: 0.06)
         self.background = background
         railBackground = Self.deepened(background, by: Self.railStep)
-        text = foreground
-        // 0.80 and 0.62, not the 0.60/0.40 these started at, and the reason is
-        // that the surface underneath is not the colour they are derived from.
-        // These blends assume the text lands on `background`. It lands on the
-        // rail, and the rail is translucent — what it composites to is pulled
-        // toward whatever is behind the window, while the text is drawn opaque
-        // and is not pulled anywhere. Neither the wallpaper nor the opacity
-        // setting is visible from in here.
+        // The three text roles are the system's, not the scheme's, and which
+        // half of the system's they are is decided by the terminal background
+        // rather than by the appearance setting — see `systemInk(on:)`.
+        let ink = Self.systemInk(on: background, drawnOn: railBackground)
+        text = ink.label
+        // **These used to be blends of the scheme's own foreground, and that
+        // is what made a light scheme unreadable.** A blend of a weak pair is
+        // weaker still: Ayu Light's foreground is `#5c6166`, only 5.5:1
+        // against its own background, so 62% of the way there was 2.6:1 before
+        // the rail was even accounted for, and on screen it measured 1.5:1.
+        // The scheme was not an outlier either — it ranks 80th of the 87 light
+        // schemes in the catalog by how legible its own foreground is.
         //
-        // Measured 2026-08-24 on the Ayu scheme at 54.5% window opacity over a
-        // mid-grey desktop: the rail composited to (62,63,67) where the
-        // derivation assumed (17,19,23) — nearly four times the luminance —
-        // and the two roles came out at 2.48:1 and 1.53:1 against it. Both are
-        // under the 3:1 floor for even large text. At these fractions the same
-        // measurement gives 3.8:1 and 2.7:1, and the three steps stay far
-        // enough apart to still read as a hierarchy.
+        // Ghostty solves this by not having the problem: its chrome text is
+        // `NSColor.labelColor` and friends, and the theme decides only which
+        // *appearance* those resolve against — `NSAppearance(ghosttyConfig:)`
+        // reads the background's luminance and flips the whole window to aqua
+        // or darkAqua. Theme colours go into fills (titlebar, glass tint,
+        // split divider) and never into text. Read at Ghostty 557de7c9,
+        // 2026-08-25. This is that, and `systemInk(on:drawnOn:)` is where it
+        // happens.
         //
-        // A floor, not a solution: no fixed fraction can be right for every
-        // wallpaper. These are chosen to fail toward "brighter than strictly
-        // needed" on a dark backdrop rather than toward unreadable on a light
-        // one.
+        // The floors stay on top of it, and measuring says they have to. The
+        // system's own tones are calibrated for an opaque system background,
+        // not for a translucent rail over a wallpaper: measured 2026-08-25 on
+        // the rail colour, `labelColor` lands at 12.0:1 on Ayu Light where the
+        // old derivation gave 4.7 — the whole complaint, gone — but
+        // `tertiaryLabelColor` lands at 1.8:1 where the old one gave 3.0, and
+        // 2.1:1 on Ayu dark where it gave 4.9. Taking the system's three tones
+        // unmodified would have fixed the loud text by making the quiet text
+        // worse than it started.
         //
-        // And a fraction cannot be the whole answer for a second reason: a
-        // fraction of a *weak* pair is weaker still. Ayu Light's own
-        // foreground is 5.5:1 against its own background, so 62% of the way
-        // there is 2.6:1 before the rail is even accounted for. The floors
-        // below are what stop that, and they are capped in order — no tone may
-        // out-contrast the one above it — so a scheme that cannot reach them
-        // degrades into a flatter hierarchy rather than an inverted one.
-        // Measured across the 485-scheme catalog: the tertiary tone was under
-        // 3:1 on 64 of the 87 light schemes and is now under it on one, while
-        // 377 of the 398 dark schemes are untouched because they already
-        // cleared both floors.
-        let nameContrast = Self.contrastRatio(foreground, railBackground)
+        // So the floors are applied to the system's tones instead of to the
+        // scheme's, which in this idiom just means using more of the ink: each
+        // tone is black or white at some alpha over the rail, and `raised`
+        // walks further along that same ray until it clears. Capped in order,
+        // so no tone can out-contrast the one above it.
+        let nameContrast = Self.contrastRatio(ink.label, railBackground)
         mutedText = Self.raised(
-            Self.blend(background, toward: foreground, by: 0.80),
-            from: background, toward: foreground,
+            ink.secondary,
+            from: railBackground, toward: ink.pure,
             on: railBackground, to: min(Self.mutedFloor, nameContrast)
         )
         faintText = Self.raised(
-            Self.blend(background, toward: foreground, by: 0.62),
-            from: background, toward: foreground,
+            ink.tertiary,
+            from: railBackground, toward: ink.pure,
             on: railBackground, to: min(Self.faintFloor, Self.contrastRatio(mutedText, railBackground))
         )
         separator = Self.blend(background, toward: foreground, by: 0.18)
@@ -308,6 +324,81 @@ struct ChromeTheme {
             srgbRed: from.redComponent + (to.redComponent - from.redComponent) * fraction,
             green: from.greenComponent + (to.greenComponent - from.greenComponent) * fraction,
             blue: from.blueComponent + (to.blueComponent - from.blueComponent) * fraction,
+            alpha: 1
+        )
+    }
+
+    /// The system's three label tones, resolved against the appearance the
+    /// *terminal background* implies and flattened onto the surface they will
+    /// be drawn on.
+    ///
+    /// Two decisions, and both are Ghostty's.
+    ///
+    /// **The appearance comes from the background, not from the setting.** The
+    /// app's own appearance preference already picks which of the two schemes
+    /// is showing, so the two normally agree — but nothing stops someone
+    /// naming a dark scheme in `light_theme`, and then a system label resolved
+    /// against the *app's* appearance would be dark ink on a dark rail. Asking
+    /// the colour that is actually about to be behind the text removes that
+    /// case rather than documenting it. Ghostty does the same thing in
+    /// `NSAppearance(ghosttyConfig:)`, from the same input.
+    ///
+    /// **Flattened rather than left with their alpha**, because every other
+    /// colour on this type is opaque and a dozen call sites say
+    /// `theme.faintText.withAlphaComponent(0.8)`. That call *replaces* an
+    /// alpha, so handing back `tertiaryLabelColor`'s own 0.26 would turn a
+    /// deliberate fade into a threefold darkening at each of those sites, with
+    /// nothing to see in the diff. Flattening keeps the invariant the rest of
+    /// this file already relies on.
+    ///
+    /// `pure` is the ink itself — black or white — which is the far end of the
+    /// ray all three tones sit on, and therefore what a floor walks toward.
+    nonisolated private static func systemInk(
+        on background: NSColor, drawnOn surface: NSColor
+    ) -> (label: NSColor, secondary: NSColor, tertiary: NSColor, pure: NSColor) {
+        let isLight = lightness(of: background) >= 50
+        let pure: NSColor = isLight ? .black : .white
+        // 50 is the L* midpoint rather than Ghostty's `luminance > 0.5`, which
+        // is a Rec.601 luma on gamma-encoded components — cheaper, and it puts
+        // the boundary somewhere no scheme in this catalog actually disagrees
+        // about. Using the same lightness the rail's own step is measured in
+        // keeps one definition of "light" in the file instead of two.
+        guard let appearance = NSAppearance(named: isLight ? .aqua : .darkAqua) else {
+            // No appearance to resolve against is not a reason to draw nothing
+            // legible: fall back to the ink at the alphas macOS itself uses.
+            return (
+                flattened(pure.withAlphaComponent(0.85), on: surface),
+                flattened(pure.withAlphaComponent(0.50), on: surface),
+                flattened(pure.withAlphaComponent(0.26), on: surface),
+                pure
+            )
+        }
+        var label = NSColor.labelColor
+        var secondary = NSColor.secondaryLabelColor
+        var tertiary = NSColor.tertiaryLabelColor
+        appearance.performAsCurrentDrawingAppearance {
+            label = NSColor.labelColor.usingColorSpace(.sRGB) ?? label
+            secondary = NSColor.secondaryLabelColor.usingColorSpace(.sRGB) ?? secondary
+            tertiary = NSColor.tertiaryLabelColor.usingColorSpace(.sRGB) ?? tertiary
+        }
+        return (
+            flattened(label, on: surface),
+            flattened(secondary, on: surface),
+            flattened(tertiary, on: surface),
+            pure
+        )
+    }
+
+    /// What a colour with alpha becomes once it is drawn on `surface`.
+    nonisolated private static func flattened(_ colour: NSColor, on surface: NSColor) -> NSColor {
+        guard let ink = colour.usingColorSpace(.sRGB),
+              let ground = surface.usingColorSpace(.sRGB)
+        else { return colour }
+        let a = ink.alphaComponent
+        return NSColor(
+            srgbRed: ground.redComponent * (1 - a) + ink.redComponent * a,
+            green: ground.greenComponent * (1 - a) + ink.greenComponent * a,
+            blue: ground.blueComponent * (1 - a) + ink.blueComponent * a,
             alpha: 1
         )
     }

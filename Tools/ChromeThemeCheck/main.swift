@@ -141,7 +141,34 @@ for scheme in derived {
     }
 }
 
-// MARK: - 3. The three text roles stay in order
+// MARK: - 3. The loud text role is legible at all
+
+// This looks redundant next to the floors below and is the opposite: without
+// it they are *vacuous*. Each floor is capped by the role above it so a weak
+// scheme flattens rather than inverts, which means a broken primary drags its
+// own cap down with it — `min(mutedFloor, nameContrast)` with a nameContrast
+// of 1.24 asks the secondary tone for 1.24:1, and it obliges. Every other case
+// here then passes on text nobody can read.
+//
+// Found by mutation, not by reading: flipping the appearance in
+// `systemInk(on:drawnOn:)` — white ink on a light rail, the exact thing that
+// helper exists to prevent — produced six failures across 485 schemes before
+// this case existed, and the floors quietly repaired most of the damage into
+// something that merely looked wrong.
+//
+// 3.5 rather than WCAG's 4.5 for body text because one shipped scheme is
+// genuinely below it: Hot Dog Stand, whose own background is fluorescent red,
+// lands at 3.95. The next worst is 4.96 and the median is 12.11, so this is a
+// tripwire for "the ink went the wrong way", not a design target.
+for scheme in derived where scheme.textContrast < 3.5 {
+    failures.append(
+        "primary text under 3.5:1 on \(scheme.name): "
+            + String(format: "%.2f", scheme.textContrast) + ":1 — "
+            + "\(rgb(scheme.text)) on \(rgb(scheme.rail))"
+    )
+}
+
+// MARK: - 4. The three text roles stay in order
 
 // The floors are what stop a weak scheme's secondary text from being illegible,
 // and an uncapped floor is how they would break the thing they protect: a
@@ -165,7 +192,7 @@ for scheme in derived {
     }
 }
 
-// MARK: - 4. The floors are actually reached wherever they can be
+// MARK: - 5. The floors are actually reached wherever they can be
 
 // A floor that silently gives up is worse than no floor, because the number in
 // the source then describes something that never happens. Where the scheme has
@@ -190,7 +217,7 @@ for scheme in derived {
     }
 }
 
-// MARK: - 5. The selected row's own label is legible on it
+// MARK: - 6. The selected row's own label is legible on it
 
 // The accent has a 3:1 floor against the chrome background, so the selected
 // row is always visible. That says nothing about the *label* on it, which is
@@ -209,7 +236,7 @@ for scheme in derived {
     }
 }
 
-// MARK: - 6. The two schemes the fix was measured on
+// MARK: - 7. The two schemes the fix was measured on
 
 // Regression guards with the numbers written down, so a later change to the
 // step or the floors has to move these on purpose. Both are the shipped
@@ -223,12 +250,14 @@ struct Pin {
 }
 
 let pins = [
-    // The dark default. Untouched by the floors — it cleared both already —
-    // so the only thing that moved is the rail, by at most 10 of 255.
-    Pin(scheme: "Ayu", rail: "( 10, 11, 13)", text: 10.49, muted: 7.18, faint: 4.88),
-    // The light default, and the scheme the complaint came from. Was
-    // (186,187,188) with 3.26 / 2.14 / 1.52.
-    Pin(scheme: "Ayu Light", rail: "(223,224,225)", text: 4.74, muted: 4.00, faint: 3.00),
+    // The dark default. The rail moved by at most 10 of 255; the text now
+    // comes from the system rather than the scheme, which lifts the name and
+    // costs the quiet tones a little — 7.18 / 4.88 before.
+    Pin(scheme: "Ayu", rail: "( 10, 11, 13)", text: 14.06, muted: 6.24, faint: 3.60),
+    // The light default, and the scheme the complaint came from. Started at
+    // rail (186,187,188) with 3.26 / 2.14 / 1.52, and was 4.74 / 4.00 / 3.00
+    // with the rail fixed but the text still derived from the scheme.
+    Pin(scheme: "Ayu Light", rail: "(223,224,225)", text: 12.02, muted: 5.00, faint: 3.60),
 ]
 
 for pin in pins {
@@ -262,6 +291,10 @@ if failures.isEmpty {
     )
     // The distribution is not a pass condition — it is what makes a regression
     // legible when one of the cases above starts failing.
+    print(
+        "  primary text: worst "
+            + String(format: "%.2f", derived.map(\.textContrast).min() ?? 0) + ":1"
+    )
     let labels = derived.map { ChromeTheme.contrastRatio($0.onAccent, $0.accent) }
     print(
         "  selected-row label: worst "

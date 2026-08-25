@@ -299,16 +299,25 @@ scheme and 53 on a light one. Measured 2026-08-25 from a screenshot, the light
 rail sampled (186,187,188) with the row numbers at 1.5:1 on it, against
 9.9 / 6.8 / 4.6 for the same three roles on the dark scheme.
 
-Five properties are under test and none can be stated about a single scheme: the
+Six properties are under test and none can be stated about a single scheme: the
 rail is never lighter than the panes (the "flip when there is no room" variant
 reverses it on 56 dark schemes), the step is the same L* everywhere it fits, the
-three text roles never swap order, the contrast floors are actually reached
-wherever the scheme has the headroom, and the selected row's own label clears
-3:1 on the accent it sits on. All five are statements about the colours
-the chrome is *painted* in. The rail is translucent and what the text lands on
-is that paint over a blurred desktop, which no check here can see: measured
-2026-08-25 on Ayu at 55% / 10%, the tertiary tone is 4.7:1 over a black desktop
-and 1.4:1 over a white one. The floors narrow that range; they do not close it.
+primary text is legible at all, the three text roles never swap order, the
+contrast floors are actually reached wherever the scheme has the headroom, and
+the selected row's own label clears 3:1 on the accent it sits on.
+
+The third of those looks redundant beside the fifth and is the opposite: each
+floor is capped by the role above it, so a broken primary drags its own cap
+down and every other case passes on text nobody can read. It was added after a
+mutation — flipping the appearance the chrome's ink resolves against, which is
+white text on a light rail — reported six failures across 485 schemes. It now
+reports 490.
+
+All six are statements about the colours the chrome is *painted* in. The rail
+is translucent and what the text lands on is that paint over a blurred desktop,
+which no check here can see: measured 2026-08-25 on Ayu at 55% / 10%, the
+tertiary tone is 4.7:1 over a black desktop and 1.4:1 over a white one. The
+floors narrow that range; they do not close it.
 
 It links the package products a normal build already made, because reading the
 real catalog is the point:
@@ -323,11 +332,12 @@ swiftc -O -o /tmp/chromethemecheck -I /tmp/dd/Build/Products/Debug \
 ```
 
 Confirm it still bites the way `PipeReadCheck` is confirmed — by mutation, not
-by reading it. Measured 2026-08-25: putting the old `blend(background, toward:
-.black, by: 0.22)` back fails **484 of 485 schemes**, setting both text floors
-to 0 fails **96 assertions across 57 schemes**, and restoring the old
-`onAccentSplit` of 0.45 fails **61**; unmutated it is `485 schemes (398 dark,
-87 light), all pass`, exit 0.
+by reading it. Measured 2026-08-25, one mutation per rule: putting the old
+`blend(background, toward: .black, by: 0.22)` back fails **483**, setting both
+text floors to 0 fails **579**, flipping the appearance in
+`systemInk(on:drawnOn:)` fails **490**, and restoring the old `onAccentSplit`
+of 0.45 fails **61**. Unmutated it is `485 schemes (398 dark, 87 light), all
+pass`, exit 0.
 
 **`TerminalLinkTarget` has one, and it decides what a click opens on the user's
 machine.** libghostty matches the link and draws the underline; this turns the
