@@ -299,11 +299,12 @@ scheme and 53 on a light one. Measured 2026-08-25 from a screenshot, the light
 rail sampled (186,187,188) with the row numbers at 1.5:1 on it, against
 9.9 / 6.8 / 4.6 for the same three roles on the dark scheme.
 
-Four properties are under test and none can be stated about a single scheme: the
+Five properties are under test and none can be stated about a single scheme: the
 rail is never lighter than the panes (the "flip when there is no room" variant
 reverses it on 56 dark schemes), the step is the same L* everywhere it fits, the
-three text roles never swap order, and the contrast floors are actually reached
-wherever the scheme has the headroom. All four are statements about the colours
+three text roles never swap order, the contrast floors are actually reached
+wherever the scheme has the headroom, and the selected row's own label clears
+3:1 on the accent it sits on. All five are statements about the colours
 the chrome is *painted* in. The rail is translucent and what the text lands on
 is that paint over a blurred desktop, which no check here can see: measured
 2026-08-25 on Ayu at 55% / 10%, the tertiary tone is 4.7:1 over a black desktop
@@ -323,9 +324,10 @@ swiftc -O -o /tmp/chromethemecheck -I /tmp/dd/Build/Products/Debug \
 
 Confirm it still bites the way `PipeReadCheck` is confirmed — by mutation, not
 by reading it. Measured 2026-08-25: putting the old `blend(background, toward:
-.black, by: 0.22)` back fails **484 of 485 schemes**, and setting both text
-floors to 0 fails **96 assertions across 57 schemes**; unmutated it is
-`485 schemes (398 dark, 87 light), all pass`, exit 0.
+.black, by: 0.22)` back fails **484 of 485 schemes**, setting both text floors
+to 0 fails **96 assertions across 57 schemes**, and restoring the old
+`onAccentSplit` of 0.45 fails **61**; unmutated it is `485 schemes (398 dark,
+87 light), all pass`, exit 0.
 
 **`TerminalLinkTarget` has one, and it decides what a click opens on the user's
 machine.** libghostty matches the link and draws the underline; this turns the

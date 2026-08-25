@@ -63,6 +63,8 @@ struct Derived {
     let text: NSColor
     let muted: NSColor
     let faint: NSColor
+    let accent: NSColor
+    let onAccent: NSColor
 
     init(_ definition: GhosttyThemeDefinition) {
         let theme = ChromeTheme(definition: definition)
@@ -72,6 +74,8 @@ struct Derived {
         text = theme.text
         muted = theme.mutedText
         faint = theme.faintText
+        accent = theme.accent
+        onAccent = theme.onAccent
         isDark = ChromeTheme.lightness(of: theme.background) < 50
     }
 
@@ -186,7 +190,26 @@ for scheme in derived {
     }
 }
 
-// MARK: - 5. The two schemes the fix was measured on
+// MARK: - 5. The selected row's own label is legible on it
+
+// The accent has a 3:1 floor against the chrome background, so the selected
+// row is always visible. That says nothing about the *label* on it, which is
+// black or white by `onAccentSplit` — and WCAG contrast is not symmetric about
+// the middle of the range, so a threshold picked to look like a midpoint puts
+// white text on accents where black was the readable choice. At the 0.45 this
+// started with, 61 of 485 schemes ended under 3:1, worst 2.10:1.
+for scheme in derived {
+    let label = ChromeTheme.contrastRatio(scheme.onAccent, scheme.accent)
+    if label < 3 {
+        failures.append(
+            "selected-row label under 3:1 on \(scheme.name): "
+                + String(format: "%.2f", label) + ":1 — "
+                + "\(rgb(scheme.onAccent)) on \(rgb(scheme.accent))"
+        )
+    }
+}
+
+// MARK: - 6. The two schemes the fix was measured on
 
 // Regression guards with the numbers written down, so a later change to the
 // step or the floors has to move these on purpose. Both are the shipped
@@ -239,6 +262,12 @@ if failures.isEmpty {
     )
     // The distribution is not a pass condition — it is what makes a regression
     // legible when one of the cases above starts failing.
+    let labels = derived.map { ChromeTheme.contrastRatio($0.onAccent, $0.accent) }
+    print(
+        "  selected-row label: worst "
+            + String(format: "%.2f", labels.min() ?? 0) + ":1, under 4.5:1 on "
+            + "\(labels.filter { $0 < 4.5 }.count) scheme(s)"
+    )
     let unreadable = derived.filter { $0.faintContrast < 3 }
     print(
         "  tertiary tone under 3:1 on \(unreadable.count) scheme(s)"

@@ -123,6 +123,29 @@ struct ChromeTheme {
     private static let mutedFloor: CGFloat = 4.0
     private static let faintFloor: CGFloat = 3.0
 
+    /// The accent luminance at which the selected row's label flips from white
+    /// to black.
+    ///
+    /// This was 0.45 and it was too high, in a way that only shows up on
+    /// schemes nobody here runs. WCAG contrast is not symmetric about the
+    /// middle of the range: black and white are equally readable at a
+    /// luminance of about 0.179, not 0.5, so every accent between 0.179 and
+    /// the threshold gets white text when black would have been better — and
+    /// just under 0.45 is where that is worst. Measured across the catalog by
+    /// running this file: at 0.45 the label is under 3:1 on **61 of 485**
+    /// schemes, worst 2.10:1 (Wilmersdorf, hazyland, GitHub Dark High
+    /// Contrast, Citruszest, One Half Dark). At 0.30 it is under 3:1 on
+    /// **none**, worst 3.04:1, and those 61 land near 9.9:1. No scheme is made
+    /// worse.
+    ///
+    /// 0.30 rather than the ratio-optimal 0.179 on purpose. The arithmetic
+    /// prefers black on every mid-blue accent, which is correct and looks
+    /// wrong — a selected row in a Mac sidebar has white text on blue, and
+    /// 0.30 keeps that while still clearing the floor everywhere. Found by an
+    /// independent review; the counts here are this file's own, not that
+    /// review's re-implementation.
+    private static let onAccentSplit: CGFloat = 0.30
+
     init(definition: GhosttyThemeDefinition) {
         guard let terminalBackground = Self.color(hex: definition.background),
               let foreground = Self.color(hex: definition.foreground)
@@ -203,8 +226,9 @@ struct ChromeTheme {
             ?? foreground
         self.accent = accent
         // `SessionRowView` used to hardcode white here, which is unreadable
-        // the moment the accent is a light colour.
-        onAccent = Self.relativeLuminance(accent) > 0.45 ? .black : .white
+        // the moment the accent is a light colour. Which way to jump is
+        // `onAccentSplit`.
+        onAccent = Self.relativeLuminance(accent) > Self.onAccentSplit ? .black : .white
     }
 
     private init(
