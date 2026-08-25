@@ -81,6 +81,27 @@ struct ChromeTheme {
     /// before anything is rebuilt.
     let sourceName: String
 
+    /// A fingerprint of every colour a view might draw with.
+    ///
+    /// For the caches that skip a redraw when nothing changed. `sourceName` is
+    /// not enough and object identity is not either: the same scheme yields
+    /// different colours at different opacity settings, because the text is
+    /// solved against what the rail composites to — and this is a value type
+    /// rebuilt wholesale, so two derivations of the same settings have to
+    /// compare equal rather than merely be the same instance.
+    nonisolated var signature: String {
+        [background, railBackground, text, mutedText, faintText, separator, hover, accent, onAccent]
+            .map { colour in
+                guard let srgb = colour.usingColorSpace(.sRGB) else { return "?" }
+                return String(
+                    format: "%02X%02X%02X",
+                    Int(srgb.redComponent * 255), Int(srgb.greenComponent * 255),
+                    Int(srgb.blueComponent * 255)
+                )
+            }
+            .joined(separator: "-")
+    }
+
     // MARK: - Glass
 
     /// The two coats the rail is painted with, as numbers rather than colours.

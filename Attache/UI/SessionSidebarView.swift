@@ -479,7 +479,25 @@ final class SessionSidebarView: NSView {
     /// draws the identical thing is not free, it is a flicker and a dropped
     /// click. tmux chatters, and the Git service has its own reasons to speak.
     private var drawnSignature: String {
-        var parts = [selectedID ?? "-"]
+        // **The theme is an input to what gets drawn, so it belongs here.**
+        // Leaving it out is what made a light/dark flip look half-applied: the
+        // rows resolve their colours once, at construction, and
+        // `applyChromeTheme` refreshes them by asking for a rebuild — which
+        // this signature then declined, because no session or window had
+        // changed. Every row kept whatever it last painted, and what it last
+        // painted was the *old* theme: AppKit delivers
+        // `viewDidChangeEffectiveAppearance` to the rows before the observer on
+        // `NSApp` has reloaded `ChromeTheme.current`. So the rail sat in the
+        // previous scheme's colours until something unrelated moved — a tmux
+        // notification, or a hover, which repaints one row and made the whole
+        // thing look like a hover effect. Reported 2026-08-25 with a screenshot
+        // of exactly two rows in the new colours: the two whose content had
+        // happened to change.
+        //
+        // The colours and not `sourceName`, because the same scheme now derives
+        // different text at different opacity settings — dragging either slider
+        // has the same problem and the same fix.
+        var parts = [ChromeTheme.current.signature, selectedID ?? "-"]
         for host in hostRows {
             parts.append("host:\(host.id)|\(host.name)|\(host.state ?? "-")|\(host.tone)")
         }
