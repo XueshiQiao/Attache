@@ -34,6 +34,22 @@ struct ChromeTheme {
     /// half and not one of the rail's. Both halves carry the same alpha now, so
     /// both show the same amount of what is behind the window, and the rail is
     /// simply painted in a darker colour.
+    ///
+    /// **How much darker is a perceptual step, not a fraction, and that was
+    /// worth a rewrite.** This used to be `blend(background, toward: .black,
+    /// by: 0.22)` — every channel multiplied by 0.78 — which makes the size of
+    /// the step proportional to how bright the background already is. On Ayu
+    /// that removed 5 of 255 levels and read as intended; on Ayu Light it
+    /// removed 53 and the rail became a slab of mid grey with everything on it
+    /// washed out. Measured 2026-08-25 against a screenshot: the rail sampled
+    /// (186,187,188), the window name 3.3:1 on it, the branch line 2.1:1 and
+    /// the row number 1.5:1 — against 9.9 / 6.8 / 4.6 for the same three roles
+    /// on the dark scheme. One rule, an order of magnitude apart.
+    ///
+    /// `deepened(_:by:)` moves a fixed distance in CIE L* instead, so "a step
+    /// deeper" means the same amount of *seen* darkening on either. Across the
+    /// 485-scheme catalog the step is now L* 5.5 everywhere it fits, against
+    /// 2.6 on the median dark scheme and 18.8 on the median light one before.
     let railBackground: NSColor
     /// Primary label colour — the scheme's own foreground.
     let text: NSColor
@@ -67,6 +83,28 @@ struct ChromeTheme {
 
     // MARK: - Derivation
 
+    /// How much deeper than the panes the rail is painted, in CIE L*.
+    ///
+    /// A perceptual distance rather than a fraction — see `railBackground` for
+    /// what a fraction did. 5.5 is the size of the step the dark schemes were
+    /// *supposed* to be getting: it leaves a boundary that is plainly there
+    /// without the rail reading as a separate window, and it is small enough
+    /// that all but the near-black schemes have room for it.
+    ///
+    /// This is a rendering calibration in the same sense as
+    /// `AppSettings.railCoatFullDepthExtra`: changing it changes what every
+    /// existing install looks like at a setting nobody touched.
+    private static let railStep: CGFloat = 5.5
+
+    /// Contrast floors for the two quiet text roles, against the rail they are
+    /// drawn on. 4.5:1 is the WCAG floor for body text and 3:1 for large text;
+    /// these sit deliberately below both, because these roles are *meant* to
+    /// recede and a floor that forced them to the body-text ratio would flatten
+    /// the hierarchy into three copies of the same tone. They are a floor on
+    /// "still legible", not a target.
+    private static let mutedFloor: CGFloat = 4.0
+    private static let faintFloor: CGFloat = 3.0
+
     init(definition: GhosttyThemeDefinition) {
         guard let terminalBackground = Self.color(hex: definition.background),
               let foreground = Self.color(hex: definition.foreground)
@@ -81,11 +119,7 @@ struct ChromeTheme {
 
         let background = Self.blend(terminalBackground, toward: foreground, by: 0.06)
         self.background = background
-        // Toward black rather than away from the foreground: "deeper" has to
-        // mean the same thing on a light scheme as on a dark one, and blending
-        // away from the foreground would lighten the rail on a light scheme —
-        // the opposite of what the divider is there to say.
-        railBackground = Self.blend(background, toward: .black, by: 0.22)
+        railBackground = Self.deepened(background, by: Self.railStep)
         text = foreground
         // 0.80 and 0.62, not the 0.60/0.40 these started at, and the reason is
         // that the surface underneath is not the colour they are derived from.
@@ -107,8 +141,29 @@ struct ChromeTheme {
         // wallpaper. These are chosen to fail toward "brighter than strictly
         // needed" on a dark backdrop rather than toward unreadable on a light
         // one.
-        mutedText = Self.blend(background, toward: foreground, by: 0.80)
-        faintText = Self.blend(background, toward: foreground, by: 0.62)
+        //
+        // And a fraction cannot be the whole answer for a second reason: a
+        // fraction of a *weak* pair is weaker still. Ayu Light's own
+        // foreground is 5.5:1 against its own background, so 62% of the way
+        // there is 2.6:1 before the rail is even accounted for. The floors
+        // below are what stop that, and they are capped in order — no tone may
+        // out-contrast the one above it — so a scheme that cannot reach them
+        // degrades into a flatter hierarchy rather than an inverted one.
+        // Measured across the 485-scheme catalog: the tertiary tone was under
+        // 3:1 on 64 of the 87 light schemes and is now under it on one, while
+        // 377 of the 398 dark schemes are untouched because they already
+        // cleared both floors.
+        let nameContrast = Self.contrastRatio(foreground, railBackground)
+        mutedText = Self.raised(
+            Self.blend(background, toward: foreground, by: 0.80),
+            from: background, toward: foreground,
+            on: railBackground, to: min(Self.mutedFloor, nameContrast)
+        )
+        faintText = Self.raised(
+            Self.blend(background, toward: foreground, by: 0.62),
+            from: background, toward: foreground,
+            on: railBackground, to: min(Self.faintFloor, Self.contrastRatio(mutedText, railBackground))
+        )
         separator = Self.blend(background, toward: foreground, by: 0.18)
         hover = Self.blend(background, toward: foreground, by: 0.09)
 
@@ -140,7 +195,7 @@ struct ChromeTheme {
         sourceName: String
     ) {
         self.background = background
-        railBackground = Self.blend(background, toward: .black, by: 0.22)
+        railBackground = Self.deepened(background, by: Self.railStep)
         self.text = text
         self.mutedText = mutedText
         self.faintText = faintText
@@ -213,6 +268,90 @@ struct ChromeTheme {
             blue: from.blueComponent + (to.blueComponent - from.blueComponent) * fraction,
             alpha: 1
         )
+    }
+
+    /// The colour with this one's hue, `amount` lower in CIE L* — or as far
+    /// down as there is room, when the background is already nearly black.
+    ///
+    /// Clamping rather than flipping to *lighter*, and that is the whole
+    /// difference between this and the obvious alternative. 56 of the catalog's
+    /// 398 dark schemes have a background below L* 5.5; letting those turn the
+    /// rail lighter than the panes would reverse what the boundary means on a
+    /// sixth of them, on no signal the user can see. Clamped, they get the step
+    /// they have room for — which for a scheme that dark is invisible either
+    /// way, and was invisible under the old rule too.
+    nonisolated private static func deepened(_ color: NSColor, by amount: CGFloat) -> NSColor {
+        scaled(color, toLightness: max(0, lightness(of: color) - amount))
+    }
+
+    /// CIE L*, from the same relative luminance the contrast ratio is built on.
+    nonisolated static func lightness(of color: NSColor) -> CGFloat {
+        let y = relativeLuminance(color)
+        return y > 0.008856 ? 116 * pow(y, 1.0 / 3.0) - 16 : 903.3 * y
+    }
+
+    /// `color` scaled until it lands on `target` L*.
+    ///
+    /// Scaling the *encoded* components rather than interpolating toward black
+    /// keeps every result on the ray from black through `color`, so the hue and
+    /// the ratio between channels survive — a rail derived from a blue-black
+    /// scheme stays blue-black. Bisected because L* is not invertible through
+    /// the sRGB transfer function in closed form, and 40 halvings of a range
+    /// that starts at 4 is far below a quantisation step.
+    nonisolated private static func scaled(_ color: NSColor, toLightness target: CGFloat) -> NSColor {
+        guard let srgb = color.usingColorSpace(.sRGB) else { return color }
+        var low: CGFloat = 0
+        var high: CGFloat = 4
+        var result = srgb
+        for _ in 0 ..< 40 {
+            let factor = (low + high) / 2
+            result = NSColor(
+                srgbRed: min(1, srgb.redComponent * factor),
+                green: min(1, srgb.greenComponent * factor),
+                blue: min(1, srgb.blueComponent * factor),
+                alpha: 1
+            )
+            if lightness(of: result) < target { low = factor } else { high = factor }
+        }
+        return result
+    }
+
+    /// `tone` pushed further along the ray it was already on until it clears
+    /// `floor` against the surface it will be drawn on.
+    ///
+    /// The rest of the way to `foreground` first; and past it, toward whichever
+    /// end of the range the surface is *not* at, for the schemes whose own
+    /// foreground does not clear the floor either — Ayu Light's is 5.5:1
+    /// against its own background, so 62% of it was never going to be legible
+    /// on a rail.
+    ///
+    /// Bisection is safe on a ratio that is not monotonic along this ray. It
+    /// dips to 1:1 where the ray crosses the surface's own luminance and rises
+    /// on both sides, so there are two crossings for a floor below
+    /// `contrastRatio(background, surface)` and exactly one above it. That
+    /// quantity is the rail's own step — at most about 1.1:1 — and both floors
+    /// are far above it.
+    nonisolated private static func raised(
+        _ tone: NSColor, from background: NSColor, toward foreground: NSColor,
+        on surface: NSColor, to floor: CGFloat
+    ) -> NSColor {
+        guard contrastRatio(tone, surface) < floor else { return tone }
+        let foregroundReaches = contrastRatio(foreground, surface) >= floor
+        let start = foregroundReaches ? background : foreground
+        let end: NSColor = foregroundReaches
+            ? foreground
+            : (lightness(of: surface) < 50 ? .white : .black)
+        var low: CGFloat = 0
+        var high: CGFloat = 1
+        for _ in 0 ..< 30 {
+            let mid = (low + high) / 2
+            if contrastRatio(blend(start, toward: end, by: mid), surface) < floor {
+                low = mid
+            } else {
+                high = mid
+            }
+        }
+        return blend(start, toward: end, by: high)
     }
 
     /// WCAG relative luminance.

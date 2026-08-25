@@ -272,6 +272,39 @@ swiftc -O -o /tmp/helpercheck Attache/Tmux/TmuxLog.swift \
 /tmp/helpercheck
 ```
 
+**`ChromeTheme` has one, and it runs against all 485 schemes rather than a
+fixture.** The chrome's colours are derived from whichever scheme the user
+picked, so a rule that looks right on the two an agent has open can be wrong on
+a hundred others — and wrong in a way nobody reports, because text that is
+merely hard to read reads as a theme, not as a bug. That is how the rail's depth
+stayed broken: `blend(background, toward: .black, by: 0.22)` scales the step by
+how bright the background already is, so it removed 5 of 255 levels on a dark
+scheme and 53 on a light one. Measured 2026-08-25 from a screenshot, the light
+rail sampled (186,187,188) with the row numbers at 1.5:1 on it, against
+9.9 / 6.8 / 4.6 for the same three roles on the dark scheme.
+
+Four properties are under test and none can be stated about a single scheme: the
+rail is never lighter than the panes (the "flip when there is no room" variant
+reverses it on 56 dark schemes), the step is the same L* everywhere it fits, the
+three text roles never swap order, and the contrast floors are actually reached
+wherever the scheme has the headroom. It links the package products a normal
+build already made, because reading the real catalog is the point:
+
+```sh
+swiftc -O -o /tmp/chromethemecheck -I /tmp/dd/Build/Products/Debug \
+  -Xcc -I -Xcc /tmp/dd/Build/Products/Debug/include \
+  Attache/Settings/ChromeTheme.swift Tools/ChromeThemeCheck/main.swift \
+  /tmp/dd/Build/Products/Debug/{GhosttyTheme,GhosttyTerminal,GhosttyKit,MSDisplayLink}.o \
+  /tmp/dd/Build/Products/Debug/libghostty.a
+/tmp/chromethemecheck
+```
+
+Confirm it still bites the way `PipeReadCheck` is confirmed — by mutation, not
+by reading it. Measured 2026-08-25: putting the old `blend(background, toward:
+.black, by: 0.22)` back fails **484 of 485 schemes**, and setting both text
+floors to 0 fails **96 assertions across 57 schemes**; unmutated it is
+`485 schemes (398 dark, 87 light), all pass`, exit 0.
+
 **`TerminalLinkTarget` has one, and it decides what a click opens on the user's
 machine.** libghostty matches the link and draws the underline; this turns the
 matched string into a file, a directory, a URL or nothing. The two directions
