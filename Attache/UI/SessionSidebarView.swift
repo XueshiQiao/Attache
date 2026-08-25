@@ -75,6 +75,14 @@ final class SessionSidebarView: NSView {
     var onRestoreHidden: ((String) -> Void)?
     /// A down host's row was clicked: try its connection again now.
     var onHostRetry: ((String) -> Void)?
+    /// The rail's own door into host management. The button under the list;
+    /// the rest are the items on a remote heading's context menu. All of
+    /// them lead by host id and none of them act here — the rail draws the
+    /// host tier but has never owned it.
+    var onAddServer: (() -> Void)?
+    var onHostReconnect: ((String) -> Void)?
+    var onHostEdit: ((String) -> Void)?
+    var onHostRemove: ((String) -> Void)?
 
     /// One machine's heading, when the rail draws the host tier at all — it
     /// exists only while a `[[host]]` is configured, so a local-only rail
@@ -88,6 +96,9 @@ final class SessionSidebarView: NSView {
         /// Wires the click. True only when down — a healthy heading is not a
         /// button.
         let canRetry: Bool
+        /// Whether the heading carries the host context menu. False for the
+        /// local machine, which cannot be edited, reconnected or removed.
+        let isRemote: Bool
     }
 
     /// One session, and everything the rail needs to draw it expanded.
@@ -125,6 +136,10 @@ final class SessionSidebarView: NSView {
     }
 
     private let newButton = NSButton()
+    /// Under "+ New session": the discoverable way in. The context menu on a
+    /// host heading only exists once a host does; this button is how the
+    /// first one gets made.
+    private let addServerButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
     /// The account's rate-limit windows. They sit at the foot of the rail
@@ -309,6 +324,15 @@ final class SessionSidebarView: NSView {
         newButton.action = #selector(newClicked)
         addSubview(newButton)
 
+        addServerButton.title = "+  Add server…"
+        addServerButton.font = .systemFont(ofSize: 11.5)
+        addServerButton.isBordered = false
+        addServerButton.bezelStyle = .inline
+        addServerButton.alignment = .left
+        addServerButton.target = self
+        addServerButton.action = #selector(addServerClicked)
+        addSubview(addServerButton)
+
         // Status lives here rather than in a title bar, since there is no
         // title bar. Two lines: what the app is showing, and how fast bytes
         // are arriving.
@@ -334,6 +358,7 @@ final class SessionSidebarView: NSView {
     func applyChromeTheme() {
         let theme = ChromeTheme.current
         newButton.contentTintColor = theme.faintText
+        addServerButton.contentTintColor = theme.faintText
         statusLabel.textColor = theme.mutedText
         detailLabel.textColor = theme.faintText
         fiveHourGauge.applyTheme()
@@ -527,6 +552,12 @@ final class SessionSidebarView: NSView {
                 if host.canRetry {
                     row.onRetry = { [weak self] in self?.onHostRetry?(host.id) }
                 }
+                if host.isRemote {
+                    row.onContextMenu = { [weak self, weak row] point in
+                        guard let row else { return }
+                        self?.showMenu(forHost: host.id, at: point, from: row)
+                    }
+                }
                 rowsView.addSubview(row)
                 rows.append(.host(row))
             }
@@ -649,7 +680,8 @@ final class SessionSidebarView: NSView {
 
         detailLabel.frame = CGRect(x: inset, y: bounds.maxY - 26, width: width, height: 14)
         statusLabel.frame = CGRect(x: inset, y: bounds.maxY - 62, width: width, height: 32)
-        newButton.frame = CGRect(x: inset, y: bounds.maxY - 96, width: width, height: 26)
+        addServerButton.frame = CGRect(x: inset, y: bounds.maxY - 92, width: width, height: 26)
+        newButton.frame = CGRect(x: inset, y: bounds.maxY - 118, width: width, height: 26)
 
         // Above the button, and only when there is something to show. A hidden
         // gauge gives its height back to the window list rather than leaving a
@@ -738,16 +770,18 @@ final class SessionSidebarView: NSView {
     /// ends and the terminal begins once neither has a fill of its own.
     ///
     /// **This fill lands on top of the window's own `backgroundColor`, not on
-    /// the desktop.** That is why `railFill` carries `railFillAlpha` and not
-    /// `railOpacity` — a second coat at the first one's alpha squares how much
-    /// backdrop is left, and the rail spent a long time far deeper than it was
-    /// ever asked to be. See `AppSettings.railFillAlpha` for the measurement.
+    /// the desktop.** That is why `railFill` carries `railFillAlpha` rather
+    /// than the opacity the rail is meant to end up at — a second coat at the
+    /// first one's alpha squares how much backdrop is left, and the rail spent
+    /// a long time far deeper than it was ever asked to be. See
+    /// `AppSettings.railFillAlpha` for the measurement.
     override func draw(_ dirtyRect: NSRect) {
         WindowGlass.resolved().railFill.setFill()
         dirtyRect.fill()
     }
 
     @objc private func newClicked() { onNew?() }
+    @objc private func addServerClicked() { onAddServer?() }
 
     /// Open or close a session's window list.
     ///
@@ -870,6 +904,48 @@ final class SessionSidebarView: NSView {
     @objc private func killFromMenu(_ sender: NSMenuItem) {
         guard let target = sender.representedObject as? WindowTarget else { return }
         onKillWindow?(target.session, target.id)
+    }
+
+    // MARK: - Host context menu
+
+    /// Remote headings only — the local machine has nothing here to
+    /// reconnect, edit or remove. Removal is the one destructive-looking
+    /// item, so it sits alone under a separator and keeps the ellipsis: the
+    /// receiver confirms before anything is written.
+    private func showMenu(forHost id: String, at point: NSPoint, from row: NSView) {
+        let menu = NSMenu()
+        for (title, action) in [
+            ("Reconnect", #selector(reconnectHostFromMenu(_:))),
+            ("Edit Host…", #selector(editHostFromMenu(_:))),
+        ] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = id
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let remove = NSMenuItem(
+            title: "Remove Host…", action: #selector(removeHostFromMenu(_:)), keyEquivalent: ""
+        )
+        remove.target = self
+        remove.representedObject = id
+        menu.addItem(remove)
+        menu.popUp(positioning: nil, at: point, in: row)
+    }
+
+    @objc private func reconnectHostFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        onHostReconnect?(id)
+    }
+
+    @objc private func editHostFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        onHostEdit?(id)
+    }
+
+    @objc private func removeHostFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        onHostRemove?(id)
     }
 
     // MARK: - Reorder

@@ -447,12 +447,29 @@ enum AppSettings {
         }
     }
 
-    /// The opacity the rail is meant to *end up* at — the window's own plus
-    /// the sidebar's extra. What the rail's fill is painted with is
-    /// `railFillAlpha`, not this, wherever something else has already put a
-    /// coat down.
-    static var railOpacity: CGFloat {
-        min(1.0, windowOpacity + railExtraOpacity)
+    /// The extra at which the rail's coat reaches `railBackground` in full.
+    ///
+    /// A rendering calibration, and deliberately **not**
+    /// `railExtraOpacityRange.upperBound` even though the two are equal today.
+    /// The range is a UI bound and a clamp on what gets stored; this decides
+    /// what a stored value looks like. Tying the ramp to the range means
+    /// widening the slider later — to expose more opacity, say — would silently
+    /// re-render every existing install lighter at a setting nobody touched:
+    /// `railFillAlpha` is `extra/(1-a)` and would not move, while the depth
+    /// fell from `extra/0.5` to `extra/newBound`. Raised in review, and it is
+    /// the same class of quiet preference loss as a renamed key.
+    ///
+    /// Changing this number is therefore a change to what people's saved
+    /// settings look like, and has to be treated as one.
+    static let railCoatFullDepthExtra: CGFloat = 0.5
+
+    /// How far the rail's coat is ramped toward `railBackground`: the extra
+    /// against `railCoatFullDepthExtra`, so the slider's position and the
+    /// colour's depth are the same number. Paired with `railFillAlpha`, never
+    /// alone — see there for why the two are separate quantities.
+    static var railCoatDepth: CGFloat {
+        guard railCoatFullDepthExtra > 0 else { return 0 }
+        return min(1, railExtraOpacity / railCoatFullDepthExtra)
     }
 
     /// The alpha the rail's own fill goes on at, corrected for the coat that is
@@ -473,13 +490,34 @@ enum AppSettings {
     /// coats put them 0.4% apart.
     ///
     /// Solving `(1-a)(1-s) = 1-(a+extra)` for the second coat gives
-    /// `s = extra/(1-a)`, which is this. Two consequences worth knowing:
+    /// `s = extra/(1-a)`, which is this. Three consequences, and the third is
+    /// the one that surprises.
+    ///
     /// `extra = 0` paints nothing at all, so the rail is exactly the panes'
-    /// colour and the halves stop being distinguishable; and the correction is
-    /// on the alpha only, so the composite is a blend of `background` and
-    /// `railBackground` rather than pure `railBackground` — computed across the
-    /// slider's range that is under 3/255, which is below what the eye resolves
-    /// on a flat field.
+    /// colour and the halves stop being distinguishable. That is the setting
+    /// doing what its own readout says — the slider shows "same" at that end.
+    ///
+    /// The rail therefore never reaches a pure `railBackground` except at the
+    /// top of the slider: below that the composite is a blend of it and
+    /// `background`, from the coat's own ramp and from whatever the coat does
+    /// not cover. Measured against the pure colour across the slider's range,
+    /// the difference is under 2/255 wherever the alpha has not saturated and
+    /// about 5/255 where it has — the latter being the proportion the slider
+    /// was asked for rather than an error.
+    ///
+    /// **This alpha saturates at `extra == 1 - a`**, and how early depends on
+    /// the other slider — at 35% window opacity never, at 55% the last tenth of
+    /// the range, at 70% the last two fifths, at 90% the last four fifths, and
+    /// at 100% immediately.
+    ///
+    /// That is why the coat's *colour* is a ramp and not the fixed
+    /// `railBackground` — see `ChromeTheme.railCoat(depth:)`. Alpha alone
+    /// cannot be continuous at a fully opaque window, where it is 0 at
+    /// `extra == 0` and 1 for every positive extra; the colour ramp carries the
+    /// slider's proportion through the saturated region so the two together
+    /// stay continuous along both axes and into the `(1, 0)` corner from any
+    /// direction. Found by an independent review after a first version left the
+    /// step in place and documented it as unavoidable. It was not.
     static var railFillAlpha: CGFloat {
         let base = windowOpacity
         // An opaque window has no backdrop left to protect; the fill simply has

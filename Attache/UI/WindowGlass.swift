@@ -32,8 +32,9 @@ enum WindowGlass {
         /// the content half ends up showing: nothing in that half paints, so
         /// this is its one and only coat.
         let paneFill: NSColor
-        /// What the rail fills, at the alpha a *second* coat needs to reach
-        /// `AppSettings.railOpacity` over the window's own — see
+        /// What the rail fills: `ChromeTheme.railCoat(depth:)` at the alpha a
+        /// *second* coat needs so the pair lands on
+        /// `min(1, windowOpacity + railExtraOpacity)` — see
         /// `AppSettings.railFillAlpha`. Deeper than `paneFill` by
         /// `AppSettings.railExtraOpacity`, which since the divider line went
         /// away is the only thing marking where one half ends.
@@ -46,12 +47,17 @@ enum WindowGlass {
         let theme = ChromeTheme.current
         return Resolved(
             paneFill: theme.background.withAlphaComponent(AppSettings.windowOpacity),
-            // Not `railOpacity`. The rail is painted on top of `paneFill`, so
-            // the alpha it goes on at has to be the one that lands the *pair*
-            // of coats on `railOpacity` — using the total here is the
-            // double-coat defect, where the rail squared how much backdrop it
-            // let through while the panes only halved it.
-            railFill: theme.railBackground.withAlphaComponent(AppSettings.railFillAlpha),
+            // Two quantities, and they are separate on purpose. The alpha is
+            // not `min(1, windowOpacity + railExtraOpacity)`: the rail is
+            // painted on top of `paneFill`, so it has to be the alpha that
+            // lands the *pair* of coats on that total — using the total itself
+            // is the double-coat defect, where the rail squared how much
+            // backdrop it let through while the panes only halved it. The
+            // colour is a ramp rather than `railBackground`, because the alpha
+            // saturates at a fully opaque window and a fixed colour would make
+            // the slider an on/off switch there.
+            railFill: theme.railCoat(depth: AppSettings.railCoatDepth)
+                .withAlphaComponent(AppSettings.railFillAlpha),
             blurRadius: AppSettings.blurRadius
         )
     }

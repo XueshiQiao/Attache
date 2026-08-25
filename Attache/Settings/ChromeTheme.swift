@@ -167,6 +167,28 @@ struct ChromeTheme {
         sourceName: ""
     )
 
+    /// The colour the rail's own coat is painted in, `depth` of the way from
+    /// the panes' colour to the rail's.
+    ///
+    /// A ramp rather than the fixed `railBackground`, and the reason is the one
+    /// corner where a fixed colour cannot be made continuous. The coat's
+    /// *alpha* has to be `extra/(1-windowOpacity)` for the pair of coats to
+    /// land on the right opacity — see `AppSettings.railFillAlpha` — and at a
+    /// fully opaque window that expression saturates for every positive extra,
+    /// so a fixed colour turns a percentage slider into an on/off switch: the
+    /// whole rail flips to `railBackground` the moment the slider leaves zero.
+    ///
+    /// Ramping the colour by the extra's own fraction of its range fixes it
+    /// from every direction. Zero still paints the panes' colour, a small extra
+    /// is a small step, and pushing the *window* opacity to 1 at a fixed extra
+    /// changes nothing — this depth does not depend on it. Raised by an
+    /// independent review, which also showed why the obvious alternative
+    /// (scaling the alpha by the extra's range only at opacity 1) merely moves
+    /// the jump onto the window-opacity slider.
+    nonisolated func railCoat(depth: CGFloat) -> NSColor {
+        Self.blend(background, toward: railBackground, by: max(0, min(1, depth)))
+    }
+
     // MARK: - Colour arithmetic
 
     /// Themes store `rrggbb`, occasionally with a leading `#`.
