@@ -299,25 +299,31 @@ scheme and 53 on a light one. Measured 2026-08-25 from a screenshot, the light
 rail sampled (186,187,188) with the row numbers at 1.5:1 on it, against
 9.9 / 6.8 / 4.6 for the same three roles on the dark scheme.
 
-Six properties are under test and none can be stated about a single scheme: the
-rail is never lighter than the panes (the "flip when there is no room" variant
-reverses it on 56 dark schemes), the step is the same L* everywhere it fits, the
-primary text is legible at all, the three text roles never swap order, the
-contrast floors are actually reached wherever the scheme has the headroom, and
-the selected row's own label clears 3:1 on the accent it sits on.
+Five properties are under test and none can be stated about a single scheme,
+or at a single setting: the rail is never lighter than the panes (the "flip
+when there is no room" variant reverses it on 56 dark schemes), the step is the
+same L* everywhere it fits, the three text roles stay ordered and stay
+distinguishable from the rail across the whole of both opacity sliders, the
+primary role gets everything the ink can give it, and the selected row's own
+label clears 3:1 on the accent it sits on.
 
-The third of those looks redundant beside the fifth and is the opposite: each
-floor is capped by the role above it, so a broken primary drags its own cap
-down and every other case passes on text nobody can read. It was added after a
-mutation — flipping the appearance the chrome's ink resolves against, which is
-white text on a light rail — reported six failures across 485 schemes. It now
-reports 490.
+**The text cases are measured on the composited rail, not on the paint.** That
+distinction is the whole of one defect: the rail is two translucent coats over
+a wallpaper, so at the shipped 55% / 10% a dark scheme's rail arrives at
+(103,105,108) over a bright desktop, and a tertiary tone solved against the
+paint colour (10,11,13) landed on (104,105,107) — **1.01:1, drawn in the colour
+of the thing it was drawn on**, with the row numbers simply absent. The
+wallpaper is unknowable, so the derivation solves against the worst backdrop
+for the ink it carries and fails toward "brighter than strictly needed" on a
+friendly desktop.
 
-All six are statements about the colours the chrome is *painted* in. The rail
-is translucent and what the text lands on is that paint over a blurred desktop,
-which no check here can see: measured 2026-08-25 on Ayu at 55% / 10%, the
-tertiary tone is 4.7:1 over a black desktop and 1.4:1 over a white one. The
-floors narrow that range; they do not close it.
+Two of the cases look redundant and are the opposite. Each floor is capped by
+the role above it, so a broken primary drags its own cap down and every other
+case passes on text nobody can read — that is why the primary has a case of its
+own. And the floors taper with the ceiling, so out across the sliders the
+assertion is "the derivation spent everything the ink had", not a fixed ratio:
+at 20% opacity over a white desktop pure white manages 1.9:1 on a dark scheme's
+rail, and demanding more would be demanding the impossible.
 
 It links the package products a normal build already made, because reading the
 real catalog is the point:
@@ -332,12 +338,15 @@ swiftc -O -o /tmp/chromethemecheck -I /tmp/dd/Build/Products/Debug \
 ```
 
 Confirm it still bites the way `PipeReadCheck` is confirmed — by mutation, not
-by reading it. Measured 2026-08-25, one mutation per rule: putting the old
-`blend(background, toward: .black, by: 0.22)` back fails **483**, setting both
-text floors to 0 fails **579**, flipping the appearance in
-`systemInk(on:drawnOn:)` fails **490**, and restoring the old `onAccentSplit`
-of 0.45 fails **61**. Unmutated it is `485 schemes (398 dark, 87 light), all
-pass`, exit 0.
+by reading it. Measured 2026-08-25, one per rule: solving the text against
+`railBackground` instead of the composite fails **2524**, dropping the primary
+role's floor fails **1606**, putting the old `blend(background, toward: .black,
+by: 0.22)` back fails **483**, and restoring the old `onAccentSplit` of 0.45
+fails **61**. Inverting the appearance test in `systemInk(on:drawnOn:)` fails
+only **4**, and that is the finding rather than a weak case: since the floors
+are solved on the composite they walk a wrong-way tone out the other side, so
+that choice buys the system's own calibration rather than legibility.
+Unmutated it is `485 schemes (398 dark, 87 light), all pass`, exit 0.
 
 **`TerminalLinkTarget` has one, and it decides what a click opens on the user's
 machine.** libghostty matches the link and draws the underline; this turns the

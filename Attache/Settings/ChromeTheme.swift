@@ -65,10 +65,50 @@ struct ChromeTheme {
     let accent: NSColor
     /// Black or white, whichever is readable on `accent`.
     let onAccent: NSColor
+    /// The surface the three text roles were solved against: the rail as it
+    /// composites at the current glass setting over the worst backdrop for the
+    /// ink it carries. Kept because it is the only place the answer to "what
+    /// will this text actually sit on" exists, and a check that measures
+    /// contrast anywhere else is measuring the wrong thing.
+    let textSurface: NSColor
+    /// Black or white — the far end of the ray all three text roles sit on, and
+    /// therefore the most contrast this scheme can possibly get on
+    /// `textSurface`. Kept so a check can tell "this tone fell short" from
+    /// "nothing could have reached it".
+    let textInk: NSColor
     /// The scheme these colours were derived from. Kept so an appearance
     /// change can be tested for whether it selects a different scheme at all
     /// before anything is rebuilt.
     let sourceName: String
+
+    // MARK: - Glass
+
+    /// The two coats the rail is painted with, as numbers rather than colours.
+    ///
+    /// `ChromeTheme` needs these because the text has to be solved against the
+    /// surface it will actually land on, and that surface is not
+    /// `railBackground` — the rail is translucent, so what a label sits on is
+    /// the paint plus whatever fraction of the desktop the sliders let through.
+    /// `WindowGlass` owns the same three numbers for the drawing side; they are
+    /// passed in rather than read here so the check tool can drive the whole
+    /// slider range without a settings file.
+    struct Glass {
+        /// `AppSettings.windowOpacity` — the first coat, which AppKit puts
+        /// across the whole window.
+        let windowOpacity: CGFloat
+        /// `AppSettings.railCoatDepth` — how far the second coat's colour is
+        /// ramped from the panes' toward the rail's.
+        let coatDepth: CGFloat
+        /// `AppSettings.railFillAlpha` — the second coat's own alpha, already
+        /// corrected for the first.
+        let coatAlpha: CGFloat
+
+        /// A window with no translucency at all, where the rail really is
+        /// `railBackground`. The fallback theme uses it, and it is the case
+        /// every number in this file was written against before the sliders
+        /// were part of the derivation.
+        static let opaque = Glass(windowOpacity: 1, coatDepth: 1, coatAlpha: 1)
+    }
 
     // MARK: - Current
 
@@ -78,7 +118,14 @@ struct ChromeTheme {
 
     @MainActor
     static func reload() {
-        current = ChromeTheme(definition: AppSettings.effectiveThemeDefinition())
+        current = ChromeTheme(
+            definition: AppSettings.effectiveThemeDefinition(),
+            glass: Glass(
+                windowOpacity: AppSettings.windowOpacity,
+                coatDepth: AppSettings.railCoatDepth,
+                coatAlpha: AppSettings.railFillAlpha
+            )
+        )
     }
 
     // MARK: - Derivation
@@ -132,8 +179,30 @@ struct ChromeTheme {
     /// means the floors would have to move with the opacity sliders and be
     /// solved against a worst-case backdrop — a change to when the theme is
     /// rebuilt, not to the arithmetic here.
+    /// 4.5:1 is WCAG's floor for body text, and the window name is the one
+    /// role in the rail that is body text.
+    private static let textFloor: CGFloat = 4.5
     private static let mutedFloor: CGFloat = 5.0
     private static let faintFloor: CGFloat = 3.6
+
+    /// How far down from the role above it a floor is allowed to reach when
+    /// the scheme and the sliders leave no room for the number above.
+    ///
+    /// The floors are absolute and the headroom is not. Over a bright desktop
+    /// at a low opacity the rail composites to a mid grey and the *loudest*
+    /// tone only manages 4.5:1 — asking the secondary for 5.0 there makes it
+    /// the same colour as the name, and the hierarchy is gone in the other
+    /// direction. Contrast ratios compose multiplicatively, so a proportional
+    /// cap is `ceiling ^ taper`: at 0.8 a ceiling of 13.6 permits 8.1 (the
+    /// absolute 5.0 still wins) and a ceiling of 4.5 permits 3.3 (which wins
+    /// instead). Chosen so the shipped defaults over a dark desktop keep
+    /// exactly the floors they had — 5.0 and 3.6 — rather than being taxed by
+    /// a rule that only needs to bite at the bad end.
+    private static let floorTaper: CGFloat = 0.8
+
+    nonisolated private static func tapered(_ ceiling: CGFloat) -> CGFloat {
+        pow(max(1, ceiling), floorTaper)
+    }
 
     /// The accent luminance at which the selected row's label flips from white
     /// to black.
@@ -158,7 +227,7 @@ struct ChromeTheme {
     /// review's re-implementation.
     private static let onAccentSplit: CGFloat = 0.30
 
-    init(definition: GhosttyThemeDefinition) {
+    init(definition: GhosttyThemeDefinition, glass: Glass) {
         guard let terminalBackground = Self.color(hex: definition.background),
               let foreground = Self.color(hex: definition.foreground)
         else {
@@ -175,9 +244,29 @@ struct ChromeTheme {
         railBackground = Self.deepened(background, by: Self.railStep)
         // The three text roles are the system's, not the scheme's, and which
         // half of the system's they are is decided by the terminal background
-        // rather than by the appearance setting — see `systemInk(on:)`.
-        let ink = Self.systemInk(on: background, drawnOn: railBackground)
-        text = ink.label
+        // rather than by the appearance setting — see `systemInk(on:drawnOn:)`.
+        //
+        // `worstLit` and not `railBackground`, and that distinction is the
+        // whole of the second fix here. See `railComposite(...)`.
+        let worstLit = Self.railComposite(
+            background: background, rail: railBackground, glass: glass,
+            over: Self.lightness(of: background) >= 50 ? .black : .white
+        )
+        textSurface = worstLit
+        let ink = Self.systemInk(on: background, drawnOn: worstLit)
+        textInk = ink.pure
+        // The loud role gets a floor too, and it needs one for the same reason
+        // the quiet ones do. `labelColor` is the system's ink at 85%, which is
+        // calibrated against an opaque system background; on a rail that a
+        // bright desktop has lifted to a mid grey those last 15 percentage
+        // points are the difference between 3.5:1 and 4.8:1. Measured on
+        // Dracula at the shipped 55% / 10% over a white desktop: the rail
+        // arrives at (116,118,124), `labelColor` gives 3.49:1 and pure white
+        // 4.77:1. When even the pure ink cannot reach the floor, `raised`
+        // returns the pure ink, which is all there is.
+        text = Self.raised(
+            ink.label, from: worstLit, toward: ink.pure, on: worstLit, to: Self.textFloor
+        )
         // **These used to be blends of the scheme's own foreground, and that
         // is what made a light scheme unreadable.** A blend of a weak pair is
         // weaker still: Ayu Light's foreground is `#5c6166`, only 5.5:1
@@ -210,16 +299,17 @@ struct ChromeTheme {
         // tone is black or white at some alpha over the rail, and `raised`
         // walks further along that same ray until it clears. Capped in order,
         // so no tone can out-contrast the one above it.
-        let nameContrast = Self.contrastRatio(ink.label, railBackground)
+        let nameContrast = Self.contrastRatio(text, worstLit)
         mutedText = Self.raised(
             ink.secondary,
-            from: railBackground, toward: ink.pure,
-            on: railBackground, to: min(Self.mutedFloor, nameContrast)
+            from: worstLit, toward: ink.pure,
+            on: worstLit, to: min(Self.mutedFloor, Self.tapered(nameContrast))
         )
+        let mutedContrast = Self.contrastRatio(mutedText, worstLit)
         faintText = Self.raised(
             ink.tertiary,
-            from: railBackground, toward: ink.pure,
-            on: railBackground, to: min(Self.faintFloor, Self.contrastRatio(mutedText, railBackground))
+            from: worstLit, toward: ink.pure,
+            on: worstLit, to: min(Self.faintFloor, Self.tapered(mutedContrast))
         )
         separator = Self.blend(background, toward: foreground, by: 0.18)
         hover = Self.blend(background, toward: foreground, by: 0.09)
@@ -254,6 +344,10 @@ struct ChromeTheme {
     ) {
         self.background = background
         railBackground = Self.deepened(background, by: Self.railStep)
+        // This initialiser is handed finished colours, so there is nothing to
+        // solve and the paint is the surface.
+        textSurface = railBackground
+        textInk = Self.lightness(of: background) >= 50 ? .black : .white
         self.text = text
         self.mutedText = mutedText
         self.faintText = faintText
@@ -328,6 +422,54 @@ struct ChromeTheme {
         )
     }
 
+    /// What the rail actually looks like, given the sliders and the least
+    /// helpful thing that could be behind the window.
+    ///
+    /// **The rail is painted twice over a desktop, and the text lands on the
+    /// result rather than on the paint.** `AppSettings.railFillAlpha` records
+    /// the two coats; what falls out of them is
+    ///
+    ///     backdrop·(1-a)(1-s) + background·a(1-s) + coat·s
+    ///
+    /// and `(1-a)(1-s)` is `1 - (windowOpacity + railExtraOpacity)` — the
+    /// fraction of the desktop the user asked to keep. At the shipped 55% / 10%
+    /// that is 35%, so over a bright wallpaper a rail painted (10,11,13)
+    /// arrives at **(103,105,108)**. Solving the text against the paint instead
+    /// put the tertiary tone at (104,105,107) — measured 2026-08-25 against a
+    /// screenshot, **1.01:1**, the same colour as the surface it was drawn on,
+    /// and the row numbers were simply not there.
+    ///
+    /// The backdrop is genuinely unknowable — it is the user's wallpaper and it
+    /// changes as the window moves — so this takes the worst one for the ink
+    /// that is about to be used: white behind a dark scheme, black behind a
+    /// light one. That direction is deliberate and is the rule the file already
+    /// followed for the old fractions: fail toward *brighter than strictly
+    /// needed* on a friendly desktop rather than toward invisible on a hostile
+    /// one. A dark wallpaper therefore gets quiet text that is a little louder
+    /// than it had to be, which is a cosmetic cost; the other way round is text
+    /// that is not there.
+    nonisolated private static func railComposite(
+        background: NSColor, rail: NSColor, glass: Glass, over backdrop: NSColor
+    ) -> NSColor {
+        guard let pane = background.usingColorSpace(.sRGB),
+              let coat = blend(background, toward: rail, by: max(0, min(1, glass.coatDepth)))
+                  .usingColorSpace(.sRGB),
+              let desktop = backdrop.usingColorSpace(.sRGB)
+        else { return rail }
+        let a = max(0, min(1, glass.windowOpacity))
+        let s = max(0, min(1, glass.coatAlpha))
+        let transmitted = (1 - a) * (1 - s)
+        func channel(_ desk: CGFloat, _ pane: CGFloat, _ coat: CGFloat) -> CGFloat {
+            desk * transmitted + pane * a * (1 - s) + coat * s
+        }
+        return NSColor(
+            srgbRed: channel(desktop.redComponent, pane.redComponent, coat.redComponent),
+            green: channel(desktop.greenComponent, pane.greenComponent, coat.greenComponent),
+            blue: channel(desktop.blueComponent, pane.blueComponent, coat.blueComponent),
+            alpha: 1
+        )
+    }
+
     /// The system's three label tones, resolved against the appearance the
     /// *terminal background* implies and flattened onto the surface they will
     /// be drawn on.
@@ -338,10 +480,20 @@ struct ChromeTheme {
     /// app's own appearance preference already picks which of the two schemes
     /// is showing, so the two normally agree — but nothing stops someone
     /// naming a dark scheme in `light_theme`, and then a system label resolved
-    /// against the *app's* appearance would be dark ink on a dark rail. Asking
-    /// the colour that is actually about to be behind the text removes that
-    /// case rather than documenting it. Ghostty does the same thing in
-    /// `NSAppearance(ghosttyConfig:)`, from the same input.
+    /// against the *app's* appearance would be the wrong ink for the rail.
+    /// Ghostty does the same thing in `NSAppearance(ghosttyConfig:)`, from the
+    /// same input.
+    ///
+    /// What getting it wrong costs is smaller than it looks, and the honest
+    /// version is worth writing down: since the floors are solved against the
+    /// composited rail, `raised` walks a wrong-way tone across the surface and
+    /// out the other side, so the text stays legible either way. Measured by
+    /// mutation 2026-08-25 — inverting the test below moves the shipped
+    /// schemes' numbers and trips the pinned cases, and nothing else across
+    /// 485 schemes. So this is about keeping the system's *own* calibration:
+    /// with the right appearance the three roles are macOS's alphas of the
+    /// right ink, and with the wrong one every one of them is rebuilt from
+    /// scratch at the bare floor.
     ///
     /// **Flattened rather than left with their alpha**, because every other
     /// colour on this type is opaque and a dozen call sites say

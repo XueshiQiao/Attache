@@ -50,6 +50,13 @@ enum AppSettings {
     @MainActor static func effectiveThemeDefinition() -> GhosttyThemeDefinition {
         GhosttyThemeCatalog.allThemes[0]
     }
+    // Only `reload()` reads these, and this tool never calls it — every case
+    // below constructs a theme with an explicit `Glass` instead, which is the
+    // point: the settings are an input to the derivation now, so they have to
+    // be driven rather than read.
+    static let windowOpacity: CGFloat = 1
+    static let railCoatDepth: CGFloat = 1
+    static let railFillAlpha: CGFloat = 1
 }
 
 // MARK: - Reading the result
@@ -66,8 +73,16 @@ struct Derived {
     let accent: NSColor
     let onAccent: NSColor
 
-    init(_ definition: GhosttyThemeDefinition) {
-        let theme = ChromeTheme(definition: definition)
+    /// The surface the three text roles were solved against — the rail as it
+    /// composites at this glass setting over the worst backdrop for its ink.
+    /// Every contrast below is measured here rather than on `rail`, because
+    /// that is the thing a person looks at.
+    let surface: NSColor
+    /// Black or white — the most any tone here could possibly manage.
+    let ink: NSColor
+
+    init(_ definition: GhosttyThemeDefinition, glass: ChromeTheme.Glass) {
+        let theme = ChromeTheme(definition: definition, glass: glass)
         name = definition.name
         background = theme.background
         rail = theme.railBackground
@@ -77,15 +92,46 @@ struct Derived {
         accent = theme.accent
         onAccent = theme.onAccent
         isDark = ChromeTheme.lightness(of: theme.background) < 50
+        surface = theme.textSurface
+        ink = theme.textInk
     }
 
     var step: CGFloat {
         ChromeTheme.lightness(of: background) - ChromeTheme.lightness(of: rail)
     }
-    var textContrast: CGFloat { ChromeTheme.contrastRatio(text, rail) }
-    var mutedContrast: CGFloat { ChromeTheme.contrastRatio(muted, rail) }
-    var faintContrast: CGFloat { ChromeTheme.contrastRatio(faint, rail) }
+    var textContrast: CGFloat { ChromeTheme.contrastRatio(text, surface) }
+    var mutedContrast: CGFloat { ChromeTheme.contrastRatio(muted, surface) }
+    var faintContrast: CGFloat { ChromeTheme.contrastRatio(faint, surface) }
+    /// The ceiling: what pure ink would get on this surface. A tone below its
+    /// target is only a failure when this says the target was reachable.
+    var reachable: CGFloat { ChromeTheme.contrastRatio(ink, surface) }
 }
+
+func glass(_ opacity: CGFloat, _ extra: CGFloat) -> ChromeTheme.Glass {
+    // The same two expressions `AppSettings` uses, restated so this tool needs
+    // no settings file. `railCoatFullDepthExtra` is 0.5.
+    ChromeTheme.Glass(
+        windowOpacity: opacity,
+        coatDepth: min(1, extra / 0.5),
+        coatAlpha: opacity >= 1 ? (extra > 0 ? 1 : 0) : min(1, extra / (1 - opacity))
+    )
+}
+
+/// The slider positions every case below is run at.
+///
+/// One setting is not a test of this file any more: the text is solved against
+/// what the two coats compose to, so a rule that holds at one opacity can fail
+/// at another — and the failure that prompted this ran at the *shipped
+/// defaults*, not at some extreme. Opaque is the baseline every constant in
+/// `ChromeTheme` was originally written against; 55%/10% is what ships; the
+/// last two are the ends of what the sliders can reach.
+let settings: [(String, ChromeTheme.Glass)] = [
+    ("opaque", .opaque),
+    ("55% + 10% (shipped)", glass(0.55, 0.10)),
+    ("20% + 10%", glass(0.20, 0.10)),
+    ("99% + 50%", glass(0.99, 0.50)),
+]
+
 
 func rgb(_ color: NSColor) -> String {
     guard let srgb = color.usingColorSpace(.sRGB) else { return "?" }
@@ -96,7 +142,8 @@ func rgb(_ color: NSColor) -> String {
 }
 
 let catalog = GhosttyThemeCatalog.allThemes
-let derived = catalog.map(Derived.init)
+/// The shipped defaults, which the structural cases and the pins both read.
+let derived = catalog.map { Derived($0, glass: settings[1].1) }
 var failures: [String] = []
 
 // MARK: - 1. The rail is never lighter than the panes
@@ -141,83 +188,7 @@ for scheme in derived {
     }
 }
 
-// MARK: - 3. The loud text role is legible at all
-
-// This looks redundant next to the floors below and is the opposite: without
-// it they are *vacuous*. Each floor is capped by the role above it so a weak
-// scheme flattens rather than inverts, which means a broken primary drags its
-// own cap down with it — `min(mutedFloor, nameContrast)` with a nameContrast
-// of 1.24 asks the secondary tone for 1.24:1, and it obliges. Every other case
-// here then passes on text nobody can read.
-//
-// Found by mutation, not by reading: flipping the appearance in
-// `systemInk(on:drawnOn:)` — white ink on a light rail, the exact thing that
-// helper exists to prevent — produced six failures across 485 schemes before
-// this case existed, and the floors quietly repaired most of the damage into
-// something that merely looked wrong.
-//
-// 3.5 rather than WCAG's 4.5 for body text because one shipped scheme is
-// genuinely below it: Hot Dog Stand, whose own background is fluorescent red,
-// lands at 3.95. The next worst is 4.96 and the median is 12.11, so this is a
-// tripwire for "the ink went the wrong way", not a design target.
-for scheme in derived where scheme.textContrast < 3.5 {
-    failures.append(
-        "primary text under 3.5:1 on \(scheme.name): "
-            + String(format: "%.2f", scheme.textContrast) + ":1 — "
-            + "\(rgb(scheme.text)) on \(rgb(scheme.rail))"
-    )
-}
-
-// MARK: - 4. The three text roles stay in order
-
-// The floors are what stop a weak scheme's secondary text from being illegible,
-// and an uncapped floor is how they would break the thing they protect: a
-// scheme whose own foreground is 3.5:1 on the rail would get a *secondary* tone
-// pushed to 4:1, so the quiet role would read as the loud one. Each floor is
-// capped by the role above it, and this is that cap.
-for scheme in derived {
-    if scheme.mutedContrast > scheme.textContrast + 0.02 {
-        failures.append(
-            "secondary out-contrasts the name on \(scheme.name): "
-                + String(format: "%.2f", scheme.mutedContrast) + " > "
-                + String(format: "%.2f", scheme.textContrast)
-        )
-    }
-    if scheme.faintContrast > scheme.mutedContrast + 0.02 {
-        failures.append(
-            "tertiary out-contrasts the secondary on \(scheme.name): "
-                + String(format: "%.2f", scheme.faintContrast) + " > "
-                + String(format: "%.2f", scheme.mutedContrast)
-        )
-    }
-}
-
-// MARK: - 5. The floors are actually reached wherever they can be
-
-// A floor that silently gives up is worse than no floor, because the number in
-// the source then describes something that never happens. Where the scheme has
-// the headroom — its own foreground clears the floor — the tone must land on
-// it, not near it.
-for scheme in derived {
-    let mutedTarget = min(4.0, scheme.textContrast)
-    if scheme.mutedContrast < mutedTarget - 0.02 {
-        failures.append(
-            "secondary under its floor on \(scheme.name): "
-                + String(format: "%.2f", scheme.mutedContrast) + " < "
-                + String(format: "%.2f", mutedTarget)
-        )
-    }
-    let faintTarget = min(3.0, scheme.mutedContrast)
-    if scheme.faintContrast < faintTarget - 0.02 {
-        failures.append(
-            "tertiary under its floor on \(scheme.name): "
-                + String(format: "%.2f", scheme.faintContrast) + " < "
-                + String(format: "%.2f", faintTarget)
-        )
-    }
-}
-
-// MARK: - 6. The selected row's own label is legible on it
+// MARK: - 4. The selected row's own label is legible on it
 
 // The accent has a 3:1 floor against the chrome background, so the selected
 // row is always visible. That says nothing about the *label* on it, which is
@@ -236,7 +207,68 @@ for scheme in derived {
     }
 }
 
-// MARK: - 7. The two schemes the fix was measured on
+// MARK: - 3. The text, across the whole of both sliders
+
+// One glass setting is not a test of this any more. The text is solved against
+// what the two coats compose to, so a rule that holds at one opacity can fail
+// at another — and the failure that prompted the composite ran at the *shipped
+// defaults*, not at an extreme: over a bright desktop the rail arrives at
+// (103,105,108), and a tertiary tone solved against the *paint* colour landed
+// on (104,105,107). 1.01:1. Drawn in the colour of the thing it was drawn on,
+// and the row numbers were simply not there.
+//
+// The ordering assertion below looks redundant beside the floors and is the
+// opposite: each floor is capped by the role above it, so a broken primary
+// drags its own cap down and the floors pass on text nobody can read. Found by
+// mutation — flipping the appearance in `systemInk(on:drawnOn:)` reported six
+// failures across 485 schemes before there was a case for the primary role.
+for (label, glassSetting) in settings {
+    for scheme in catalog.map({ Derived($0, glass: glassSetting) }) {
+        // Absolute numbers are the wrong assertion out here. At 20% opacity
+        // over a white desktop a dark scheme's rail composites to a light
+        // grey, and pure white on it manages 1.9:1 — there is no colour that
+        // does better, so demanding one would be demanding the impossible.
+        // What must hold is that the derivation spent everything it had.
+        //
+        // Only the primary role gets an absolute expectation here. The quiet
+        // two are deliberately allowed to fall with the ceiling — that is what
+        // `floorTaper` is for — so pinning them to 5.0 and 3.6 out here would
+        // either contradict the implementation or restate it. Their exact
+        // numbers are guarded for the two shipped schemes further down; what
+        // is guarded for all 485 is that they stay ordered and stay visible.
+        let ceiling = scheme.reachable
+        for (role, got, want) in [
+            ("primary", scheme.textContrast, min(4.5, ceiling)),
+        ] where got < want - 0.02 && got < ceiling - 0.02 {
+            failures.append(
+                "at \(label): \(role) tone below what the ink allows on \(scheme.name) — "
+                    + String(format: "%.2f", got) + ":1 with "
+                    + String(format: "%.2f", ceiling) + ":1 available"
+            )
+        }
+        // The thing that actually happened, stated directly: a tone must never
+        // be the colour of the surface it is drawn on. 1.01:1 is what the
+        // tertiary role measured at the shipped defaults before the composite
+        // was part of the derivation.
+        for (role, value) in [
+            ("primary", scheme.textContrast),
+            ("secondary", scheme.mutedContrast),
+            ("tertiary", scheme.faintContrast),
+        ] where value < min(1.6, ceiling - 0.02) {
+            failures.append(
+                "at \(label): \(role) tone is indistinguishable from the rail on "
+                    + "\(scheme.name) — " + String(format: "%.2f", value) + ":1"
+            )
+        }
+        if scheme.mutedContrast > scheme.textContrast + 0.02
+            || scheme.faintContrast > scheme.mutedContrast + 0.02
+        {
+            failures.append("at \(label): text roles out of order on \(scheme.name)")
+        }
+    }
+}
+
+// MARK: - 5. The two schemes the fix was measured on
 
 // Regression guards with the numbers written down, so a later change to the
 // step or the floors has to move these on purpose. Both are the shipped
@@ -250,14 +282,16 @@ struct Pin {
 }
 
 let pins = [
-    // The dark default. The rail moved by at most 10 of 255; the text now
-    // comes from the system rather than the scheme, which lifts the name and
-    // costs the quiet tones a little — 7.18 / 4.88 before.
-    Pin(scheme: "Ayu", rail: "( 10, 11, 13)", text: 14.06, muted: 6.24, faint: 3.60),
-    // The light default, and the scheme the complaint came from. Started at
-    // rail (186,187,188) with 3.26 / 2.14 / 1.52, and was 4.74 / 4.00 / 3.00
-    // with the rail fixed but the text still derived from the scheme.
-    Pin(scheme: "Ayu Light", rail: "(223,224,225)", text: 12.02, muted: 5.00, faint: 3.60),
+    // The dark default. These are measured on the *composited* rail at the
+    // shipped 55% / 10% over the worst backdrop for its ink — a white desktop
+    // — which is the number a person can actually be shown, and far below the
+    // 14.06 / 6.24 / 3.60 the same scheme gets on the paint colour. The old
+    // derivation put the tertiary tone at 1.01:1 here.
+    Pin(scheme: "Ayu", rail: "( 10, 11, 13)", text: 4.52, muted: 3.34, faint: 2.62),
+    // The light default, and the scheme the complaint started on. Its rail
+    // composites over a black desktop instead, and it started at 3.26 / 2.14 /
+    // 1.52 measured on the paint alone.
+    Pin(scheme: "Ayu Light", rail: "(223,224,225)", text: 6.41, muted: 4.42, faint: 3.29),
 ]
 
 for pin in pins {
@@ -265,7 +299,7 @@ for pin in pins {
         failures.append("scheme missing from the catalog: \(pin.scheme)")
         continue
     }
-    let scheme = Derived(definition)
+    let scheme = Derived(definition, glass: settings[1].1)
     if rgb(scheme.rail) != pin.rail {
         failures.append("\(pin.scheme) rail is \(rgb(scheme.rail)), expected \(pin.rail)")
     }
@@ -301,10 +335,16 @@ if failures.isEmpty {
             + String(format: "%.2f", labels.min() ?? 0) + ":1, under 4.5:1 on "
             + "\(labels.filter { $0 < 4.5 }.count) scheme(s)"
     )
-    let unreadable = derived.filter { $0.faintContrast < 3 }
+    // Reported rather than asserted. Under the composite these are ordinary
+    // numbers, not anomalies: at the shipped opacity over the worst desktop a
+    // dark scheme's rail is a mid grey and 3:1 is simply not on offer. What
+    // would be an anomaly is a tone that cannot be told from the rail at all,
+    // which is the counter worth watching.
+    let quiet = derived.map(\.faintContrast)
     print(
-        "  tertiary tone under 3:1 on \(unreadable.count) scheme(s)"
-            + (unreadable.isEmpty ? "" : ": " + unreadable.map(\.name).joined(separator: ", "))
+        "  tertiary tone: worst " + String(format: "%.2f", quiet.min() ?? 0)
+            + ":1, indistinguishable (under 1.6:1) on "
+            + "\(quiet.filter { $0 < 1.6 }.count) scheme(s)"
     )
     let clamped = derived.filter { $0.step < expectedStep - 0.05 }
     print("  rail step clamped by a near-black background on \(clamped.count) scheme(s)")
