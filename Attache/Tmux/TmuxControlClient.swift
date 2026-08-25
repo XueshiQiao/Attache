@@ -6,7 +6,7 @@
 import Foundation
 
 /// One session as `list-sessions` reports it, before there is a connection.
-struct TmuxSessionListing {
+nonisolated struct TmuxSessionListing {
     let id: String
     let name: String
 }
@@ -606,7 +606,7 @@ final class TmuxControlClient {
     /// Before `.failed` existed, "wrong socket permissions" and "server has no
     /// sessions" were the same empty answer — an error the user never saw,
     /// presented as every session having vanished.
-    enum SessionListResult {
+    nonisolated enum SessionListResult {
         /// tmux answered. Possibly with nothing, mid-teardown.
         case sessions([TmuxSessionListing])
         /// tmux answered: no server on this socket. Both spellings — `no
@@ -631,7 +631,15 @@ final class TmuxControlClient {
     /// A one-shot `tmux list-sessions` rather than a control mode command:
     /// picking which session to attach to has to happen before there is a
     /// control mode client to ask.
-    static func listSessions(transport: TmuxTransport) -> SessionListResult {
+    ///
+    /// `nonisolated`, and `TmuxServer` calls it from a background queue,
+    /// because this blocks for the round trip: milliseconds locally, but a
+    /// full ssh exchange for a remote host — measured at 48% of the main
+    /// thread's time with eight remote hosts attached, which is what "the
+    /// app is laggy when I drag" turned out to be. The launch path still
+    /// calls it synchronously on purpose: that one is local and nothing
+    /// else can happen before its answer.
+    nonisolated static func listSessions(transport: TmuxTransport) -> SessionListResult {
         let argv = transport.oneShotArgv(["list-sessions", "-F", "#{session_id} #{session_name}"])
         let process = Process()
         process.executableURL = URL(fileURLWithPath: argv[0])
@@ -698,7 +706,7 @@ final class TmuxControlClient {
     /// the kind of silence this app has already paid for once: a refused
     /// `new-session` used to send its explanation to `/dev/null` and present
     /// as the + button doing nothing.
-    static func createDetachedSession(transport: TmuxTransport) -> String? {
+    nonisolated static func createDetachedSession(transport: TmuxTransport) -> String? {
         let argv = transport.oneShotArgv(["new-session", "-d"])
         let process = Process()
         process.executableURL = URL(fileURLWithPath: argv[0])

@@ -1,0 +1,48 @@
+# The remote-host testbed: eight sshd containers, each a machine with one
+# deliberate defect (or none). `testbed.sh up` builds and starts them and
+# writes the ssh aliases; the README maps each persona to what the app
+# should do about it. Ports bind to 127.0.0.1 only — this fleet is a prop,
+# not a service.
+services:
+  plain:
+    build: { context: ., dockerfile: debian.Dockerfile, args: { TMUX_BUILD: apt } }
+    ports: ["127.0.0.1:2210:22"]
+    volumes: ["./keys:/run/testbed:ro"]
+
+  old-tmux:
+    build: { context: ., dockerfile: debian.Dockerfile, args: { TMUX_BUILD: 3.1c } }
+    ports: ["127.0.0.1:2211:22"]
+    volumes: ["./keys:/run/testbed:ro"]
+
+  tmux35:
+    build: { context: ., dockerfile: debian.Dockerfile, args: { TMUX_BUILD: 3.5a } }
+    ports: ["127.0.0.1:2212:22"]
+    volumes: ["./keys:/run/testbed:ro"]
+
+  no-tmux:
+    build: { context: ., dockerfile: debian.Dockerfile, args: { TMUX_BUILD: none } }
+    ports: ["127.0.0.1:2213:22"]
+    volumes: ["./keys:/run/testbed:ro"]
+
+  password-only:
+    build: { context: ., dockerfile: debian.Dockerfile, args: { TMUX_BUILD: apt } }
+    environment: { PASSWORD_ONLY: "1" }
+    ports: ["127.0.0.1:2214:22"]
+    volumes: ["./keys:/run/testbed:ro"]
+
+  max-sessions:
+    build: { context: ., dockerfile: debian.Dockerfile, args: { TMUX_BUILD: apt } }
+    environment: { MAX_SESSIONS: "1" }
+    ports: ["127.0.0.1:2215:22"]
+    volumes: ["./keys:/run/testbed:ro"]
+
+  slow-banner:
+    build: { context: ., dockerfile: debian.Dockerfile, args: { TMUX_BUILD: apt } }
+    environment: { BANNER: "1", SLOW: "1" }
+    ports: ["127.0.0.1:2216:22"]
+    volumes: ["./keys:/run/testbed:ro"]
+
+  alpine:
+    build: { context: ., dockerfile: alpine.Dockerfile }
+    ports: ["127.0.0.1:2217:22"]
+    volumes: ["./keys:/run/testbed:ro"]

@@ -91,12 +91,49 @@ final class TmuxServer {
         }.joined(separator: ", ")
     }
 
+    /// One `list-sessions` in flight at a time, and at most one queued want
+    /// behind it. The ask blocks for a network round trip on a remote host,
+    /// so it runs off the main thread — and without the coalescing, the 1 Hz
+    /// re-ask against a slow host would stack asks faster than that host
+    /// answers them.
+    private var listingInFlight = false
+    private var relistWanted = false
+
     /// Reconcile the connection set with what tmux currently has.
     ///
     /// A one-shot `list-sessions` rather than asking an existing connection:
     /// this also runs at startup, before there is a connection to ask, and
     /// keeping one code path avoids the two drifting apart.
+    ///
+    /// The ask itself happens on a background queue and the reconcile lands
+    /// back here. It was synchronous on the main actor for as long as the
+    /// only server was local — a few milliseconds, invisible — and became
+    /// the whole interface stuttering the day eight remote hosts joined:
+    /// sampled at 48% of the main thread blocked in this one read.
     func refreshSessions() {
+        guard !stopped else { return }
+        if listingInFlight {
+            relistWanted = true
+            return
+        }
+        listingInFlight = true
+        let transport = transport
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = TmuxControlClient.listSessions(transport: transport)
+            DispatchQueue.main.async { self?.reconcile(with: result) }
+        }
+    }
+
+    private func reconcile(with result: TmuxControlClient.SessionListResult) {
+        listingInFlight = false
+        // A refresh asked for while this one was on the wire ran against a
+        // list that may already be stale; honour it after reconciling.
+        defer {
+            if relistWanted {
+                relistWanted = false
+                refreshSessions()
+            }
+        }
         guard !stopped else { return }
         // An empty answer used to return here, and that was the one case the
         // vanished-session cleanup could not reach: `onChange` never fired, so
@@ -110,7 +147,7 @@ final class TmuxServer {
         // used to end the loop for good, since the re-ask is the only trigger
         // that does not need a connection.
         let listed: [TmuxSessionListing]
-        switch TmuxControlClient.listSessions(transport: transport) {
+        switch result {
         case .failed(let message):
             TmuxLog.lifecycle("list-sessions failed, changing nothing: \(message)")
             // Retry unconditionally, not only when `connections` is empty:
@@ -199,24 +236,34 @@ final class TmuxServer {
 
     /// Create a detached session. Detached so the GUI decides when to show
     /// it, rather than tmux yanking every attached client over to it.
+    ///
+    /// Off the main thread for the same reason the listing is: on a remote
+    /// host this is an ssh round trip, and it is wired to a button.
     func newSession() {
         // Not sent through a control client, so it bypasses the logging choke
         // point in `TmuxControlClient.enqueue` and has to record itself.
         TmuxLog.command("new-session -d", session: "-")
-        if let problem = TmuxControlClient.createDetachedSession(transport: transport) {
-            // A refused create used to go to /dev/null and read as the +
-            // button doing nothing. tmux's own words, or there is nothing for
-            // the user to act on.
-            TmuxLog.lifecycle("new-session -d failed: \(problem)")
-            DiagnosticsCenter.shared.notice(AppNotice(
-                severity: .error,
-                title: "tmux could not create a session",
-                body: problem
-            ))
-        } else {
-            TmuxLog.lifecycle("new-session -d succeeded")
+        let transport = transport
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let problem = TmuxControlClient.createDetachedSession(transport: transport)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let problem {
+                    // A refused create used to go to /dev/null and read as
+                    // the + button doing nothing. tmux's own words, or there
+                    // is nothing for the user to act on.
+                    TmuxLog.lifecycle("new-session -d failed: \(problem)")
+                    DiagnosticsCenter.shared.notice(AppNotice(
+                        severity: .error,
+                        title: "tmux could not create a session",
+                        body: problem
+                    ))
+                } else {
+                    TmuxLog.lifecycle("new-session -d succeeded")
+                }
+                self.refreshSessions()
+            }
         }
-        refreshSessions()
     }
 
     private var refreshScheduled = false

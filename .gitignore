@@ -15,3 +15,8 @@ xcuserdata/
 # the tree dirty.
 *.profraw
 *.profdata
+
+# The remote-host testbed mints a client key and a machine-specific ssh
+# config; neither belongs in history.
+Tools/testbed/keys/
+Tools/testbed/testbed.sshconfig
