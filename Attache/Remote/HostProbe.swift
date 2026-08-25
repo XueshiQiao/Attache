@@ -20,13 +20,17 @@ import Foundation
 @MainActor
 enum HostProbe {
     enum Outcome {
-        case connected(TmuxVersion)
+        /// `foundAt` is the path discovery resolved, when it ran — what the
+        /// editor writes into the tmux path field so the person never has
+        /// to. nil when the draft already named a path.
+        case connected(TmuxVersion, foundAt: String?)
         case failed(String)
 
         var message: String {
             switch self {
-            case .connected(let version):
+            case .connected(let version, let foundAt):
                 var text = "Connected — tmux \(version.text)"
+                if let foundAt { text += ", found at \(foundAt)" }
                 if !version.supportsSubscriptions {
                     text += ". Below 3.2, so the rail's live badges stay blank on this host."
                 }
@@ -37,13 +41,39 @@ enum HostProbe {
         }
     }
 
+    /// Where tmux lives when the draft does not say: `command -v` first —
+    /// the conventional ask, honoured whenever the remote shell's PATH has
+    /// tmux at all — then the places package managers put it, because a
+    /// non-interactive ssh shell usually has none of them on its PATH.
+    /// Verified against the mini 2026-08-25: `command -v` came up empty and
+    /// `/opt/homebrew/bin/tmux` answered. **No single quotes**: the script
+    /// travels as one shell word through `TmuxTransport.shellQuote`, whose
+    /// totality is the same promise `RemoteHelperScript` keeps.
+    private static let discoveryScript = """
+    p=""
+    if command -v tmux >/dev/null 2>&1; then p=$(command -v tmux); fi
+    if [ -z "$p" ]; then
+      for d in /opt/homebrew/bin /usr/local/bin /usr/bin /home/linuxbrew/.linuxbrew/bin /usr/pkg/bin /snap/bin; do
+        if [ -x "$d/tmux" ]; then p="$d/tmux"; break; fi
+      done
+    fi
+    if [ -z "$p" ]; then echo tmux-not-found >&2; exit 127; fi
+    echo "$p"
+    exec "$p" -V
+    """
+
     /// A probe that outlives this wait is killed rather than joined: ssh's
     /// own ConnectTimeout covers the network, so what this guards against is
     /// a remote shell that hangs after auth.
     private nonisolated static let deadline: TimeInterval = 20
 
+    /// `discoverPath` is set when the draft's tmux path field is empty: the
+    /// probe then finds tmux itself and reports where, instead of running
+    /// bare `tmux` into the "command not found" every Homebrew machine
+    /// answers — the person should never be the one typing a path a shell
+    /// one-liner can find.
     static func run(
-        config: HostConfig, sshPath: String,
+        config: HostConfig, sshPath: String, discoverPath: Bool = false,
         completion: @escaping @MainActor (Outcome) -> Void
     ) {
         let target = SSHTarget(
@@ -54,7 +84,9 @@ enum HostProbe {
         let transport = TmuxTransport(
             kind: .ssh(target), tmuxPath: config.tmuxPath, socket: config.socket
         )
-        let argv = transport.oneShotArgv(["-V"])
+        let argv = discoverPath
+            ? transport.execArgv(["sh", "-c", discoveryScript])
+            : transport.oneShotArgv(["-V"])
         TmuxLog.lifecycle("probing host \(config.name): \(argv.joined(separator: " "))")
 
         DispatchQueue.global(qos: .userInitiated).async {
@@ -88,12 +120,26 @@ enum HostProbe {
             let status = process.terminationStatus
 
             let outcome: Outcome
-            if status == 0, let version = TmuxVersion.parse(stdout) {
-                outcome = .connected(version)
-            } else if status == 0, stdout.hasPrefix("tmux ") {
+            // In discovery mode stdout is two lines — the path, then the
+            // version — so the version is always the last line and the path
+            // is anything absolute above it.
+            let stdoutLines = stdout.split(separator: "\n").map(String.init)
+            let versionLine = stdoutLines.last ?? ""
+            let foundAt = discoverPath
+                ? stdoutLines.dropLast().first(where: { $0.hasPrefix("/") })
+                : nil
+            if status == 0, let version = TmuxVersion.parse(versionLine) {
+                outcome = .connected(version, foundAt: foundAt)
+            } else if status == 0, versionLine.hasPrefix("tmux ") {
                 // An unnumbered master build — newer than any release, the
                 // same reading `HostContext.masterBuild` applies.
-                outcome = .connected(TmuxVersion(major: 99, minor: 0))
+                outcome = .connected(TmuxVersion(major: 99, minor: 0), foundAt: foundAt)
+            } else if discoverPath, stderr.contains("tmux-not-found") {
+                outcome = .failed(
+                    "tmux was not found on that machine — command -v and the usual "
+                        + "install places all came up empty. If it lives somewhere "
+                        + "unusual, set tmux path by hand."
+                )
             } else if stderr.localizedCaseInsensitiveContains("not found") {
                 // The commonest failure by far: a non-interactive shell with
                 // no Homebrew on its PATH. Name the fix, not just the fact.

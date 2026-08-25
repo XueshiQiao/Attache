@@ -43,6 +43,10 @@ struct HostsPage: View {
     /// a success B never earned (Codex review). Bumped by every selection
     /// change, every edit, and every new probe.
     @State private var probeGeneration = 0
+    /// True while the probe itself writes the tmux path it discovered into
+    /// the draft, so the edit-invalidation in `onChange` can tell the
+    /// probe's own answer from the person typing over it.
+    @State private var fillingFromProbe = false
     /// Bumped by the shared timer so the status dots follow the live
     /// contexts — connection state is not a published property anywhere,
     /// and polling once a second in an open settings window is cheaper than
@@ -71,7 +75,13 @@ struct HostsPage: View {
         }
         .onChange(of: draft) { _ in
             // The result on screen describes the draft it was run against;
-            // an edit makes it about a draft that no longer exists.
+            // an edit makes it about a draft that no longer exists. The one
+            // exception is the probe filling in the path it just found —
+            // that edit is the result.
+            if fillingFromProbe {
+                fillingFromProbe = false
+                return
+            }
             guard probing || probeMessage != nil else { return }
             probeGeneration &+= 1
             probing = false
@@ -182,12 +192,16 @@ struct HostsPage: View {
                 VStack(alignment: .leading, spacing: 3) {
                     TextField(
                         "tmux path", text: $draft.tmuxPath,
-                        prompt: Text("/opt/homebrew/bin/tmux")
+                        prompt: Text("found automatically")
                     )
                     .font(.system(.body, design: .monospaced))
-                    Text("Empty means bare “tmux”, which a non-interactive ssh shell often cannot find.")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(
+                        "Left empty, Attaché finds tmux on that machine when you test or "
+                            + "apply — command -v first, then the usual install places — and "
+                            + "fills this in."
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             } header: {
                 Text(selection == .new ? "New host" : "Host")
@@ -457,6 +471,30 @@ struct HostsPage: View {
 
     private func apply() {
         guard validate() else { return }
+        // An empty tmux path is a question the machine can answer for
+        // itself. Best effort on purpose: a host that is offline right now
+        // still deserves to be saveable, so any discovery failure falls
+        // through to the plain save and the connection error says the rest.
+        if draft.tmuxPath.trimmingCharacters(in: .whitespaces).isEmpty, let config = draft.config {
+            probeGeneration &+= 1
+            let generation = probeGeneration
+            probing = true
+            probeMessage = nil
+            HostProbe.run(config: config, sshPath: AppSettings.sshPath, discoverPath: true) { outcome in
+                guard generation == probeGeneration else { return }
+                probing = false
+                if case .connected(_, let foundAt) = outcome, let foundAt {
+                    fillingFromProbe = true
+                    draft.tmuxPath = foundAt
+                }
+                continueApply()
+            }
+            return
+        }
+        continueApply()
+    }
+
+    private func continueApply() {
         // A connected (or connecting) host gets the reconnect warning; a new
         // host, or one that is already down, has nothing to interrupt.
         if let name = selectedName, let live = store.liveHost(named: name) {
@@ -511,13 +549,18 @@ struct HostsPage: View {
         }
         problem = nil
         guard let config = draft.config else { return }
+        let discover = draft.tmuxPath.trimmingCharacters(in: .whitespaces).isEmpty
         probeGeneration &+= 1
         let generation = probeGeneration
         probing = true
         probeMessage = nil
-        HostProbe.run(config: config, sshPath: AppSettings.sshPath) { outcome in
+        HostProbe.run(config: config, sshPath: AppSettings.sshPath, discoverPath: discover) { outcome in
             guard generation == probeGeneration else { return }
             probing = false
+            if case .connected(_, let foundAt) = outcome, let foundAt {
+                fillingFromProbe = true
+                draft.tmuxPath = foundAt
+            }
             probeMessage = outcome.message
             if case .failed = outcome { probeFailed = true } else { probeFailed = false }
         }

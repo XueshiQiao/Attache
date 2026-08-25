@@ -22,6 +22,9 @@ struct AddServerSheet: View {
     /// bumps it and the stale answer is dropped instead of landing on a
     /// draft it never tested. Same rule as the Hosts page.
     @State private var probeGeneration = 0
+    /// The probe writing its discovered tmux path into the draft, told
+    /// apart from the person typing — same rule as the Hosts page.
+    @State private var fillingFromProbe = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -49,16 +52,19 @@ struct AddServerSheet: View {
                 }
                 GridRow {
                     fieldLabel("tmux path")
-                    TextField("/opt/homebrew/bin/tmux", text: $draft.tmuxPath)
+                    TextField("found automatically", text: $draft.tmuxPath)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                 }
                 GridRow {
                     Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
-                    Text("Left empty this is bare “tmux”, which a non-interactive ssh shell often cannot find.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(
+                        "Left empty, Attaché finds tmux on that machine when you test or "
+                            + "connect and fills this in."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -124,6 +130,10 @@ struct AddServerSheet: View {
         .padding(20)
         .frame(width: 460)
         .onChange(of: draft) { _ in
+            if fillingFromProbe {
+                fillingFromProbe = false
+                return
+            }
             guard probing || probeMessage != nil else { return }
             probeGeneration &+= 1
             probing = false
@@ -151,20 +161,49 @@ struct AddServerSheet: View {
 
     private func testConnection() {
         guard let config = validated() else { return }
+        let discover = draft.tmuxPath.trimmingCharacters(in: .whitespaces).isEmpty
         probeGeneration &+= 1
         let generation = probeGeneration
         probing = true
         probeMessage = nil
-        HostProbe.run(config: config, sshPath: AppSettings.sshPath) { outcome in
+        HostProbe.run(config: config, sshPath: AppSettings.sshPath, discoverPath: discover) { outcome in
             guard generation == probeGeneration else { return }
             probing = false
+            if case .connected(_, let foundAt) = outcome, let foundAt {
+                fillingFromProbe = true
+                draft.tmuxPath = foundAt
+            }
             probeMessage = outcome.message
             if case .failed = outcome { probeFailed = true } else { probeFailed = false }
         }
     }
 
     private func save() {
-        guard validated() != nil else { return }
+        guard let config = validated() else { return }
+        // An empty tmux path is discovered before the block is written, so
+        // the saved config carries the real location. Best effort: a
+        // machine that is offline still saves, with bare "tmux" and the
+        // connection error to say what to do next.
+        if draft.tmuxPath.trimmingCharacters(in: .whitespaces).isEmpty {
+            probeGeneration &+= 1
+            let generation = probeGeneration
+            probing = true
+            probeMessage = nil
+            HostProbe.run(config: config, sshPath: AppSettings.sshPath, discoverPath: true) { outcome in
+                guard generation == probeGeneration else { return }
+                probing = false
+                if case .connected(_, let foundAt) = outcome, let foundAt {
+                    fillingFromProbe = true
+                    draft.tmuxPath = foundAt
+                }
+                finishSave()
+            }
+            return
+        }
+        finishSave()
+    }
+
+    private func finishSave() {
         if let refused = AppSettings.saveHost(draft, replacingName: nil) {
             problem = refused
             return
