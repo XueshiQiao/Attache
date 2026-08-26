@@ -82,26 +82,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         }
         ActivationProbe.shared.start()
 
-        // Before any connection of our own exists, so a reclaimed pid can never
-        // be one this run just spawned. A previous run that died without
-        // tearing down leaves its control clients attached and unread, and tmux
-        // buffers for an attached client indefinitely — see
-        // `TmuxChildRegistry` for what that costs and why the process tree
-        // cannot be used instead.
-        let reclaimed = TmuxChildRegistry.sweep()
-        if reclaimed > 0 {
-            // Written out both ways rather than "1 connection(s)". This notice is
-            // the app admitting it left something behind, and reading like a
-            // form letter while it does so is a small thing that undoes it.
-            let body = reclaimed == 1
-                ? "One tmux connection was left attached by a copy of this app that"
-                    + " did not shut down. It has been closed."
-                : "\(reclaimed) tmux connections were left attached by a copy of this"
-                    + " app that did not shut down. They have been closed."
-            DiagnosticsCenter.shared.notice(AppNotice(
-                severity: .warning,
-                title: "Cleaned up after a previous run", body: body
-            ))
+        // A previous run that died without tearing down leaves its control
+        // clients attached and unread, and tmux buffers for an attached
+        // client indefinitely — see `TmuxChildRegistry` for what that costs
+        // and why the process tree cannot be used instead.
+        //
+        // On a background queue, and the ordering the old comment here
+        // demanded — "before any connection of our own exists" — is carried
+        // by the record matching instead: this run's records are keyed to
+        // this pid and skipped, and reclaiming a dead run's pid requires the
+        // process at that pid to match the dead child's command line *and
+        // its start time*. A pid reused by a child this run spawns started
+        // just now, so it can never wear a dead child's timestamp. What the
+        // synchronous version cost is in `TmuxChildRegistry`'s header; the
+        // short version is a launch that stares as a blank screen for two
+        // `ps` waits per recorded child.
+        DispatchQueue.global(qos: .utility).async {
+            let reclaimed = TmuxChildRegistry.sweep()
+            guard reclaimed > 0 else { return }
+            DispatchQueue.main.async {
+                // Written out both ways rather than "1 connection(s)". This
+                // notice is the app admitting it left something behind, and
+                // reading like a form letter while it does so is a small
+                // thing that undoes it.
+                let body = reclaimed == 1
+                    ? "One tmux connection was left attached by a copy of this app that"
+                        + " did not shut down. It has been closed."
+                    : "\(reclaimed) tmux connections were left attached by a copy of this"
+                        + " app that did not shut down. They have been closed."
+                DiagnosticsCenter.shared.notice(AppNotice(
+                    severity: .warning,
+                    title: "Cleaned up after a previous run", body: body
+                ))
+            }
         }
 
         // Said once, at launch, rather than per surface: every pane and every
@@ -172,11 +185,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         // be one dead-end alert, which for someone who had never run tmux was
         // the whole first-launch experience. tmux errors are shown in tmux's
         // own words; an empty server is an offer, not a failure.
+        //
+        // And an *error* is a notice, not a death sentence. This case was a
+        // `fail()` — a modal whose only button quits — until 2026-08-26,
+        // when a launch on a badly overloaded machine took eleven minutes
+        // to crawl here, had its tmux spawn refused by the system, and the
+        // app spent four hours as a Quit dialog on a screen nobody could
+        // see. tmux was fine the whole time. The local server re-asks every
+        // second and heals the moment tmux answers, so the app's job is to
+        // come up, say what happened, and wait — the same contract every
+        // remote host already gets.
         let transport = TmuxTransport.local(tmuxPath: tmuxPath, socket: socket)
         switch TmuxControlClient.listSessions(transport: transport) {
         case .failed(let message):
-            fail("tmux is not answering", "Asked \(transport.summary) and got: \(message)")
-            return
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .error,
+                title: "tmux is not answering",
+                body: "Asked \(transport.summary) and got: \(message)."
+                    + " Retrying every second — sessions appear as soon as tmux answers."
+            ))
         case .noServer:
             guard offerToCreateFirstSession(transport: transport) else { return }
         case .sessions(let sessions) where sessions.isEmpty:
@@ -822,8 +849,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         if let problem = TmuxControlClient.createDetachedSession(
             transport: transport, named: SessionNames.pick(avoiding: [])
         ) {
-            fail("tmux could not create a session", problem)
-            return false
+            // The person chose to continue; a create the server refused is
+            // a notice on a running app, whose rail still has its own
+            // "+ New session" to try again with.
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .error,
+                title: "tmux could not create a session",
+                body: problem
+            ))
+            return true
         }
         // A clean exit is not proof the session still exists. The create is
         // what *started* the server, which loaded the user's configuration —
@@ -835,15 +869,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         ), !sessions.isEmpty {
             return true
         }
-        fail(
-            "tmux did not keep the new session",
-            "A session was created and was already gone when this app looked"
+        DiagnosticsCenter.shared.notice(AppNotice(
+            severity: .error,
+            title: "tmux did not keep the new session",
+            body: "A session was created and was already gone when this app looked"
                 + " again — usually exit-unattached or destroy-unattached in the"
-                + " tmux configuration. Change that, then open this app again."
-        )
-        return false
+                + " tmux configuration."
+        ))
+        return true
     }
 
+    /// The dead-end dialog, and it has exactly two legitimate callers left:
+    /// tmux not installed at all, and a hand-written tmux_socket the parser
+    /// refuses. Both need the person to change something before the app
+    /// means anything. Nothing *transient* may come here — a tmux that
+    /// exists but did not answer is a notice and a retry, because this
+    /// dialog spent four hours as "the app died" on an unwatched screen
+    /// (2026-08-26) over a spawn failure that had passed by the time anyone
+    /// saw it.
     private func fail(_ title: String, _ detail: String) {
         // The one line that says which exit this was. Its absence is why the
         // first silent-termination diagnosis had to be done from tmux's side.

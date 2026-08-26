@@ -40,7 +40,14 @@ import Foundation
 /// The decision about *which* pid may be killed is `TmuxChildRecord`, kept
 /// separate and pure so it can be checked against a table. Everything here is
 /// the side effects: a file, `ps`, and a signal.
-enum TmuxChildRegistry {
+/// `nonisolated`: everything here synchronises through the file lock and
+/// the `NSLock` beside it, never through an actor — which is what lets the
+/// launch sweep run off the main thread. It has to: the sweep spawns two
+/// `ps` per record and waits on each, ~330ms apiece measured 2026-08-26,
+/// and a launch with a fleet's worth of records spent its first ten-plus
+/// seconds as a blank screen doing roll call. On an overloaded machine the
+/// same sweep was the bulk of an eleven-minute crawl to the first window.
+nonisolated enum TmuxChildRegistry {
     /// `~/Library/Application Support/Attache/control-clients` — not under
     /// `Logs`, because this is live state rather than a record, and a log that
     /// rotates would take the pids with it.

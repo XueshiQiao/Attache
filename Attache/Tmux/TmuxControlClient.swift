@@ -648,8 +648,16 @@ final class TmuxControlClient {
         let errorPipe = Pipe()
         process.standardOutput = pipe
         process.standardError = errorPipe
-        guard (try? process.run()) != nil else {
-            return .failed("\(argv[0]) would not start")
+        do {
+            try process.run()
+        } catch {
+            // The system's reason rides along, verbatim. A bare "would not
+            // start" once cost a whole afternoon: the launch that hit it on
+            // an overloaded machine (2026-08-26) left nothing to say whether
+            // the binary was missing, the descriptors were gone, or the
+            // process table was full — and by the time anyone looked, the
+            // moment had passed.
+            return .failed("\(argv[0]) would not start: \(error.localizedDescription)")
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
@@ -720,8 +728,11 @@ final class TmuxControlClient {
         let errorPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errorPipe
-        guard (try? process.run()) != nil else {
-            return "\(argv[0]) would not start"
+        do {
+            try process.run()
+        } catch {
+            // Same rule as `listSessions`: the system's reason survives.
+            return "\(argv[0]) would not start: \(error.localizedDescription)"
         }
         let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
