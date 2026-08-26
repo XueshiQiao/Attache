@@ -819,7 +819,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             return false
         }
         TmuxLog.lifecycle("create-session offer accepted — creating on \(transport.summary)")
-        if let problem = TmuxControlClient.createDetachedSession(transport: transport) {
+        if let problem = TmuxControlClient.createDetachedSession(
+            transport: transport, named: SessionNames.pick(avoiding: [])
+        ) {
             fail("tmux could not create a session", problem)
             return false
         }

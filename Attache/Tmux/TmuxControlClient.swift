@@ -706,8 +706,14 @@ final class TmuxControlClient {
     /// the kind of silence this app has already paid for once: a refused
     /// `new-session` used to send its explanation to `/dev/null` and present
     /// as the + button doing nothing.
-    nonisolated static func createDetachedSession(transport: TmuxTransport) -> String? {
-        let argv = transport.oneShotArgv(["new-session", "-d"])
+    /// `name` comes from `SessionNames`, never from user text — created
+    /// nameless when nil, and tmux numbers it the way it always has.
+    nonisolated static func createDetachedSession(
+        transport: TmuxTransport, named name: String? = nil
+    ) -> String? {
+        var words = ["new-session", "-d"]
+        if let name { words += ["-s", name] }
+        let argv = transport.oneShotArgv(words)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: argv[0])
         process.arguments = Array(argv.dropFirst())

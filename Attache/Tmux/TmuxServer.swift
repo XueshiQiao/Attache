@@ -240,12 +240,20 @@ final class TmuxServer {
     /// Off the main thread for the same reason the listing is: on a remote
     /// host this is an ssh round trip, and it is wired to a button.
     func newSession() {
+        // A word, not tmux's next number — picked against the sessions this
+        // server currently has. Another client can win the same name in the
+        // gap, so a duplicate answer falls back to a nameless create rather
+        // than failing the click.
+        let name = SessionNames.pick(avoiding: Set(connections.values.map(\.sessionName)))
         // Not sent through a control client, so it bypasses the logging choke
         // point in `TmuxControlClient.enqueue` and has to record itself.
-        TmuxLog.command("new-session -d", session: "-")
+        TmuxLog.command("new-session -d -s \(name)", session: "-")
         let transport = transport
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let problem = TmuxControlClient.createDetachedSession(transport: transport)
+            var problem = TmuxControlClient.createDetachedSession(transport: transport, named: name)
+            if problem?.localizedCaseInsensitiveContains("duplicate session") == true {
+                problem = TmuxControlClient.createDetachedSession(transport: transport)
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 if let problem {
@@ -274,10 +282,17 @@ final class TmuxServer {
     /// re-ask below waits a second, which is long enough to matter.
     private var stopped = false
 
+    /// How long to wait between asks when only asking can move things
+    /// forward. A second for the local server — cheap, and it is what makes
+    /// a freshly started server appear promptly — but five for a remote
+    /// one: every ask is a full ssh round trip, and eight quiet hosts at
+    /// 1 Hz is a background hum of connections nobody is listening to.
+    private var reaskDelay: TimeInterval { transport.pathsAreLocal ? 1 : 5 }
+
     private func askAgainWhileServerIsGone() {
         guard !reaskScheduled, !stopped else { return }
         reaskScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + reaskDelay) { [weak self] in
             guard let self else { return }
             self.reaskScheduled = false
             guard self.connections.isEmpty else { return }
@@ -291,7 +306,7 @@ final class TmuxServer {
     private func scheduleRetryAfterFailedListing() {
         guard !reaskScheduled, !stopped else { return }
         reaskScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + reaskDelay) { [weak self] in
             guard let self else { return }
             self.reaskScheduled = false
             self.refreshSessions()
