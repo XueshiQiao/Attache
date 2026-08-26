@@ -24,6 +24,9 @@ nonisolated enum SessionNames {
         "Busan", "Taipei", "Hanoi", "Bangkok", "Jakarta", "Perth",
         "Auckland", "Havana", "Lima", "Quito", "Cusco", "Denver", "Austin",
         "Portland", "Nairobi", "Dakar", "Cairo", "Marrakesh", "Valparaiso",
+        "Chengdu", "Hangzhou", "Suzhou", "Guilin", "Harbin", "Kunming",
+        // Not an omission: 西安 romanises as Xi'an, and the apostrophe is
+        // the one character this whole file exists to keep out of a shell.
     ]
 
     /// A name no current session is using. When the whole bowl is taken,
