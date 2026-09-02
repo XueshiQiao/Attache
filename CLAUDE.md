@@ -261,6 +261,26 @@ swiftc -O -o /tmp/hostblockscheck Attache/Tmux/TmuxLog.swift \
 /tmp/hostblockscheck
 ```
 
+**`PromptCacheEstimator` has one, and what it guards is a dollar figure the
+user acts on.** The rail's cache chip estimates whether a session's prompt
+cache is still warm and what resuming costs — from transcript tails, because
+Anthropic provides no API for it. The rules are the measured pitfalls of
+`~/dotfiles/notes/claude-code-prompt-cache.md`: the lifetime runs from the
+*request*, multi-record replies group by `requestId`, sidechain and
+`<synthetic>` records never speak for the main thread, cold costs are a
+range because the next tier is unknowable. The money cases are pinned to a
+real outage measured at +$8.10~$13.39, and the whole estimator was verified
+byte-identical against the reference python tool on a frozen real
+transcript. Prices are ported from `~/dotfiles/scripts/claude_cache_pricing.py`
+— a price change lands there first and must be carried into
+`PromptCachePricing` by hand. Run it after touching `PromptCache.swift`:
+
+```sh
+swiftc -O -o /tmp/promptcachecheck Attache/Status/PromptCache.swift \
+  Tools/PromptCacheCheck/main.swift
+/tmp/promptcachecheck
+```
+
 **The remote helper has one, and it runs the real script against the real
 parser.** `RemoteHelperScript` is the stateless `sh` loop every remote feature
 reads through; `RemoteHelper` is the frame parser that trusts nothing it did

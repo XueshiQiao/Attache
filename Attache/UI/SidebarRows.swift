@@ -454,6 +454,10 @@ final class SidebarWindowRow: NSView {
     private let contextFill = NSView()
     private let contextLabel = NSTextField(labelWithString: "")
     private let costLabel = NSTextField(labelWithString: "")
+    /// The prompt-cache chip: `cache 43m` while warm, `cold +$8~13` once
+    /// resuming means re-uploading the context. Words, not icons — the same
+    /// reasoning as `agentLabel`.
+    private let cacheLabel = NSTextField(labelWithString: "")
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
     private var dragOrigin: NSPoint?
@@ -487,7 +491,10 @@ final class SidebarWindowRow: NSView {
         // existed before this feature, to the pixel; only the rows running an
         // agent that reports pay the 13pt.
         let stats = decoration.stats
-        showsStatsLine = stats != nil && !(stats?.isEmpty ?? true)
+        // The cache chip earns the line on its own: with nothing installed
+        // there are no stats at all, and the wrapper-less machine is exactly
+        // the one this chip exists for.
+        showsStatsLine = (stats != nil && !(stats?.isEmpty ?? true)) || decoration.cache != nil
         rowHeight = (twoLines ? 40 : 27) + (showsStatsLine ? 13 : 0)
         super.init(frame: .zero)
 
@@ -523,7 +530,7 @@ final class SidebarWindowRow: NSView {
         agentLabel.lineBreakMode = .byClipping
         addSubview(agentLabel)
 
-        for line in [modelLabel, contextLabel, costLabel] {
+        for line in [modelLabel, contextLabel, costLabel, cacheLabel] {
             line.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
             line.isSelectable = false
             line.refusesFirstResponder = true
@@ -531,6 +538,7 @@ final class SidebarWindowRow: NSView {
             addSubview(line)
         }
         modelLabel.lineBreakMode = .byTruncatingTail
+        cacheLabel.lineBreakMode = .byClipping
         // All three left-aligned. The line reads left to right from a fixed
         // edge, so each field starts where the one before it ended and none of
         // them needs a box wider than its own text.
@@ -614,6 +622,11 @@ final class SidebarWindowRow: NSView {
 
         agentLabel.stringValue = agentWord ?? ""
 
+        if let cache = decoration.cache {
+            cacheLabel.stringValue = Self.cacheText(for: cache, now: Date())
+            tips.append(contentsOf: Self.cacheTooltip(for: cache, now: Date()))
+        }
+
         if let stats = decoration.stats {
             modelLabel.stringValue = stats.shortModel ?? ""
             // Nothing at all while the percentage is null, which is what a
@@ -671,6 +684,63 @@ final class SidebarWindowRow: NSView {
         if !mode.isEmpty { lines.append(mode.joined(separator: " · ")) }
 
         return lines
+    }
+
+    /// What the chip says. Warm is a countdown, because "how long can I
+    /// step away" is the question; cold is the bill, because "what does
+    /// coming back cost" is. The cold figure is a range and stays one: which
+    /// cache tier the next request gets is unknowable before it is sent.
+    private static func cacheText(for cache: PromptCacheEstimate, now: Date) -> String {
+        let left = cache.remaining(now: now)
+        guard left > 0 else {
+            return "cold +\(moneyRange(cache.resumeExtraLoUSD, cache.resumeExtraHiUSD))"
+        }
+        return "cache \(shortDuration(left))"
+    }
+
+    private static func cacheTooltip(for cache: PromptCacheEstimate, now: Date) -> [String] {
+        let tier = cache.tier.rawValue
+        let left = cache.remaining(now: now)
+        if left > 0 {
+            return [
+                "Prompt cache warm — \(shortDuration(left)) left (\(tier) tier, renews on use)",
+                "Next message rides it for ≈ \(money(cache.resumeWarmUSD))"
+                    + " instead of \(moneyRange(cache.resumeColdLoUSD, cache.resumeColdHiUSD))",
+            ]
+        }
+        return [
+            "Prompt cache cold — expired \(shortDuration(-left)) ago (\(tier) tier)",
+            "Next message re-uploads \(compact(cache.contextTokens)) tokens: "
+                + "+\(moneyRange(cache.resumeExtraLoUSD, cache.resumeExtraHiUSD))"
+                + " over the warm \(money(cache.resumeWarmUSD))",
+            "One-time: that message rebuilds the cache. The range is the two"
+                + " write tiers; which one the next request gets is decided server-side.",
+        ]
+    }
+
+    /// `43m`, `1h07m`, `<1m`, `6d`.
+    private static func shortDuration(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds)
+        if total < 60 { return "<1m" }
+        let days = total / 86400
+        if days > 0 { return "\(days)d" }
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        if hours > 0 { return String(format: "%dh%02dm", hours, minutes) }
+        return "\(minutes)m"
+    }
+
+    /// `$0.70`, `$8.10`.
+    private static func money(_ usd: Double) -> String {
+        String(format: "$%.2f", usd)
+    }
+
+    /// `$8~13` when dollars carry the message, `$0.5~0.8` when cents do.
+    private static func moneyRange(_ lo: Double, _ hi: Double) -> String {
+        if hi >= 2 {
+            return "$\(Int(lo.rounded()))~\(Int(hi.rounded()))"
+        }
+        return String(format: "$%.1f~%.1f", lo, hi)
     }
 
     /// `812k`, `1.2M`. Token counts, where the exact digit never matters and
@@ -930,6 +1000,7 @@ final class SidebarWindowRow: NSView {
             contextLabel.textColor = theme.onAccent.withAlphaComponent(0.85)
             contextBar.layer?.backgroundColor = theme.onAccent.withAlphaComponent(0.25).cgColor
             contextFill.layer?.backgroundColor = theme.onAccent.withAlphaComponent(0.9).cgColor
+            cacheLabel.textColor = theme.onAccent.withAlphaComponent(0.85)
         } else {
             modelLabel.textColor = theme.faintText
             costLabel.textColor = theme.mutedText
@@ -938,7 +1009,23 @@ final class SidebarWindowRow: NSView {
             contextFill.layer?.backgroundColor = hue.withAlphaComponent(
                 percent >= Self.contextWarnPercent ? 1 : 0.8
             ).cgColor
+            cacheLabel.textColor = cacheColor(theme)
         }
+    }
+
+    /// The chip's hue. **Blue for cold, and red stays out of it**: red on
+    /// this line already means "context nearly full", and cold is not a
+    /// failure — it is a price. Cold-is-blue needs no legend, cannot collide
+    /// with the context colours, and follows the line's own rule: grey while
+    /// nothing needs saying (a comfortably warm cache is the normal state),
+    /// colour only when the number is telling you to act — amber while the
+    /// last minutes run out, blue once resuming costs real money.
+    private func cacheColor(_ theme: ChromeTheme) -> NSColor {
+        guard let cache = decoration.cache else { return theme.faintText }
+        let left = cache.remaining(now: Date())
+        if left <= 0 { return .systemBlue }
+        if left < 300 { return .systemOrange }
+        return theme.faintText
     }
 
     static let contextWarnPercent = 70
@@ -1127,6 +1214,15 @@ final class SidebarWindowRow: NSView {
             x: x, y: y, width: max(0, min(costWidth, rightEdge - x)), height: height
         )
         costLabel.isHidden = costWidth <= 0 || x >= rightEdge
+        if !costLabel.isHidden { x += Self.measure(costLabel) + Self.fieldGap }
+
+        // Last in the give-way order, like the cost: the model and the bar
+        // have already yielded by the time this clips.
+        let cacheWidth = Self.measure(cacheLabel)
+        cacheLabel.frame = CGRect(
+            x: x, y: y, width: max(0, min(cacheWidth, rightEdge - x)), height: height
+        )
+        cacheLabel.isHidden = cacheWidth <= 0 || x >= rightEdge
     }
 
     /// The space between the fields on the third line. One constant, because

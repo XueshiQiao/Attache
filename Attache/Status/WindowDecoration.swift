@@ -38,8 +38,13 @@ struct WindowDecoration: Equatable {
     /// status line wrapper is installed, which is the ordinary case; the badge
     /// works without it and this is the part that does not.
     var stats: AgentStats?
+    /// Whether the session's prompt cache is still warm, and what resuming
+    /// costs either way. Estimated from the transcript by
+    /// `CacheStatusService` — deliberately *not* from the status payload,
+    /// so it works with nothing installed.
+    var cache: PromptCacheEstimate?
 
     var isEmpty: Bool {
-        git == nil && agent == nil && stats == nil && !isNotARepository
+        git == nil && agent == nil && stats == nil && cache == nil && !isNotARepository
     }
 }

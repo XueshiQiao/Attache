@@ -341,6 +341,7 @@ final class MainViewController: NSSplitViewController {
                 // of work for the same nobody.
                 for host in self.hosts {
                     host.gitStatus.setPaused(hidden)
+                    host.cacheStatus.setPaused(hidden)
                     for id in host.server.sessionIDs {
                         host.server.connection(id: id)?.setPaused(hidden)
                     }
@@ -1183,6 +1184,9 @@ final class MainViewController: NSSplitViewController {
         // rebuild every tmux notification uses, so the rail has exactly
         // one way to be redrawn and the rebuild's own guards hold.
         host.gitStatus.onChange = { [weak self] in self?.refreshSidebar() }
+        // A cache estimate changed, or its countdown crossed a minute.
+        // Same single door as everything else.
+        host.cacheStatus.onChange = { [weak self] in self?.refreshSidebar() }
     }
 
     /// Reconcile the running host list with the `[[host]]` blocks as they
@@ -1391,6 +1395,22 @@ final class MainViewController: NSSplitViewController {
                         // them either.
                         if AppSettings.sidebarShowsAgentStats {
                             decoration.stats = connection.agentStats(forWindow: window.id)
+                        }
+                        // The cache chip rides the same toggle as the other
+                        // numbers, but not the same *source*: the wrapper's
+                        // transcript_path when it is there, and the pane's
+                        // working directory when nothing is installed —
+                        // which is the audience this exists for.
+                        if AppSettings.sidebarShowsAgentStats,
+                           decoration.agent?.kind == "claude"
+                        {
+                            let transcript = decoration.stats?.transcriptPath
+                                ?? decoration.path.flatMap {
+                                    hostContext.cacheStatus.transcriptPath(forWorkingDirectory: $0)
+                                }
+                            decoration.cache = transcript.flatMap {
+                                hostContext.cacheStatus.estimate(forTranscript: $0)
+                            }
                         }
                     }
                     // Each host's own service: the caches are per file

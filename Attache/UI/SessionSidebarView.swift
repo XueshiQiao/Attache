@@ -497,6 +497,9 @@ final class SessionSidebarView: NSView {
         // The colours and not `sourceName`, because the same scheme now derives
         // different text at different opacity settings — dragging either slider
         // has the same problem and the same fix.
+        // One clock for the whole signature, so two rows cannot straddle a
+        // minute boundary within a single compare.
+        let signatureNow = Date()
         var parts = [ChromeTheme.current.signature, selectedID ?? "-"]
         for host in hostRows {
             parts.append("host:\(host.id)|\(host.name)|\(host.state ?? "-")|\(host.tone)")
@@ -526,6 +529,13 @@ final class SessionSidebarView: NSView {
                         + "|\(decoration?.agent.map { "\($0.kind ?? "?")/\($0.state?.rawValue ?? "-")/\($0.isSettled ? "old" : "new")" } ?? "-")"
                         + "|\(decoration?.isNotARepository == true ? "!" : "")"
                         + "|\(decoration?.path ?? "")"
+                        // Rounded and bucketed fields only, so the line
+                        // repaints when a number a person can see moves and
+                        // not on every render behind it. The cache bucket is
+                        // minute-granular for the same reason the agent
+                        // badge's `isSettled` is a bucket.
+                        + "|\(decoration?.stats.map { "\($0.shortModel ?? "-")/\($0.contextPercent ?? -1)/\($0.costCents ?? -1)" } ?? "-")"
+                        + "|\(decoration?.cache.map { $0.signature(now: signatureNow) } ?? "-")"
                 )
             }
             parts.append("hidden:\(entry.hiddenIDs.count)")

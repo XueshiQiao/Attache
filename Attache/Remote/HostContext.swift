@@ -52,6 +52,10 @@ final class HostContext {
     /// paths collide across machines by design — `/Users/joey` exists
     /// everywhere.
     let gitStatus: GitStatusService
+    /// Prompt-cache estimates for this machine's transcripts, read the same
+    /// side of the wire the transcripts live on — a remote path that also
+    /// exists locally is the wrong session with the right name.
+    let cacheStatus: CacheStatusService
     /// Installs the agent hooks over there. nil locally — the local
     /// installers already exist and write through `FileManager`.
     let agentSetup: RemoteAgentSetup?
@@ -159,6 +163,7 @@ final class HostContext {
         gitStatus = GitStatusService(
             backend: helper.map { RemoteGitStatusBackend(helper: $0) } ?? LocalGitStatusBackend()
         )
+        cacheStatus = helper.map { CacheStatusService(helper: $0) } ?? CacheStatusService()
         agentSetup = helper.map {
             RemoteAgentSetup(helper: $0, transport: transport, hostName: displayName)
         }
@@ -231,6 +236,7 @@ final class HostContext {
     func stop() {
         // Anything still in flight answers to nobody now.
         probeGeneration &+= 1
+        cacheStatus.stop()
         helper?.stop()
         // Exactly one decrement per start, however many times stop runs:
         // the count is shared with every other host on this master, and an
