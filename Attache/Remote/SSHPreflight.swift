@@ -62,12 +62,22 @@ final class SSHPreflight {
     /// version of the same accident.
     private var retainCount = 0
 
+    /// How many automatic retries a failure gets before the master stops
+    /// trying on its own. Three, quickly (1s, 2s, 4s), then silence: a
+    /// machine that refused four attempts in seven seconds is off, or
+    /// unreachable, and a fleet of dead hosts each dialling out every 30
+    /// seconds forever is background noise nobody asked for. The person
+    /// stays in charge — the down row and its Reconnect item reset this
+    /// budget, and so does every successful connection.
+    private static let automaticRetries = 3
+
     private let target: SSHTarget
     private let label: String
     private var master: Process?
     private var adopted = false
     private var shouldRun = false
     private var retryDelay: TimeInterval = 1
+    private var retriesRemaining = SSHPreflight.automaticRetries
     private var checkTimer: Timer?
     /// Written from the pipe's own reader queue, read on the main actor when
     /// the master exits — the lock is the synchronisation, so these two step
@@ -85,6 +95,7 @@ final class SSHPreflight {
         guard !shouldRun else { return }
         shouldRun = true
         retryDelay = 1
+        retriesRemaining = Self.automaticRetries
         connect()
     }
 
@@ -225,6 +236,7 @@ final class SSHPreflight {
 
     private func becameReady() {
         retryDelay = 1
+        retriesRemaining = Self.automaticRetries
         state = .up
         TmuxLog.lifecycle(
             adopted ? "ssh master adopted (already running)" : "ssh master ready",
@@ -260,10 +272,24 @@ final class SSHPreflight {
     private func failed(_ reason: String) {
         checkTimer?.invalidate()
         checkTimer = nil
+        guard shouldRun, retriesRemaining > 0 else {
+            // Out of budget: say so on the row itself, in the same breath as
+            // the reason, because a host that quietly stopped dialling reads
+            // as a host that is still trying. Everything from here on is the
+            // person's move — the row click and the Reconnect item both land
+            // in `retryNow`, which refills the budget.
+            state = .down(reason + " — stopped retrying; click the row or Reconnect to try again")
+            TmuxLog.lifecycle(
+                "ssh master down: \(reason) — auto-retry budget spent, waiting for the user",
+                session: label
+            )
+            return
+        }
         state = .down(reason)
         TmuxLog.lifecycle("ssh master down: \(reason)", session: label)
-        guard shouldRun, !retryScheduled else { return }
+        guard !retryScheduled else { return }
         retryScheduled = true
+        retriesRemaining -= 1
         let delay = retryDelay
         retryDelay = min(retryDelay * 2, 30)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -275,10 +301,14 @@ final class SSHPreflight {
     }
 
     /// One immediate retry, for the host row's click — the backoff can be at
-    /// 30s and a person pointing at the row deserves an answer now.
+    /// 30s, or the budget spent entirely, and a person pointing at the row
+    /// deserves an answer now. Refills the automatic budget: asking again is
+    /// the person saying "the machine should be back", and that claim earns
+    /// a fresh round of patience.
     func retryNow() {
         guard shouldRun, case .down = state else { return }
         retryDelay = 1
+        retriesRemaining = Self.automaticRetries
         connect()
     }
 }
