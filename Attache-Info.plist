@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Partial Info.plist, merged on top of the plist Xcode generates
+  (GENERATE_INFOPLIST_FILE: YES). It exists only to carry the keys Sparkle reads
+  out of the bundle, which have no INFOPLIST_KEY_* build-setting form. Everything
+  else — CFBundleName, versions, the accent handling — is still generated.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Where Sparkle looks for the appcast. This GitHub URL is stable: it
+	     always redirects to the appcast.xml attached to the newest release, so
+	     it never has to change when a version ships. The release workflow
+	     uploads appcast.xml next to the DMG. -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/XueshiQiao/Attache/releases/latest/download/appcast.xml</string>
+
+	<!-- EdDSA public key for verifying update signatures. This is the shared
+	     signing key (Sparkle's generate_keys stores one key per developer, not
+	     per app — the same model AnyDrag uses). Its matching private key is the
+	     SPARKLE_EDDSA_KEY GitHub secret; CI signs each DMG with it and the
+	     signature is verified against this key on the user's machine. -->
+	<key>SUPublicEDKey</key>
+	<string>dAF9J6eNXJsoSh3L62SZKcpyzHlS4YitByOWqEgiRZM=</string>
+
+	<!-- Concrete value so Sparkle does not put up its own "check for updates
+	     automatically?" prompt on first launch. Starts off; the About page's
+	     toggle writes the user's own preference, which overrides this. -->
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
+</dict>
+</plist>

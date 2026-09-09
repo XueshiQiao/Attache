@@ -20,3 +20,15 @@ xcuserdata/
 # config; neither belongs in history.
 Tools/testbed/keys/
 Tools/testbed/testbed.sshconfig
+
+# Release artifacts. The DMG and the appcast are built by CI on a tag and
+# attached to the GitHub release; they are never committed.
+*.dmg
+appcast.xml
+
+# Sparkle's EdDSA private key, if it is ever exported to a file on the way to
+# the SPARKLE_EDDSA_KEY secret. It must never enter history — the whole update
+# chain's trust rests on it staying private.
+sparkle_private*.key
+*_eddsa*.key
+dsa_priv.pem

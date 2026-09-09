@@ -341,6 +341,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         titleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.refreshTitle()
         }
+
+        // Start Sparkle last, once the app is really up. With automatic checks
+        // off by default it does nothing visible until the person asks — from
+        // the App menu or the About page — but the updater has to exist for
+        // either to work. Nothing above depends on it, so a slow first
+        // network touch cannot hold up the window or the tmux attach.
+        AppUpdates.shared.start()
     }
 
     func applicationSupportsSecureRestorableState(_: NSApplication) -> Bool { true }
@@ -388,6 +395,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         entry(appMenu, "Settings…", ",", [.command], #selector(showSettings))
+        appMenu.addItem(.separator())
+        // The macOS-standard home for this — the App menu the person already
+        // has open for Settings and Quit. It is not the "menu bar extra" (a
+        // status-bar icon) this app deliberately does not have; it is one item
+        // in the menu bar that already exists. The same check is on the About
+        // page. No shortcut: it is a rare, deliberate action.
+        entry(appMenu, "Check for Updates…", "", [], #selector(checkForUpdates))
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Attaché", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
@@ -596,6 +610,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             menuItem.state =
                 (main?.isConversationRailVisible ?? AppSettings.showsConversation) ? .on : .off
         }
+        // Off while a check is already in flight, so a second click cannot stack
+        // one. `canCheck` mirrors Sparkle's own `canCheckForUpdates`.
+        if menuItem.action == #selector(checkForUpdates) {
+            return AppUpdates.shared.canCheck
+        }
         return true
     }
 
@@ -744,6 +763,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     @objc private func showSettings() {
         if settings == nil { settings = SettingsWindowController() }
         settings?.show()
+    }
+
+    // MARK: - Updates
+
+    /// A user-initiated Sparkle check. The About page's button calls the same
+    /// `AppUpdates` method. Disabled by `validateMenuItem` while a check is
+    /// already running.
+    @objc private func checkForUpdates() {
+        AppUpdates.shared.checkForUpdates()
     }
 
     /// The rail's "Edit Host…" lands here: the Hosts page, with that host

@@ -1,0 +1,297 @@
+name: Build & Release
+
+# Modeled on the AnyDrag workflow, which has shipped many signed+notarized
+# releases. Two things are specific to this app and must not be "simplified"
+# away: the checkout is recursive (libghostty is a submodule), and the product
+# name carries an accent while the scheme/binary do not — see the env block.
+
+on:
+  # Tag pushes cut a release. Direct pushes to main are intentionally NOT a
+  # trigger (pure CI burn — the release steps are tag-gated anyway); validate a
+  # branch with the pull_request trigger or a manual workflow_dispatch.
+  push:
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Creating a release needs write; the default GITHUB_TOKEN is read-only and a
+# release without this fails with 403 Resource not accessible by integration.
+permissions:
+  contents: write
+
+env:
+  # The name split this app is careful about (see project.yml / CLAUDE.md):
+  #  - SCHEME / PROJECT are ASCII `Attache` — what xcodebuild is invoked with.
+  #  - APP_NAME is the accented PRODUCT_NAME `Attaché` — the built .app and the
+  #    DMG volume name.
+  #  - DMG_NAME is ASCII on purpose: it is the release-asset filename, and an
+  #    accent there would need %-encoding in the appcast enclosure URL.
+  SCHEME: Attache
+  PROJECT: Attache.xcodeproj
+  APP_NAME: Attaché
+  DMG_NAME: Attache
+  ENTITLEMENTS: Attache/Entitlement.entitlements
+  HAS_APPLE_SECRETS: ${{ secrets.MAC_CERTS_P12_BASE64 != '' }}
+  HAS_SPARKLE_KEY: ${{ secrets.SPARKLE_EDDSA_KEY != '' }}
+  SPARKLE_VERSION: "2.9.6"
+
+jobs:
+  build:
+    # macos-26 ships Xcode 26 (the macOS 26 SDK this app is built with locally).
+    # AnyDrag builds on the same image.
+    runs-on: macos-26
+
+    steps:
+      # submodules: recursive is load-bearing and is the one place this differs
+      # from AnyDrag. libghostty-spm is a submodule whose committed Package.swift
+      # declares the prebuilt xcframework as a `.binaryTarget(url:checksum:)`,
+      # which SwiftPM downloads during resolution. Without recursive checkout the
+      # package path is empty and `xcodegen generate` fails.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Pinned to a commit SHA (not the mutable @v1 tag): this job holds
+      # contents: write and handles the signing cert and the Sparkle key.
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: latest-stable
+
+      - name: Install build tools
+        run: brew install xcodegen create-dmg
+
+      # A tagged build that is missing any release secret would publish a broken
+      # release: an unsigned/un-notarized DMG, or one with no appcast — and the
+      # appcast is what the stable releases/latest/download/appcast.xml feed
+      # resolves to. Fail loudly and early instead. (Non-tag builds are allowed
+      # to run unsigned, so this gate is tag-only.)
+      - name: Preflight — require release secrets on a tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          missing=""
+          [ "$HAS_APPLE_SECRETS" = "true" ] || missing="$missing MAC_CERTS_P12_BASE64(+the other Apple secrets)"
+          [ "$HAS_SPARKLE_KEY" = "true" ]   || missing="$missing SPARKLE_EDDSA_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Refusing to publish a release for ${GITHUB_REF_NAME} — missing secrets:$missing"
+            exit 1
+          fi
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Install signing certificate
+        if: ${{ env.HAS_APPLE_SECRETS == 'true' }}
+        env:
+          P12_BASE64: ${{ secrets.MAC_CERTS_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MAC_CERTS_P12_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/build_certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(uuidgen)
+
+          echo -n "$P12_BASE64" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          # codesign: in the ACL because signing below calls codesign directly;
+          # too narrow a list surfaces as codesign blocking on a GUI prompt no
+          # runner can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm -f "$CERT_PATH"
+
+      # Build unsigned, universal. The app is then signed by hand, inside-out,
+      # below — letting xcodebuild sign a bundle that embeds Sparkle (nested XPC
+      # services + an Updater.app) yields a signature Apple's notary rejects.
+      - name: Build universal binary
+        run: |
+          xcodebuild -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build \
+            SYMROOT="$(pwd)/build"
+
+      - name: Sign app
+        if: ${{ env.HAS_APPLE_SECRETS == 'true' }}
+        run: |
+          APP_PATH="build/Release/$APP_NAME.app"
+
+          # Inside-out: sign embedded code deepest-first. This seals Sparkle's
+          # Autoupdate, Updater.app and the two XPC services before the
+          # framework, and the framework before the app.
+          if [ -d "$APP_PATH/Contents/Frameworks" ]; then
+            find "$APP_PATH/Contents/Frameworks" -type f | while read -r f; do
+              if file "$f" | grep -q "Mach-O"; then
+                codesign --force --options runtime --timestamp \
+                  --sign "Developer ID Application" "$f"
+              fi
+            done
+            find "$APP_PATH/Contents/Frameworks" -name "*.xpc" -type d | while read -r b; do
+              codesign --force --options runtime --timestamp \
+                --sign "Developer ID Application" "$b"
+            done
+            find "$APP_PATH/Contents/Frameworks" -name "*.app" -type d | while read -r b; do
+              codesign --force --options runtime --timestamp \
+                --sign "Developer ID Application" "$b"
+            done
+            find "$APP_PATH/Contents/Frameworks" \( -name "*.framework" -o -name "*.dylib" \) | while read -r b; do
+              codesign --force --options runtime --timestamp \
+                --sign "Developer ID Application" "$b"
+            done
+          fi
+
+          codesign --force --options runtime --timestamp \
+            --entitlements "$ENTITLEMENTS" \
+            --sign "Developer ID Application" "$APP_PATH"
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Notarize app
+        if: ${{ env.HAS_APPLE_SECRETS == 'true' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
+        run: |
+          ditto -c -k --keepParent "build/Release/$APP_NAME.app" "$RUNNER_TEMP/notarize.zip"
+
+          # notarytool submit --wait exits 0 even when Apple REJECTS. Parse
+          # status explicitly, or a rejection sails on and fails later at
+          # stapler with a misleading error.
+          SUBMISSION_OUT=$(xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" \
+            --password "$APP_SPECIFIC_PASSWORD" \
+            --wait 2>&1) || true
+          echo "$SUBMISSION_OUT"
+
+          SUBMISSION_ID=$(echo "$SUBMISSION_OUT" | grep -m1 "^  id:" | awk '{print $NF}')
+          STATUS=$(echo "$SUBMISSION_OUT" | grep "^  status:" | awk '{print $NF}')
+
+          if [[ "$STATUS" != "Accepted" ]]; then
+            echo "--- Notarization log ---"
+            if [[ -n "$SUBMISSION_ID" ]]; then
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --apple-id "$APPLE_ID" --team-id "$TEAM_ID" \
+                --password "$APP_SPECIFIC_PASSWORD" 2>&1 || true
+            fi
+            echo "::error::Notarization failed with status: $STATUS"
+            exit 1
+          fi
+
+          xcrun stapler staple "build/Release/$APP_NAME.app"
+          rm -f "$RUNNER_TEMP/notarize.zip"
+
+      - name: Create DMG
+        run: |
+          cd build/Release
+          # Volume shows the accented name; the file on disk is ASCII.
+          create-dmg \
+            --volname "$APP_NAME" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "$APP_NAME.app" 150 190 \
+            --hide-extension "$APP_NAME.app" \
+            --app-drop-link 450 190 \
+            "$DMG_NAME.dmg" \
+            "$APP_NAME.app" || true
+          # create-dmg exits 2 on "DMG made but icon layout failed" (headless
+          # runners can't run the AppleScript layout). Tolerate the exit code,
+          # then REQUIRE a real, non-empty DMG — that catches an actual failure.
+          if [ ! -s "$DMG_NAME.dmg" ]; then
+            echo "::error::create-dmg did not produce $DMG_NAME.dmg"
+            exit 1
+          fi
+          mv "$DMG_NAME.dmg" "$GITHUB_WORKSPACE/$DMG_NAME.dmg"
+
+      - name: Sign DMG and generate appcast
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && env.HAS_SPARKLE_KEY == 'true' }}
+        env:
+          SPARKLE_EDDSA_KEY: ${{ secrets.SPARKLE_EDDSA_KEY }}
+        run: |
+          # Sparkle's CLI tools ship in the release tarball, not the SwiftPM
+          # product. Pinned to the same version as the embedded framework.
+          curl -sL -o "$RUNNER_TEMP/sparkle.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          mkdir -p "$RUNNER_TEMP/sparkle"
+          tar -xf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
+
+          echo -n "$SPARKLE_EDDSA_KEY" > "$RUNNER_TEMP/sparkle_eddsa.key"
+          SIGN_OUTPUT=$("$RUNNER_TEMP/sparkle/bin/sign_update" "$DMG_NAME.dmg" -f "$RUNNER_TEMP/sparkle_eddsa.key")
+          rm -f "$RUNNER_TEMP/sparkle_eddsa.key"
+          ED_SIGNATURE=$(echo "$SIGN_OUTPUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')
+
+          # Anchored to the SETTING lines in project.yml.
+          VERSION=$(grep -E '^[[:space:]]*MARKETING_VERSION:' project.yml | head -1 | sed 's/.*: *"\(.*\)"/\1/')
+          BUILD=$(grep -E '^[[:space:]]*CURRENT_PROJECT_VERSION:' project.yml | head -1 | sed 's/.*: *"\(.*\)"/\1/')
+          if [ -z "$VERSION" ] || [ -z "$BUILD" ] || [ -z "$ED_SIGNATURE" ]; then
+            echo "::error::Empty VERSION, BUILD, or signature — appcast would offer nothing."
+            exit 1
+          fi
+
+          PUB_DATE=$(date -u "+%a, %d %b %Y %H:%M:%S %z")
+          FILE_LENGTH=$(stat -f%z "$DMG_NAME.dmg")
+          TAG_NAME="${GITHUB_REF_NAME}"
+          DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/${DMG_NAME}.dmg"
+          NOTES_LINK="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG_NAME}"
+
+          {
+            echo '<?xml version="1.0" encoding="utf-8"?>'
+            echo '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            echo '  <channel>'
+            echo "    <title>${APP_NAME} Updates</title>"
+            echo "    <link>https://github.com/${GITHUB_REPOSITORY}</link>"
+            echo '    <language>en</language>'
+            echo '    <item>'
+            echo "      <title>Version ${VERSION}</title>"
+            echo "      <description><![CDATA[<p>Attaché ${VERSION}. See the <a href=\"${NOTES_LINK}\">release notes</a> for details.</p>]]></description>"
+            echo "      <pubDate>${PUB_DATE}</pubDate>"
+            echo "      <sparkle:version>${BUILD}</sparkle:version>"
+            echo "      <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>"
+            echo '      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>'
+            echo "      <enclosure url=\"${DOWNLOAD_URL}\" length=\"${FILE_LENGTH}\" type=\"application/octet-stream\" sparkle:edSignature=\"${ED_SIGNATURE}\" />"
+            echo '    </item>'
+            echo '  </channel>'
+            echo '</rss>'
+          } > appcast.xml
+
+          echo "--- appcast.xml ---"; cat appcast.xml
+
+      # A tag reached here only after the preflight, so both assets must exist.
+      - name: Verify release assets exist
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          [ -s "$DMG_NAME.dmg" ] || { echo "::error::$DMG_NAME.dmg missing"; exit 1; }
+          [ -s appcast.xml ]     || { echo "::error::appcast.xml missing"; exit 1; }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DMG_NAME }}-dmg
+          path: ${{ env.DMG_NAME }}.dmg
+          if-no-files-found: error
+
+      # appcast.xml is uploaded next to the DMG so the stable
+      # releases/latest/download/appcast.xml feed in Info.plist resolves.
+      # fail_on_unmatched_files: true — the preflight guarantees both exist, so
+      # a missing one here is a real failure, not a silent skip.
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: |
+            ${{ env.DMG_NAME }}.dmg
+            appcast.xml
+          fail_on_unmatched_files: true
+          generate_release_notes: true

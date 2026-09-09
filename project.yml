@@ -21,6 +21,14 @@ packages:
   # fails.
   libghostty-spm:
     path: Vendor/libghostty-spm
+  # Sparkle drives in-app updates. Pinned to an exact version rather than a
+  # range: the generated .xcodeproj (and the Package.resolved inside it) is
+  # gitignored, so CI resolves this fresh on every run — a range would let the
+  # version drift between a local build and a release build. Bump this line to
+  # move versions, the same way the submodule above is a deliberate pin.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.6
 
 schemes:
   Attache:
@@ -77,6 +85,12 @@ targets:
       # for a product called libghostty-spm, which does not exist.
       - package: libghostty-spm
         products: [GhosttyKit, GhosttyTerminal, GhosttyTheme, ShellCraftKit]
+      # Sparkle vends one product, named `Sparkle`, so a bare package reference
+      # links the right thing. Its framework carries nested code — an
+      # `Updater.app`, `Autoupdate`, and XPC services — which is why the release
+      # workflow signs the bundle by hand, inside out, rather than letting
+      # xcodebuild do it (see .github/workflows/build.yml).
+      - package: Sparkle
     postBuildScripts:
       # Named by path rather than pasted in here: the body is shell, and a YAML
       # block scalar mangles indentation-sensitive text quietly. XcodeGen copies
@@ -95,6 +109,16 @@ targets:
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
+        # A *partial* Info.plist, merged on top of the generated one. Sparkle
+        # needs `SUFeedURL` and `SUPublicEDKey` in the bundle, and neither has an
+        # `INFOPLIST_KEY_*` build-setting equivalent — those only exist for keys
+        # Xcode already knows. With `GENERATE_INFOPLIST_FILE: YES` still set,
+        # Xcode uses this file as the base and fills the standard keys
+        # (CFBundleName = $(PRODUCT_NAME) = Attaché, versions, …) in on top, so
+        # the accent handling documented above is untouched. Kept out of the
+        # `Attache/` synced folder on purpose: a plist inside it would be copied
+        # into Resources as well.
+        INFOPLIST_FILE: Attache-Info.plist
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
@@ -128,7 +152,7 @@ targets:
         ENABLE_APP_SANDBOX: NO
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 964G86XT2P
+        DEVELOPMENT_TEAM: 584KQTRF3B
 
         # Xcode's Signing & Capabilities toggles, carried over verbatim from the
         # old pbxproj. They describe entitlements that only exist under the
@@ -172,7 +196,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         ENABLE_TESTABILITY: YES
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 964G86XT2P
+        DEVELOPMENT_TEAM: 584KQTRF3B
 
 settings:
   base:
