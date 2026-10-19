@@ -558,6 +558,10 @@ final class TmuxSessionConnection {
         statsByPane.values.reduce(nil) { AccountUsage.fresher($0, $1.usage) }
     }
 
+    var geminiAccountUsage: AccountUsage? {
+        statsByPane.values.reduce(nil) { AccountUsage.fresher($0, $1.geminiUsage) }
+    }
+
     /// Ask tmux to tell us when a window gains or loses activity, instead of
     /// finding out by accident.
     ///
@@ -941,6 +945,48 @@ final class TmuxSessionConnection {
     /// from `window_layout` — see `TmuxWindow`.
     func toggleZoom(paneID: String) {
         client.send("resize-pane -Z -t \(paneID)")
+    }
+
+    /// Trade places with the neighbouring pane in one direction.
+    ///
+    /// `{left-of}` and its siblings are resolved against the window's *active*
+    /// pane, not against `-s`, so this is only right for the pane tmux has
+    /// active — which is the only one the context menu offers it for. `-d`
+    /// keeps the focus on the pane that moved; without it the focus stays on
+    /// the position and lands on whichever pane was swapped in.
+    ///
+    /// The caller has to refuse an edge itself: tmux wraps rather than
+    /// failing, so "right" on a pane already at the right edge sends it to
+    /// the far left. Measured on tmux 3.6a against an isolated `-L` server.
+    func swapPane(id: String, toward direction: PaneDirection) {
+        let token: String
+        switch direction {
+        case .left: token = "{left-of}"
+        case .right: token = "{right-of}"
+        case .up: token = "{up-of}"
+        case .down: token = "{down-of}"
+        }
+        client.send("swap-pane -d -s \(id) -t '\(token)'")
+    }
+
+    /// Take a pane out into a window of its own, and go with it.
+    ///
+    /// Without `-d` tmux selects the new window, so the focus stays on the
+    /// pane the user moved — the same rule `swapPane` follows. On a window
+    /// with one pane this succeeds and does nothing visible but give the
+    /// window a new id, which is why the menu does not offer it there.
+    func breakPane(id: String) {
+        client.send("break-pane -s \(id)")
+    }
+
+    /// Move a pane into another window, beside that window's active pane.
+    ///
+    /// `-h` puts it to the right, the arrangement ⌘D makes. Without `-d` tmux
+    /// selects the target window with the moved pane active in it. Moving a
+    /// window's last pane closes that window; a zoom on either side is undone
+    /// first. All measured on tmux 3.6a against an isolated `-L` server.
+    func joinPane(id: String, intoWindow windowID: String) {
+        client.send("join-pane -h -s \(id) -t \(windowID)")
     }
 
     func renameSession(to name: String) {

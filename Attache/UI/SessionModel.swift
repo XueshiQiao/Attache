@@ -235,6 +235,18 @@ final class SessionModel {
         connection.splitPane(id: paneID, horizontally: direction == .right)
     }
 
+    func movePane(_ paneID: String, _ direction: PaneDirection) {
+        connection.swapPane(id: paneID, toward: direction)
+    }
+
+    func movePaneToNewWindow(_ paneID: String) {
+        connection.breakPane(id: paneID)
+    }
+
+    func movePane(_ paneID: String, toWindow windowID: String) {
+        connection.joinPane(id: paneID, intoWindow: windowID)
+    }
+
     func toggleZoom(_ paneID: String) {
         connection.toggleZoom(paneID: paneID)
     }
@@ -380,6 +392,56 @@ final class SessionModel {
         // enabled item there would be a menu entry that does nothing.
         zoom.isEnabled = paneCount > 1
         menu.addItem(zoom)
+
+        let move = NSMenuItem(title: "Move Pane", action: nil, keyEquivalent: "")
+        let moveMenu = NSMenu()
+        moveMenu.autoenablesItems = false
+        let layout = window?.visibleLayout
+        for (direction, title) in [
+            (PaneDirection.left, "Left"), (.right, "Right"), (.up, "Up"), (.down, "Down"),
+        ] {
+            let item = paneItem(title, key: "", flags: []) { [weak self] in
+                self?.movePane(paneID, direction)
+            }
+            // An edge is refused here because tmux does not refuse it: it
+            // wraps, and the pane lands on the opposite side. While zoomed the
+            // neighbour is worked out against the one full-window pane, and
+            // "up" from the bottom-right of a 2x2 grid was measured unzooming
+            // and swapping with the pane to its *left*. Both on tmux 3.6a.
+            item.isEnabled = !isZoomed && layout?.pane(paneID, isAtEdge: direction) == false
+            moveMenu.addItem(item)
+        }
+        move.submenu = moveMenu
+        move.isEnabled = moveMenu.items.contains(where: \.isEnabled)
+        menu.addItem(move)
+
+        let moveTo = NSMenuItem(title: "Move Pane to", action: nil, keyEquivalent: "")
+        let moveToMenu = NSMenu()
+        moveToMenu.autoenablesItems = false
+        let newWindow = paneItem("New Window", key: "", flags: []) { [weak self] in
+            self?.movePaneToNewWindow(paneID)
+        }
+        newWindow.isEnabled = paneCount > 1
+        moveToMenu.addItem(newWindow)
+        // Hidden windows are left out: the pane would vanish into a row the
+        // rail is not showing, and tmux selecting that window would bring it
+        // back — undoing a hide by side effect.
+        let others = connection.windows.filter {
+            $0.id != window?.id && !hiddenWindowIDs.contains($0.id)
+        }
+        if !others.isEmpty { moveToMenu.addItem(.separator()) }
+        for target in others {
+            // Labelled the way the rail labels the row, so the two can be
+            // matched by eye; addressed by id, never by the name in the title.
+            let targetID = target.id
+            moveToMenu.addItem(paneItem("\(target.index): \(target.name)", key: "", flags: []) {
+                [weak self] in
+                self?.movePane(paneID, toWindow: targetID)
+            })
+        }
+        moveTo.submenu = moveToMenu
+        moveTo.isEnabled = moveToMenu.items.contains(where: \.isEnabled)
+        menu.addItem(moveTo)
 
         menu.addItem(.separator())
 

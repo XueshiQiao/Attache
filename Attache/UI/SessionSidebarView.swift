@@ -140,18 +140,18 @@ final class SessionSidebarView: NSView {
         var visibleWindows: [TmuxWindow] { windows.filter { !hiddenIDs.contains($0.id) } }
     }
 
-    private let newButton = NSButton()
-    /// Under "+ New session": the discoverable way in. The context menu on a
+    private let newButton = SidebarPillButton(title: "+ Session")
+    /// Beside "+ Session": the discoverable way in. The context menu on a
     /// host heading only exists once a host does; this button is how the
     /// first one gets made.
-    private let addServerButton = NSButton()
-    private let statusLabel = NSTextField(labelWithString: "")
+    private let addServerButton = SidebarPillButton(title: "+ Server…")
     private let detailLabel = NSTextField(labelWithString: "")
-    /// The account's rate-limit windows. They sit at the foot of the rail
-    /// rather than on a row because they are not about any one window — every
-    /// Claude Code session on the machine shares them.
-    private let fiveHourGauge = UsageGaugeView(title: "5h")
-    private let sevenDayGauge = UsageGaugeView(title: "Week")
+
+    /// Each provider's rate-limit windows sit in their own recessed card at the
+    /// foot of the rail and update independently.
+    private let claudeSection = UsageProviderSectionView(provider: .claude, scheme: .cardA)
+    private let geminiSection = UsageProviderSectionView(provider: .gemini, scheme: .cardA)
+
     private let scrollView = NSScrollView()
     private let rowsView = RowsView()
     private let dropIndicator = NSView()
@@ -325,39 +325,20 @@ final class SessionSidebarView: NSView {
         dropIndicator.isHidden = true
         rowsView.addSubview(dropIndicator)
 
-        newButton.title = "+  New session"
-        newButton.font = .systemFont(ofSize: 11.5)
-        newButton.isBordered = false
-        newButton.bezelStyle = .inline
-        newButton.alignment = .left
-        newButton.target = self
-        newButton.action = #selector(newClicked)
+        newButton.onClick = { [weak self] in self?.newClicked() }
         addSubview(newButton)
 
-        addServerButton.title = "+  Add server…"
-        addServerButton.font = .systemFont(ofSize: 11.5)
-        addServerButton.isBordered = false
-        addServerButton.bezelStyle = .inline
-        addServerButton.alignment = .left
-        addServerButton.target = self
-        addServerButton.action = #selector(addServerClicked)
+        addServerButton.onClick = { [weak self] in self?.addServerClicked() }
         addSubview(addServerButton)
 
-        // Status lives here rather than in a title bar, since there is no
-        // title bar. Two lines: what the app is showing, and how fast bytes
-        // are arriving.
-        for label in [statusLabel, detailLabel] {
-            label.lineBreakMode = .byTruncatingTail
-            label.maximumNumberOfLines = 2
-            addSubview(label)
-        }
-        statusLabel.font = .systemFont(ofSize: 10.5)
+        detailLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.maximumNumberOfLines = 2
         detailLabel.font = .monospacedDigitSystemFont(ofSize: 9.5, weight: .regular)
+        detailLabel.isHidden = true
+        addSubview(detailLabel)
 
-        for gauge in [fiveHourGauge, sevenDayGauge] {
-            gauge.isHidden = true
-            addSubview(gauge)
-        }
+        addSubview(claudeSection)
+        addSubview(geminiSection)
 
         applyChromeTheme()
     }
@@ -367,38 +348,37 @@ final class SessionSidebarView: NSView {
     /// would otherwise keep the old colours until one arrived.
     func applyChromeTheme() {
         let theme = ChromeTheme.current
-        newButton.contentTintColor = theme.faintText
-        addServerButton.contentTintColor = theme.faintText
-        statusLabel.textColor = theme.mutedText
+        newButton.applyTheme()
+        addServerButton.applyTheme()
         detailLabel.textColor = theme.faintText
-        fiveHourGauge.applyTheme()
-        sevenDayGauge.applyTheme()
+        claudeSection.applyTheme()
+        geminiSection.applyTheme()
         dropIndicator.layer?.backgroundColor = theme.accent.cgColor
         rebuild()
         needsDisplay = true
     }
 
-    /// The account's rate-limit windows, or nil for "nothing has told us".
-    ///
-    /// Nil hides both gauges and gives the space back to the list. That is not
-    /// a placeholder decision but the ordinary state of a machine where the
-    /// status line wrapper is not installed, and a rail that reserved room for
-    /// numbers it will never have would be worse for those users than one that
-    /// simply does not mention them.
+    /// The Claude account's rate-limit windows, or nil for "nothing has told us".
     func showUsage(_ usage: AccountUsage?) {
         let wanted = AppSettings.sidebarShowsUsage ? usage : nil
-        let changed = fiveHourGauge.usage != wanted?.fiveHour
-            || sevenDayGauge.usage != wanted?.sevenDay
-        fiveHourGauge.usage = wanted?.fiveHour
-        sevenDayGauge.usage = wanted?.sevenDay
-        // The gauges hide themselves, but the list above them has to be told
-        // to take the space back.
-        if changed { needsLayout = true }
+        guard claudeSection.usage != wanted else { return }
+        claudeSection.usage = wanted
+        needsLayout = true
+    }
+
+    /// The Gemini account's rate-limit windows (`5h`, `Week`, `Argon`), updated
+    /// independently of Claude's.
+    func showGeminiUsage(_ usage: AccountUsage?) {
+        let wanted = AppSettings.sidebarShowsUsage ? usage : nil
+        guard geminiSection.usage != wanted else { return }
+        geminiSection.usage = wanted
+        needsLayout = true
     }
 
     func showStatus(_ status: String, detail: String) {
-        statusLabel.stringValue = status
-        detailLabel.stringValue = detail
+        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        detailLabel.stringValue = trimmed
+        detailLabel.isHidden = trimmed.isEmpty
         needsLayout = true
     }
 
@@ -734,21 +714,34 @@ final class SessionSidebarView: NSView {
 
     override func layout() {
         super.layout()
-        let inset: CGFloat = 10
-        let width = bounds.width - inset * 2
+        let inset: CGFloat = 13
+        let width = max(0, bounds.width - inset * 2)
 
-        detailLabel.frame = CGRect(x: inset, y: bounds.maxY - 26, width: width, height: 14)
-        statusLabel.frame = CGRect(x: inset, y: bounds.maxY - 62, width: width, height: 32)
-        addServerButton.frame = CGRect(x: inset, y: bounds.maxY - 92, width: width, height: 26)
-        newButton.frame = CGRect(x: inset, y: bounds.maxY - 118, width: width, height: 26)
+        var listBottom = bounds.maxY - 10
+        if !detailLabel.isHidden {
+            listBottom -= 16
+            detailLabel.frame = CGRect(x: inset, y: listBottom, width: width, height: 14)
+            listBottom -= 6
+        }
 
-        // Above the button, and only when there is something to show. A hidden
-        // gauge gives its height back to the window list rather than leaving a
-        // gap where a number might one day be.
-        var listBottom = newButton.frame.minY
-        for gauge in [sevenDayGauge, fiveHourGauge] where !gauge.isHidden {
-            listBottom -= UsageGaugeView.height + 6
-            gauge.frame = CGRect(x: inset, y: listBottom, width: width, height: UsageGaugeView.height)
+        let buttonHeight: CGFloat = 24
+        let buttonGap: CGFloat = 6
+        let halfWidth = max(0, floor((width - buttonGap) / 2))
+        listBottom -= buttonHeight
+        newButton.frame = CGRect(x: inset, y: listBottom, width: halfWidth, height: buttonHeight)
+        addServerButton.frame = CGRect(
+            x: inset + halfWidth + buttonGap, y: listBottom,
+            width: max(0, width - halfWidth - buttonGap), height: buttonHeight
+        )
+
+        // Stack visible provider cards above the footer buttons (Claude on top,
+        // Gemini below, each returning its height to the window list when hidden).
+        for section in [geminiSection, claudeSection] where !section.isHidden {
+            let h = section.preferredHeight
+            guard h > 0 else { continue }
+            listBottom -= h + 7
+            section.frame = CGRect(x: inset, y: listBottom, width: width, height: h)
+            section.needsLayout = true
         }
 
         let top = contentTopInset

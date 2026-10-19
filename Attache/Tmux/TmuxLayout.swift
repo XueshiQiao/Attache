@@ -52,6 +52,26 @@ indirect enum TmuxLayoutNode: Equatable {
     }
 }
 
+enum PaneDirection: CaseIterable {
+    case left, right, up, down
+}
+
+extension TmuxLayoutNode {
+    /// Whether the pane touches the window's edge on that side — the same
+    /// test as tmux's `#{pane_at_left}` and siblings, read off the tree this
+    /// side already has rather than asked for while a menu is opening.
+    func pane(_ id: String, isAtEdge direction: PaneDirection) -> Bool? {
+        guard let pane = panes.first(where: { $0.id == id })?.frame else { return nil }
+        let window = frame
+        switch direction {
+        case .left: return pane.x == window.x
+        case .right: return pane.x + pane.columns == window.x + window.columns
+        case .up: return pane.y == window.y
+        case .down: return pane.y + pane.rows == window.y + window.rows
+        }
+    }
+}
+
 enum TmuxLayoutError: Error, CustomStringConvertible {
     case malformed(String, at: Int)
 

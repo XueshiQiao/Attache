@@ -108,6 +108,10 @@ struct Window {
     var isZoomed = false
     var activePane: String?
     var panes = [String: TmuxLayoutFrame]()
+    /// tmux's own `#{pane_at_left}`, `_right`, `_top`, `_bottom`, in
+    /// `PaneDirection.allCases` order — the oracle for `isAtEdge`, which is
+    /// what decides whether the Move Pane items are offered.
+    var edges = [String: [Bool]]()
 }
 
 // **One** query for the whole server, and that is deliberate. Window-scoped
@@ -129,6 +133,7 @@ for line in tmux([
         "#{session_name}:#{window_index}", "#{window_layout}", "#{window_visible_layout}",
         "#{window_zoomed_flag}", "#{pane_id}", "#{pane_width}", "#{pane_height}",
         "#{pane_left}", "#{pane_top}", "#{pane_active}",
+        "#{pane_at_left}", "#{pane_at_right}", "#{pane_at_top}", "#{pane_at_bottom}",
     ].joined(separator: "\u{1}"),
 ]).split(separator: "\n") {
     // Empty fields kept, which matters: a tmux that does not have
@@ -136,7 +141,7 @@ for line in tmux([
     // shift every field after it left, fail the count guard, and skip the
     // window — leaving a run that checked nothing at all printing ✓.
     let f = line.split(separator: "\u{1}", omittingEmptySubsequences: false)
-    guard f.count >= 10,
+    guard f.count >= 14,
           let width = Int(f[5]), let height = Int(f[6]),
           let left = Int(f[7]), let top = Int(f[8])
     else {
@@ -162,6 +167,7 @@ for line in tmux([
     byWindow[target]?.panes[String(f[4])] =
         TmuxLayoutFrame(columns: width, rows: height, x: left, y: top)
     if f[9] == "1" { byWindow[target]?.activePane = String(f[4]) }
+    byWindow[target]?.edges[String(f[4])] = f[10...13].map { $0 == "1" }
 }
 
 for target in windowOrder {
@@ -249,6 +255,25 @@ for target in windowOrder {
     }
 }
 
+// The edge test, against tmux's own answer. Unzoomed windows only: zoomed, the
+// one visible pane touches every edge, and the menu refuses all four anyway.
+var checkedEdges = 0
+for target in windowOrder {
+    guard let window = byWindow[target], !window.isZoomed,
+          let visible = try? TmuxLayout.parse(window.visibleText)
+    else { continue }
+    for (id, truth) in window.edges {
+        let parsed = PaneDirection.allCases.map { visible.pane(id, isAtEdge: $0) }
+        checkedEdges += 1
+        if parsed != truth.map(Optional.some) {
+            failures.append(Failure(
+                window: window.target,
+                detail: "\(id) edges differ: parsed \(parsed) vs tmux \(truth) (left, right, up, down)"
+            ))
+        }
+    }
+}
+
 // A handful of shapes that a live server may not happen to contain.
 let malformed = [
     "",
@@ -273,7 +298,7 @@ for text in malformed {
 // "✓" would otherwise read as though it had.
 print(
     "Checked \(checkedWindows) windows (\(checkedZoomedWindows) zoomed)"
-        + " / \(checkedPanes) pane comparisons, plus \(malformed.count) malformed inputs"
+        + " / \(checkedPanes) pane comparisons / \(checkedEdges) edge comparisons, plus \(malformed.count) malformed inputs"
 )
 
 // Anything that means "a window went unchecked" is a **failure**, not a footnote

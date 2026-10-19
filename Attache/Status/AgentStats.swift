@@ -46,6 +46,11 @@ struct AgentStats: Equatable {
     /// here rather than in a place of its own because this is how it arrives;
     /// the footer picks the freshest of the ones it can see.
     var usage: AccountUsage?
+    /// Account-wide Gemini quota when the pane's status line payload came from
+    /// Antigravity (`quota.gemini-5h`, `quota.gemini-weekly`,
+    /// `quota.gemini-argon-wtu-weekly`). Kept separate from `usage` so Claude
+    /// and Gemini rate limits never overwrite each other.
+    var geminiUsage: AccountUsage?
 
     /// Absolute path to this session's transcript, from `transcript_path`.
     ///
@@ -90,7 +95,7 @@ struct AgentStats: Equatable {
     }
 }
 
-/// The two rate-limit windows, and how far through each one the clock is.
+/// The rate-limit windows for one provider, and how far through each one the clock is.
 struct AccountUsage: Equatable {
     struct Window: Equatable {
         /// 0 and above. Not clamped to 100: being over the limit is a thing
@@ -127,11 +132,21 @@ struct AccountUsage: Equatable {
 
     var fiveHour: Window?
     var sevenDay: Window?
+    /// Separate weekly quota for Gemini 4 Argon on Google AI Pro plans
+    /// (`gemini-argon-wtu-weekly`). Nil on Claude or when not applicable.
+    var argonSevenDay: Window? = nil
+    /// Claude & GPT 5-hour quota in Antigravity (`3p-5h`).
+    var threePFiveHour: Window? = nil
+    /// Claude & GPT weekly quota in Antigravity (`3p-weekly`).
+    var threePSevenDay: Window? = nil
 
     static let fiveHourLength: TimeInterval = 5 * 3600
     static let sevenDayLength: TimeInterval = 7 * 86400
 
-    var isEmpty: Bool { fiveHour == nil && sevenDay == nil }
+    var isEmpty: Bool {
+        fiveHour == nil && sevenDay == nil && argonSevenDay == nil
+            && threePFiveHour == nil && threePSevenDay == nil
+    }
 
     /// Which of two snapshots to believe.
     ///
@@ -147,12 +162,21 @@ struct AccountUsage: Equatable {
     static func fresher(_ a: AccountUsage?, _ b: AccountUsage?) -> AccountUsage? {
         guard let a else { return b }
         guard let b else { return a }
-        guard let aFive = a.fiveHour else { return b.fiveHour == nil ? a : b }
-        guard let bFive = b.fiveHour else { return a }
-        if aFive.resetsAt != bFive.resetsAt {
-            return aFive.resetsAt > bFive.resetsAt ? a : b
+        if let aFive = a.fiveHour, let bFive = b.fiveHour {
+            if aFive.resetsAt != bFive.resetsAt {
+                return aFive.resetsAt > bFive.resetsAt ? a : b
+            }
+            return aFive.usedPercent >= bFive.usedPercent ? a : b
         }
-        return aFive.usedPercent >= bFive.usedPercent ? a : b
+        if a.fiveHour != nil { return a }
+        if b.fiveHour != nil { return b }
+        if let aWeek = a.sevenDay, let bWeek = b.sevenDay {
+            if aWeek.resetsAt != bWeek.resetsAt {
+                return aWeek.resetsAt > bWeek.resetsAt ? a : b
+            }
+            return aWeek.usedPercent >= bWeek.usedPercent ? a : b
+        }
+        return a.sevenDay != nil ? a : b
     }
 }
 
@@ -205,6 +229,7 @@ extension AgentStats {
             stats.durationMS = int(cost["total_duration_ms"])
         }
         stats.effort = string((root["effort"] as? [String: Any])?["level"])
+            ?? string((root["model"] as? [String: Any])?["effort"])
         stats.outputStyle = string((root["output_style"] as? [String: Any])?["name"])
         stats.transcriptPath = string(root["transcript_path"])
         stats.sessionID = string(root["session_id"])
@@ -214,6 +239,10 @@ extension AgentStats {
             usage.fiveHour = window(limits["five_hour"], length: AccountUsage.fiveHourLength)
             usage.sevenDay = window(limits["seven_day"], length: AccountUsage.sevenDayLength)
             if !usage.isEmpty { stats.usage = usage }
+        }
+
+        if let quota = root["quota"] as? [String: Any] {
+            stats.geminiUsage = AccountUsage.parseGeminiQuotaMap(quota)
         }
 
         return stats
@@ -232,6 +261,28 @@ extension AgentStats {
             resetsAt: Date(timeIntervalSince1970: seconds),
             length: length
         )
+    }
+
+    fileprivate static func geminiWindow(_ any: Any?, length: TimeInterval) -> AccountUsage.Window? {
+        guard let object = any as? [String: Any] else { return nil }
+        let rem = double(object["remaining_fraction"]) ?? double(object["remainingFraction"])
+        guard let remaining = rem, remaining >= 0, remaining <= 1.5 else { return nil }
+        let usedPercent = max(0, Int(((1.0 - min(1.0, remaining)) * 100.0).rounded()))
+        let resetRaw = string(object["reset_time"]) ?? string(object["resetTime"])
+        guard let resetStr = resetRaw, let resetDate = parseISO8601(resetStr) else { return nil }
+        return AccountUsage.Window(
+            usedPercent: usedPercent,
+            resetsAt: resetDate,
+            length: length
+        )
+    }
+
+    private static func parseISO8601(_ text: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: text) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: text)
     }
 
     private static func string(_ any: Any?) -> String? {
@@ -301,3 +352,86 @@ extension AgentStats {
         return Int(rounded)
     }
 }
+
+extension AccountUsage {
+    /// Window-by-window merge of two snapshots of the same account.
+    ///
+    /// Unlike `fresher`, which picks one snapshot whole, this keeps each
+    /// window from whichever side read it more recently. Needed because the
+    /// Gemini sources do not all carry the same buckets — the direct Cloud
+    /// Code endpoint omits `gemini-argon-wtu-weekly` — and taking a whole
+    /// snapshot from a source without Argon made the Argon gauge vanish the
+    /// moment that source looked "newer". Windows whose reset has already
+    /// passed are dropped, so a bucket that stops being reported cannot
+    /// linger past its own window.
+    static func merged(_ a: AccountUsage?, _ b: AccountUsage?, now: Date = Date()) -> AccountUsage? {
+        func pick(_ x: Window?, _ y: Window?) -> Window? {
+            let x = x.flatMap { $0.resetsAt > now ? $0 : nil }
+            let y = y.flatMap { $0.resetsAt > now ? $0 : nil }
+            guard let x else { return y }
+            guard let y else { return x }
+            if x.resetsAt != y.resetsAt { return x.resetsAt > y.resetsAt ? x : y }
+            return x.usedPercent >= y.usedPercent ? x : y
+        }
+        var out = AccountUsage()
+        out.fiveHour = pick(a?.fiveHour, b?.fiveHour)
+        out.sevenDay = pick(a?.sevenDay, b?.sevenDay)
+        out.argonSevenDay = pick(a?.argonSevenDay, b?.argonSevenDay)
+        out.threePFiveHour = pick(a?.threePFiveHour, b?.threePFiveHour)
+        out.threePSevenDay = pick(a?.threePSevenDay, b?.threePSevenDay)
+        return out.isEmpty ? nil : out
+    }
+
+    /// Parses the `"quota"` dictionary from an Antigravity (`agy`) status-line JSON payload.
+    static func parseGeminiQuotaMap(_ quota: [String: Any]) -> AccountUsage? {
+        var usage = AccountUsage()
+        usage.fiveHour = AgentStats.geminiWindow(
+            quota["gemini-5h"], length: AccountUsage.fiveHourLength
+        )
+        usage.sevenDay = AgentStats.geminiWindow(
+            quota["gemini-weekly"], length: AccountUsage.sevenDayLength
+        )
+        usage.argonSevenDay = AgentStats.geminiWindow(
+            quota["gemini-argon-wtu-weekly"], length: AccountUsage.sevenDayLength
+        )
+        usage.threePFiveHour = AgentStats.geminiWindow(
+            quota["3p-5h"], length: AccountUsage.fiveHourLength
+        )
+        usage.threePSevenDay = AgentStats.geminiWindow(
+            quota["3p-weekly"], length: AccountUsage.sevenDayLength
+        )
+        return usage.isEmpty ? nil : usage
+    }
+
+    /// Parses any of the three Gemini quota JSON shapes:
+    /// 1. `agy` status-line JSON (`root["quota"]`)
+    /// 2. `agy --output-format json -p /usage` (`root["command"]["data"]["groups"]`)
+    /// 3. Direct Cloud Code API `retrieveUserQuotaSummary` (`root["groups"]`)
+    static func parseGeminiQuotaPayload(_ data: Data) -> AccountUsage? {
+        guard let parsed = try? JSONSerialization.jsonObject(with: data),
+              let root = parsed as? [String: Any]
+        else { return nil }
+
+        if let quota = root["quota"] as? [String: Any],
+           let usage = parseGeminiQuotaMap(quota)
+        {
+            return usage
+        }
+
+        let groups = ((root["command"] as? [String: Any])?["data"] as? [String: Any])?["groups"] as? [[String: Any]]
+            ?? (root["groups"] as? [[String: Any]])
+        guard let groups else { return nil }
+
+        var byID = [String: Any]()
+        for group in groups {
+            guard let buckets = group["buckets"] as? [[String: Any]] else { continue }
+            for bucket in buckets {
+                if let id = (bucket["id"] as? String) ?? (bucket["bucketId"] as? String) {
+                    byID[id] = bucket
+                }
+            }
+        }
+        return parseGeminiQuotaMap(byID)
+    }
+}
+

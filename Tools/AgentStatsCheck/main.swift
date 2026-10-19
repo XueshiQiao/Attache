@@ -337,6 +337,101 @@ check("nothing on one side keeps the other", {
         ?? expect(AccountUsage.fresher(nil, nil) == nil, true)
 }())
 
+check("when five-hour is absent on both, weekly decides freshness", {
+    let olderWeek = AccountUsage(
+        fiveHour: nil,
+        sevenDay: AccountUsage.Window(
+            usedPercent: 6,
+            resetsAt: Date(timeIntervalSince1970: 1_792_641_600),
+            length: AccountUsage.sevenDayLength
+        )
+    )
+    let newerWeek = AccountUsage(
+        fiveHour: nil,
+        sevenDay: AccountUsage.Window(
+            usedPercent: 11,
+            resetsAt: Date(timeIntervalSince1970: 1_792_641_600),
+            length: AccountUsage.sevenDayLength
+        )
+    )
+    return expect(describe(AccountUsage.fresher(olderWeek, newerWeek)?.sevenDay?.usedPercent), "11")
+        ?? expect(describe(AccountUsage.fresher(newerWeek, olderWeek)?.sevenDay?.usedPercent), "11")
+}())
+
+print("\n— Antigravity / Gemini quota payloads —")
+
+private let agyStatusLine = """
+{"product":"antigravity","model":{"display_name":"Gemini 4 Argon (Medium)","effort":"medium"},\
+"quota":{"gemini-5h":{"remaining_fraction":0.984,"reset_time":"2026-10-19T13:26:06Z"},\
+"gemini-weekly":{"remaining_fraction":0.98,"reset_time":"2026-10-23T22:01:13Z"},\
+"gemini-argon-wtu-weekly":{"remaining_fraction":0.23,"reset_time":"2026-10-24T00:02:15Z"}}}
+"""
+
+check("Antigravity status-line quota parses 5h, weekly, and Argon weekly", {
+    guard let stats = AgentStats.parse(agyStatusLine), let g = stats.geminiUsage else {
+        return "got nil geminiUsage"
+    }
+    return expect(describe(stats.effort), "medium")
+        ?? expect(describe(g.fiveHour?.usedPercent), "2")
+        ?? expect(describe(g.sevenDay?.usedPercent), "2")
+        ?? expect(describe(g.argonSevenDay?.usedPercent), "77")
+}())
+
+private let agyCLIUsageJSON = """
+{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[\
+{"name":"Gemini Models","buckets":[\
+{"id":"gemini-weekly","window":"weekly","remaining_fraction":0.90,"reset_time":"2026-10-23T22:01:13Z"},\
+{"id":"gemini-5h","window":"5h","remaining_fraction":0.75,"reset_time":"2026-10-19T13:26:06Z"}]},\
+{"name":"Claude and GPT models","buckets":[\
+{"id":"3p-weekly","window":"weekly","remaining_fraction":0.51,"reset_time":"2026-10-26T07:54:44Z"},\
+{"id":"3p-5h","window":"5h","remaining_fraction":0.00,"reset_time":"2026-10-19T19:22:48Z"}]},\
+{"name":"Gemini 4 Argon","buckets":[\
+{"id":"gemini-argon-wtu-weekly","window":"weekly","remaining_fraction":0.232,"reset_time":"2026-10-24T00:02:15Z"}]}]}}}
+"""
+
+check("agy --output-format json -p /usage payload parses all 5 buckets", {
+    guard let g = AccountUsage.parseGeminiQuotaPayload(Data(agyCLIUsageJSON.utf8)) else {
+        return "got nil from parseGeminiQuotaPayload"
+    }
+    return expect(describe(g.fiveHour?.usedPercent), "25")
+        ?? expect(describe(g.sevenDay?.usedPercent), "10")
+        ?? expect(describe(g.threePFiveHour?.usedPercent), "100")
+        ?? expect(describe(g.threePSevenDay?.usedPercent), "49")
+        ?? expect(describe(g.argonSevenDay?.usedPercent), "77")
+}())
+
+check("a newer snapshot without Argon does not erase Argon (per-window merge)", {
+    let now = Date(timeIntervalSince1970: 1_792_400_000)
+    func w(_ p: Int, _ resetIn: TimeInterval, _ len: TimeInterval) -> AccountUsage.Window {
+        AccountUsage.Window(usedPercent: p, resetsAt: now.addingTimeInterval(resetIn), length: len)
+    }
+    let withArgon = AccountUsage(
+        fiveHour: w(2, 3600, AccountUsage.fiveHourLength),
+        sevenDay: w(2, 400_000, AccountUsage.sevenDayLength),
+        argonSevenDay: w(77, 380_000, AccountUsage.sevenDayLength)
+    )
+    // Next 5h window, from the endpoint that never reports Argon.
+    let newerNoArgon = AccountUsage(
+        fiveHour: w(1, 18_000, AccountUsage.fiveHourLength),
+        sevenDay: w(3, 400_000, AccountUsage.sevenDayLength)
+    )
+    let m = AccountUsage.merged(withArgon, newerNoArgon, now: now)
+    return expect(describe(m?.argonSevenDay?.usedPercent), "77")
+        ?? expect(describe(m?.fiveHour?.usedPercent), "1")
+        ?? expect(describe(m?.sevenDay?.usedPercent), "3")
+}())
+
+check("an expired window is dropped by the merge", {
+    let now = Date(timeIntervalSince1970: 1_792_400_000)
+    let old = AccountUsage(
+        fiveHour: nil, sevenDay: nil,
+        argonSevenDay: AccountUsage.Window(
+            usedPercent: 90, resetsAt: now.addingTimeInterval(-60), length: AccountUsage.sevenDayLength
+        )
+    )
+    return expect(AccountUsage.merged(old, nil, now: now) == nil, true)
+}())
+
 // MARK: - Result
 
 print("")
@@ -346,3 +441,4 @@ if failures == 0 {
     print("\(failures) of \(total) cases FAILED")
     exit(1)
 }
+

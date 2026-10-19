@@ -203,6 +203,7 @@ final class MainViewController: NSSplitViewController {
     private var settingsObserver: NSObjectProtocol?
     private var occlusionObserver: NSObjectProtocol?
     private var appearanceObservation: NSKeyValueObservation?
+    private let geminiQuotaService = GeminiQuotaService()
 
     var onStatusChange: ((String) -> Void)?
 
@@ -542,6 +543,11 @@ final class MainViewController: NSSplitViewController {
         sidebar.onRestoreHidden = { [weak self] session in
             self?.inSession(session) { $0.restoreHiddenWindows() }
         }
+
+        geminiQuotaService.onChange = { [weak self] _ in
+            self?.refreshSidebar()
+        }
+        geminiQuotaService.start()
     }
 
     // MARK: - Host management
@@ -1476,6 +1482,14 @@ final class MainViewController: NSSplitViewController {
             .reduce(nil) { AccountUsage.fresher($0, $1) }
         )
 
+        let paneGeminiUsage = hosts.flatMap { host in
+            host.server.sessionIDs.compactMap { host.server.connection(id: $0)?.geminiAccountUsage }
+        }
+        .reduce(nil) { AccountUsage.merged($0, $1) }
+        sidebar.showGeminiUsage(
+            AccountUsage.merged(geminiQuotaService.currentUsage, paneGeminiUsage)
+        )
+
         refreshConversation()
     }
 
@@ -1861,6 +1875,7 @@ final class MainViewController: NSSplitViewController {
     /// to break, but a teardown that runs twice is a teardown whose order
     /// nobody can reason about.
     func stop() {
+        geminiQuotaService.stop()
         for controller in embedded.values { controller.detach() }
         for host in hosts { host.stop() }
     }
