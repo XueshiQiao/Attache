@@ -541,6 +541,12 @@ final class MainViewController: NSSplitViewController {
         sidebar.onKillWindow = { [weak self] session, id in
             self?.inSession(session) { $0.confirmKillWindow(id: id) }
         }
+        sidebar.onOpenWindowPath = { [weak self] session, id in
+            self?.openWorkingDirectory(windowID: id, inSession: session)
+        }
+        sidebar.onCopyWindowPath = { [weak self] session, id in
+            self?.copyWorkingDirectory(windowID: id, inSession: session)
+        }
         sidebar.onRestoreHidden = { [weak self] session in
             self?.inSession(session) { $0.restoreHiddenWindows() }
         }
@@ -755,6 +761,54 @@ final class MainViewController: NSSplitViewController {
             return
         }
         action(controller)
+    }
+
+    private func openWorkingDirectory(windowID: String, inSession session: String) {
+        guard let connection = connection(id: session),
+              let host = host(ofComposite: session) else { return }
+        connection.workingDirectory(ofWindow: windowID) { path in
+            guard let path else {
+                connection.showStatusMessage("Attaché: window did not report a working directory")
+                return
+            }
+            guard host.transport.pathsAreLocal else {
+                RemoteOpener.open(
+                    path: path,
+                    host: host.displayName,
+                    destination: host.transport.ssh?.destination ?? host.displayName,
+                    template: host.config?.remoteOpenCommand,
+                    status: { message in connection.showStatusMessage(message) }
+                )
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                var isDirectory: ObjCBool = false
+                let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                DispatchQueue.main.async {
+                    guard exists else {
+                        connection.showStatusMessage("Attaché: no such path — \(path)")
+                        return
+                    }
+                    if isDirectory.boolValue {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                    } else {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                    }
+                }
+            }
+        }
+    }
+
+    private func copyWorkingDirectory(windowID: String, inSession session: String) {
+        guard let connection = connection(id: session) else { return }
+        connection.workingDirectory(ofWindow: windowID) { path in
+            guard let path else {
+                connection.showStatusMessage("Attaché: window did not report a working directory")
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(path, forType: .string)
+        }
     }
 
     /// This session's controller, made on demand. One per session for the life

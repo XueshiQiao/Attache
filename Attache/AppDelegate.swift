@@ -486,6 +486,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         menu.addItem(.separator())
         entry(menu, "Zoom Pane", "\r", [.command], #selector(toggleZoomPane))
         menu.addItem(.separator())
+        entry(menu, "Open in Finder", "", [], #selector(openWorkingDirectory))
+        entry(menu, "Copy Path", "", [], #selector(copyWorkingDirectory))
+        menu.addItem(.separator())
         entry(menu, "Kill Pane…", "", [], #selector(killPane))
         item.submenu = menu
         return item
@@ -587,6 +590,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
 
     @objc private func killPane() {
         _ = main?.currentEmbedded?.confirmKillFocusedPane()
+    }
+
+    @objc private func openWorkingDirectory() {
+        _ = main?.currentEmbedded?.openWorkingDirectoryOfFocusedPane()
+    }
+
+    @objc private func copyWorkingDirectory() {
+        _ = main?.currentEmbedded?.copyWorkingDirectoryOfFocusedPane()
     }
 
     /// Flip the conversation rail — `MainViewController` owns the rule,

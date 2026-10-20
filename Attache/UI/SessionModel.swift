@@ -355,7 +355,11 @@ final class SessionModel {
     /// panes, so nothing on this side knows where they are. `copySelection` is
     /// passed in for the same reason — the selection lives inside the libghostty
     /// surface the view half owns.
-    func activePaneContextMenu(copySelection: @escaping () -> Void) -> NSMenu? {
+    func activePaneContextMenu(
+        copySelection: @escaping () -> Void,
+        openWorkingDirectory: @escaping () -> Void,
+        copyWorkingDirectory: @escaping () -> Void
+    ) -> NSMenu? {
         guard let paneID = activePaneID else { return nil }
         let menu = NSMenu()
         // Off, or AppKit decides what is enabled by asking each item's target
@@ -457,6 +461,16 @@ final class SessionModel {
 
         menu.addItem(paneItem("Paste", key: "v", flags: [.command]) { [weak self] in
             _ = self?.pastePasteboard(into: paneID)
+        })
+
+        menu.addItem(.separator())
+
+        let openTitle = connection.transport.pathsAreLocal
+            ? "Open in Finder"
+            : "Open Working Directory"
+        menu.addItem(paneItem(openTitle, key: "", flags: []) { openWorkingDirectory() })
+        menu.addItem(paneItem("Copy Path", key: "", flags: []) {
+            copyWorkingDirectory()
         })
 
         menu.addItem(.separator())

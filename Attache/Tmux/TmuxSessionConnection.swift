@@ -1231,6 +1231,70 @@ final class TmuxSessionConnection {
         }
     }
 
+    /// The directory of the pane covering `cell`, or of the active pane when
+    /// `cell` is nil or lands on a divider between panes.
+    ///
+    /// Used by the pane context menu and the Pane menu bar item: a right-click
+    /// inside one of several panes addresses the pane under the pointer, while
+    /// a right-click that happens to land on a 1-cell splitter — or a menu-bar
+    /// click with no pointer cell at all — still has an unambiguous active pane
+    /// in the same `list-panes` reply.
+    func workingDirectory(
+        atCell cell: (column: Int, row: Int)?,
+        completion: @escaping (String?) -> Void
+    ) {
+        let format = "#{pane_left} #{pane_top} #{pane_right} #{pane_bottom}"
+            + " #{window_zoomed_flag}#{pane_active} #{pane_current_path}"
+        client.run("list-panes -t \(sessionTarget) -F '\(format)'") { reply, failed in
+            guard !failed else {
+                completion(nil)
+                return
+            }
+            var activePath: String?
+            for line in reply {
+                let parts = line.split(
+                    separator: " ", maxSplits: 5, omittingEmptySubsequences: false
+                )
+                guard parts.count == 6,
+                      let left = Int(parts[0]), let top = Int(parts[1]),
+                      let right = Int(parts[2]), let bottom = Int(parts[3]),
+                      parts[4] != "10"
+                else { continue }
+                let raw = parts[5].trimmingCharacters(in: .whitespaces)
+                let path = raw.isEmpty ? nil : raw
+                if parts[4].hasSuffix("1") {
+                    activePath = path
+                }
+                if let cell,
+                   cell.column >= left, cell.column <= right,
+                   cell.row >= top, cell.row <= bottom
+                {
+                    completion(path)
+                    return
+                }
+            }
+            completion(activePath)
+        }
+    }
+
+    /// The working directory of a window's active pane, asked by window id so
+    /// a background window's row in the sidebar can answer too.
+    func workingDirectory(ofWindow windowID: String, completion: @escaping (String?) -> Void) {
+        if let cached = pathByWindow[windowID], !cached.isEmpty {
+            completion(cached)
+            return
+        }
+        client.run("display-message -p -t \(windowID) '#{pane_current_path}'") { reply, failed in
+            guard !failed, let raw = reply.first?.trimmingCharacters(in: .whitespaces),
+                  !raw.isEmpty
+            else {
+                completion(nil)
+                return
+            }
+            completion(raw)
+        }
+    }
+
     /// Put one line on tmux's own status line, where the user can actually see
     /// it. Used to say that a link led nowhere.
     ///

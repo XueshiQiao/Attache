@@ -31,9 +31,10 @@ final class TmuxTerminalView: TerminalView {
     var onDropText: ((String) -> Bool)?
 
     /// The menu a right-click in this pane should open, or nil to leave the
-    /// event to libghostty. Set by whoever knows the pane id; the view
-    /// deliberately does not, the same arrangement `onDropText` uses.
-    var onContextMenu: (() -> NSMenu?)?
+    /// event to libghostty. Receives the click point in this view's
+    /// coordinates so an action that needs the pane under the pointer can
+    /// resolve it through tmux's grid.
+    var onContextMenu: ((NSPoint) -> NSMenu?)?
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
@@ -311,7 +312,8 @@ final class TmuxTerminalView: TerminalView {
     /// id — but changing what a right-click does to focus was not the ask.
     override func rightMouseDown(with event: NSEvent) {
         openedOwnMenu = false
-        guard !event.modifierFlags.contains(.option), let menu = onContextMenu?() else {
+        let point = convert(event.locationInWindow, from: nil)
+        guard !event.modifierFlags.contains(.option), let menu = onContextMenu?(point) else {
             super.rightMouseDown(with: event)
             return
         }
@@ -323,7 +325,7 @@ final class TmuxTerminalView: TerminalView {
         // conforms to `NSTextInputClient` for input-method support — so AppKit
         // appended an **AutoFill** submenu to the pane menu, offering to type a
         // saved password into a terminal. Observed, not guessed at.
-        menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+        menu.popUp(positioning: nil, at: point, in: self)
     }
 
     /// Swallow the release that belongs to a menu this view opened.

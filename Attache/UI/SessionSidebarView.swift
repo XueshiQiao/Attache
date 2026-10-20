@@ -72,6 +72,8 @@ final class SessionSidebarView: NSView {
     var onMoveWindow: ((String, String, String, String?) -> Void)?
     var onHideWindow: ((String, String) -> Void)?
     var onKillWindow: ((String, String) -> Void)?
+    var onOpenWindowPath: ((String, String) -> Void)?
+    var onCopyWindowPath: ((String, String) -> Void)?
     var onRestoreHidden: ((String) -> Void)?
     /// A down host's row was clicked: try its connection again now.
     var onHostRetry: ((String) -> Void)?
@@ -922,6 +924,25 @@ final class SessionSidebarView: NSView {
         menu.addItem(rename)
         menu.addItem(.separator())
 
+        let isRemote = entry(session).flatMap { entry in
+            hostRows.first { $0.id == entry.host }?.isRemote
+        } ?? false
+        let openTitle = isRemote ? "Open Working Directory" : "Open in Finder"
+        let openPath = NSMenuItem(
+            title: openTitle, action: #selector(openPathFromMenu(_:)), keyEquivalent: ""
+        )
+        openPath.target = self
+        openPath.representedObject = target
+        menu.addItem(openPath)
+
+        let copyPath = NSMenuItem(
+            title: "Copy Path", action: #selector(copyPathFromMenu(_:)), keyEquivalent: ""
+        )
+        copyPath.target = self
+        copyPath.representedObject = target
+        menu.addItem(copyPath)
+        menu.addItem(.separator())
+
         let hide = NSMenuItem(
             title: "Hide From The Sidebar", action: #selector(hideFromMenu(_:)), keyEquivalent: ""
         )
@@ -960,6 +981,16 @@ final class SessionSidebarView: NSView {
     @objc private func killFromMenu(_ sender: NSMenuItem) {
         guard let target = sender.representedObject as? WindowTarget else { return }
         onKillWindow?(target.session, target.id)
+    }
+
+    @objc private func openPathFromMenu(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? WindowTarget else { return }
+        onOpenWindowPath?(target.session, target.id)
+    }
+
+    @objc private func copyPathFromMenu(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? WindowTarget else { return }
+        onCopyWindowPath?(target.session, target.id)
     }
 
     // MARK: - Host context menu

@@ -210,9 +210,13 @@ final class EmbeddedSessionViewController: NSViewController {
         terminalView.configuration = TerminalSurfaceOptions(backend: .exec)
         terminalView.setAccessibilityElement(true)
         terminalView.setAccessibilityLabel("tmux session \(connection.sessionID), drawn by tmux")
-        terminalView.onContextMenu = { [weak self] in
+        terminalView.onContextMenu = { [weak self] point in
             guard let self else { return nil }
-            return model.activePaneContextMenu { [weak self] in self?.copySelection() }
+            return model.activePaneContextMenu(
+                copySelection: { [weak self] in self?.copySelection() },
+                openWorkingDirectory: { [weak self] in self?.openWorkingDirectory(at: point) },
+                copyWorkingDirectory: { [weak self] in self?.copyWorkingDirectory(at: point) }
+            )
         }
         // Dropping a file was refused outright until this was wired: the view
         // registers for the drag types and then asks its owner what to do with
@@ -329,6 +333,54 @@ final class EmbeddedSessionViewController: NSViewController {
         guard let paneID = addressablePane else { return false }
         model.confirmKillPane(paneID)
         return true
+    }
+
+    func openWorkingDirectoryOfFocusedPane() -> Bool {
+        guard addressablePane != nil else { return false }
+        openWorkingDirectory(at: nil)
+        return true
+    }
+
+    func copyWorkingDirectoryOfFocusedPane() -> Bool {
+        guard addressablePane != nil else { return false }
+        copyWorkingDirectory(at: nil)
+        return true
+    }
+
+    /// Open the working directory of the pane under `point` (or of the active
+    /// pane when `point` is nil or lands on a divider).
+    func openWorkingDirectory(at point: NSPoint? = nil) {
+        let cell = point.flatMap { self.cell(at: $0) }
+        connection.workingDirectory(atCell: cell) { [weak self] path in
+            guard let self else { return }
+            guard let path else {
+                self.connection.showStatusMessage("Attaché: pane did not report a working directory")
+                return
+            }
+            guard self.host.transport.pathsAreLocal else {
+                self.openRemoteLink(path, cell: nil)
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let target = TerminalLinkTarget.resolve(path, cwd: nil, existence: Self.existence)
+                DispatchQueue.main.async { self?.perform(target, raw: path) }
+            }
+        }
+    }
+
+    /// Copy the working directory of the pane under `point` (or of the active
+    /// pane when `point` is nil or lands on a divider) to the system pasteboard.
+    func copyWorkingDirectory(at point: NSPoint? = nil) {
+        let cell = point.flatMap { self.cell(at: $0) }
+        connection.workingDirectory(atCell: cell) { [weak self] path in
+            guard let self else { return }
+            guard let path else {
+                self.connection.showStatusMessage("Attaché: pane did not report a working directory")
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(path, forType: .string)
+        }
     }
 
     /// Copy whatever is selected in the embedded terminal.
