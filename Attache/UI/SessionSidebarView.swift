@@ -151,6 +151,7 @@ final class SessionSidebarView: NSView {
     /// foot of the rail and update independently.
     private let claudeSection = UsageProviderSectionView(provider: .claude, scheme: .cardA)
     private let geminiSection = UsageProviderSectionView(provider: .gemini, scheme: .cardA)
+    private let grokSection = UsageProviderSectionView(provider: .grok, scheme: .cardA)
 
     private let scrollView = NSScrollView()
     private let rowsView = RowsView()
@@ -339,6 +340,7 @@ final class SessionSidebarView: NSView {
 
         addSubview(claudeSection)
         addSubview(geminiSection)
+        addSubview(grokSection)
 
         applyChromeTheme()
     }
@@ -353,6 +355,7 @@ final class SessionSidebarView: NSView {
         detailLabel.textColor = theme.faintText
         claudeSection.applyTheme()
         geminiSection.applyTheme()
+        grokSection.applyTheme()
         dropIndicator.layer?.backgroundColor = theme.accent.cgColor
         rebuild()
         needsDisplay = true
@@ -372,6 +375,15 @@ final class SessionSidebarView: NSView {
         let wanted = AppSettings.sidebarShowsUsage ? usage : nil
         guard geminiSection.usage != wanted else { return }
         geminiSection.usage = wanted
+        needsLayout = true
+    }
+
+    /// Grok's weekly pool. The account has no 5-hour window, so the card draws
+    /// the one bar `sevenDay` fills. Same switch as the other two cards.
+    func showGrokUsage(_ usage: AccountUsage?) {
+        let wanted = AppSettings.sidebarShowsUsage ? usage : nil
+        guard grokSection.usage != wanted else { return }
+        grokSection.usage = wanted
         needsLayout = true
     }
 
@@ -734,9 +746,12 @@ final class SessionSidebarView: NSView {
             width: max(0, width - halfWidth - buttonGap), height: buttonHeight
         )
 
-        // Stack visible provider cards above the footer buttons (Claude on top,
-        // Gemini below, each returning its height to the window list when hidden).
-        for section in [geminiSection, claudeSection] where !section.isHidden {
+        // Stack visible provider cards above the footer buttons. This view is
+        // flipped, so the first card lands against the buttons and each later
+        // card is drawn above it. Grok goes last and ends up nearest the
+        // session list; Claude and Gemini keep the order they already had.
+        // A hidden card returns its height to the window list.
+        for section in [geminiSection, claudeSection, grokSection] where !section.isHidden {
             let h = section.preferredHeight
             guard h > 0 else { continue }
             listBottom -= h + 7

@@ -204,6 +204,7 @@ final class MainViewController: NSSplitViewController {
     private var occlusionObserver: NSObjectProtocol?
     private var appearanceObservation: NSKeyValueObservation?
     private let geminiQuotaService = GeminiQuotaService()
+    private let grokQuotaService = GrokQuotaService()
 
     var onStatusChange: ((String) -> Void)?
 
@@ -548,6 +549,10 @@ final class MainViewController: NSSplitViewController {
             self?.refreshSidebar()
         }
         geminiQuotaService.start()
+        grokQuotaService.onChange = { [weak self] _ in
+            self?.refreshSidebar()
+        }
+        grokQuotaService.start()
     }
 
     // MARK: - Host management
@@ -1489,6 +1494,10 @@ final class MainViewController: NSSplitViewController {
         sidebar.showGeminiUsage(
             AccountUsage.merged(geminiQuotaService.currentUsage, paneGeminiUsage)
         )
+        // Account-wide, and not carried on a tmux connection. Merging pane
+        // snapshots into it would invent a second source this number does
+        // not have.
+        sidebar.showGrokUsage(grokQuotaService.currentUsage)
 
         refreshConversation()
     }
@@ -1876,6 +1885,7 @@ final class MainViewController: NSSplitViewController {
     /// nobody can reason about.
     func stop() {
         geminiQuotaService.stop()
+        grokQuotaService.stop()
         for controller in embedded.values { controller.detach() }
         for host in hosts { host.stop() }
     }

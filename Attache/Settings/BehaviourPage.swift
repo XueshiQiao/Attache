@@ -154,10 +154,7 @@ struct BehaviourPage: View {
 
                     if store.sidebarShowsAgentStats || store.sidebarShowsUsage {
                         Label(
-                            store.statusLineInstalled
-                                ? "Both read the status line wrapper below."
-                                : "Both need the status line wrapper below — without it there is "
-                                    + "nothing to draw, and rows stay the height they are now.",
+                            usageCaption(store),
                             systemImage: store.statusLineInstalled ? "checkmark.seal" : "info.circle"
                         )
                         .font(.caption)
@@ -466,6 +463,23 @@ struct BehaviourPage: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Behaviour")
+    }
+
+    /// Claude's limits come from the status line. Grok's weekly pool does not,
+    /// so the caption has to say which toggle is talking about which source.
+    private func usageCaption(_ store: SettingsStore) -> String {
+        guard store.sidebarShowsUsage else {
+            return store.statusLineInstalled
+                ? "Both read the status line wrapper below."
+                : "Both need the status line wrapper below — without it there is "
+                    + "nothing to draw, and rows stay the height they are now."
+        }
+        return store.statusLineInstalled
+            ? "Model, context, cost and Claude's limits read the status line wrapper below. "
+                + "Grok's weekly limit is fetched on its own."
+            : "Model, context, cost and Claude's limits need the status line wrapper below — "
+                + "without it those stay blank, and rows stay the height they are now. "
+                + "Grok's weekly limit does not use that wrapper."
     }
 
 }

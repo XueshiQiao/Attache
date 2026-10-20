@@ -262,6 +262,13 @@ final class UsageProviderSectionView: NSView {
             title: "Gemini",
             accent: NSColor(srgbRed: 0.40, green: 0.62, blue: 0.96, alpha: 1.0)
         )
+        /// A light stone, so the pip stays visible on the dark rail without
+        /// borrowing Claude's orange or Gemini's blue. The bar itself is
+        /// still the green / amber / red usage colour; this is only the dot.
+        static let grok = ProviderDescriptor(
+            title: "Grok",
+            accent: NSColor(srgbRed: 0.82, green: 0.84, blue: 0.88, alpha: 1.0)
+        )
     }
 
     let provider: ProviderDescriptor
