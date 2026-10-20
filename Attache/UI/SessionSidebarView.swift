@@ -147,11 +147,9 @@ final class SessionSidebarView: NSView {
     private let addServerButton = SidebarPillButton(title: "+ Server…")
     private let detailLabel = NSTextField(labelWithString: "")
 
-    /// Each provider's rate-limit windows sit in their own recessed card at the
-    /// foot of the rail and update independently.
-    private let claudeSection = UsageProviderSectionView(provider: .claude, scheme: .cardA)
-    private let geminiSection = UsageProviderSectionView(provider: .gemini, scheme: .cardA)
-    private let grokSection = UsageProviderSectionView(provider: .grok, scheme: .cardA)
+    /// All active providers' rate-limit windows sit in a unified, borderless
+    /// translucent deck at the foot of the rail and update independently.
+    private let usageDeck = UsageDeckView()
 
     private let scrollView = NSScrollView()
     private let rowsView = RowsView()
@@ -338,9 +336,7 @@ final class SessionSidebarView: NSView {
         detailLabel.isHidden = true
         addSubview(detailLabel)
 
-        addSubview(claudeSection)
-        addSubview(geminiSection)
-        addSubview(grokSection)
+        addSubview(usageDeck)
 
         applyChromeTheme()
     }
@@ -353,9 +349,7 @@ final class SessionSidebarView: NSView {
         newButton.applyTheme()
         addServerButton.applyTheme()
         detailLabel.textColor = theme.faintText
-        claudeSection.applyTheme()
-        geminiSection.applyTheme()
-        grokSection.applyTheme()
+        usageDeck.applyTheme()
         dropIndicator.layer?.backgroundColor = theme.accent.cgColor
         rebuild()
         needsDisplay = true
@@ -364,8 +358,7 @@ final class SessionSidebarView: NSView {
     /// The Claude account's rate-limit windows, or nil for "nothing has told us".
     func showUsage(_ usage: AccountUsage?) {
         let wanted = AppSettings.sidebarShowsUsage ? usage : nil
-        guard claudeSection.usage != wanted else { return }
-        claudeSection.usage = wanted
+        usageDeck.showClaudeUsage(wanted)
         needsLayout = true
     }
 
@@ -373,8 +366,7 @@ final class SessionSidebarView: NSView {
     /// independently of Claude's.
     func showGeminiUsage(_ usage: AccountUsage?) {
         let wanted = AppSettings.sidebarShowsUsage ? usage : nil
-        guard geminiSection.usage != wanted else { return }
-        geminiSection.usage = wanted
+        usageDeck.showGeminiUsage(wanted)
         needsLayout = true
     }
 
@@ -382,8 +374,7 @@ final class SessionSidebarView: NSView {
     /// the one bar `sevenDay` fills. Same switch as the other two cards.
     func showGrokUsage(_ usage: AccountUsage?) {
         let wanted = AppSettings.sidebarShowsUsage ? usage : nil
-        guard grokSection.usage != wanted else { return }
-        grokSection.usage = wanted
+        usageDeck.showGrokUsage(wanted)
         needsLayout = true
     }
 
@@ -746,17 +737,15 @@ final class SessionSidebarView: NSView {
             width: max(0, width - halfWidth - buttonGap), height: buttonHeight
         )
 
-        // Stack visible provider cards above the footer buttons. This view is
-        // flipped, so the first card lands against the buttons and each later
-        // card is drawn above it. Grok goes last and ends up nearest the
-        // session list; Claude and Gemini keep the order they already had.
-        // A hidden card returns its height to the window list.
-        for section in [geminiSection, claudeSection, grokSection] where !section.isHidden {
-            let h = section.preferredHeight
-            guard h > 0 else { continue }
-            listBottom -= h + 7
-            section.frame = CGRect(x: inset, y: listBottom, width: width, height: h)
-            section.needsLayout = true
+        // An integrated, borderless deck holding visible provider rate-limits
+        // sits above the footer buttons.
+        if !usageDeck.isHidden {
+            let h = usageDeck.preferredHeight
+            if h > 0 {
+                listBottom -= h + 7
+                usageDeck.frame = CGRect(x: inset, y: listBottom, width: width, height: h)
+                usageDeck.needsLayout = true
+            }
         }
 
         let top = contentTopInset

@@ -49,6 +49,14 @@ final class UsageGaugeView: NSView {
     private let track = NSView()
     private let fill = NSView()
     private let mark = NSView()
+    private let fillGradient = CAGradientLayer()
+
+    /// The brand accent color used to produce the subtle ambient glow and flowing gradient.
+    var accentColor: NSColor = .systemBlue {
+        didSet {
+            if accentColor != oldValue { apply() }
+        }
+    }
 
     /// The window to draw, or nil to draw nothing.
     var usage: AccountUsage.Window? {
@@ -86,10 +94,18 @@ final class UsageGaugeView: NSView {
             addSubview(label)
         }
 
-        for bar in [track, fill, mark] {
-            bar.wantsLayer = true
-            bar.layer?.cornerRadius = 2.25
-        }
+        track.wantsLayer = true
+        track.layer?.cornerRadius = 2.0
+        track.layer?.masksToBounds = false
+
+        fill.wantsLayer = true
+        fillGradient.cornerRadius = 2.0
+        fillGradient.startPoint = CGPoint(x: 0, y: 0.5)
+        fillGradient.endPoint = CGPoint(x: 1, y: 0.5)
+        fill.layer = fillGradient
+        fill.layer?.masksToBounds = false
+
+        mark.wantsLayer = true
         mark.layer?.cornerRadius = 0.75
         track.addSubview(fill)
         track.addSubview(mark)
@@ -144,25 +160,36 @@ final class UsageGaugeView: NSView {
         titleLabel.textColor = theme.faintText
         detailLabel.textColor = theme.mutedText
 
-        let colour = Self.colour(forUsed: usage.usedPercent)
-        track.layer?.backgroundColor = theme.faintText.withAlphaComponent(0.22).cgColor
-        fill.layer?.backgroundColor = colour.cgColor
-        // Deliberately neutral. The mark is a reference line, not a reading —
-        // giving it a hue of its own would make the bar look like two
-        // measurements racing rather than one measured against a ruler.
-        mark.layer?.backgroundColor = theme.text.withAlphaComponent(0.55).cgColor
+        // 保持纯粹的品牌流光渐变与专属微发光，不随用量高低变色
+        let colors = Self.flowingColors(for: accentColor).map { $0.cgColor }
+        fillGradient.colors = colors
+        fillGradient.shadowColor = accentColor.cgColor
+        fillGradient.shadowRadius = 3.5
+        fillGradient.shadowOpacity = 0.50
+        fillGradient.shadowOffset = .zero
+
+        track.layer?.backgroundColor = theme.faintText.withAlphaComponent(0.18).cgColor
+        mark.layer?.backgroundColor = theme.text.withAlphaComponent(0.65).cgColor
 
         toolTip = Self.tooltip(for: usage, title: titleLabel.stringValue)
         needsLayout = true
     }
 
-    /// Green, amber, red at 50 and 75 — the thresholds coralline uses, so a
-    /// rail and a status line on the same screen never disagree about whether
-    /// a number is worth worrying about.
-    private static func colour(forUsed percent: Int) -> NSColor {
-        if percent >= 75 { return .systemRed }
-        if percent >= 50 { return .systemYellow }
-        return .systemGreen
+    private static func flowingColors(for base: NSColor) -> [NSColor] {
+        guard let srgb = base.usingColorSpace(.sRGB) else { return [base, base] }
+        let c1 = NSColor(
+            srgbRed: max(0, srgb.redComponent * 0.92),
+            green: max(0, srgb.greenComponent * 0.92),
+            blue: max(0, srgb.blueComponent * 0.92),
+            alpha: 1.0
+        )
+        let c2 = NSColor(
+            srgbRed: min(1, srgb.redComponent * 1.16 + 0.04),
+            green: min(1, srgb.greenComponent * 1.16 + 0.04),
+            blue: min(1, srgb.blueComponent * 1.16 + 0.04),
+            alpha: 1.0
+        )
+        return [c1, c2]
     }
 
     private static func tooltip(for usage: AccountUsage.Window, title: String) -> String {
@@ -229,6 +256,7 @@ final class UsageGaugeView: NSView {
 
         let trackW = track.bounds.width
         fill.frame = CGRect(x: 0, y: 0, width: trackW * used, height: barHeight)
+        fillGradient.frame = fill.bounds
         let markX = min(trackW - markWidth, max(0, trackW * elapsed - markWidth / 2))
         mark.frame = CGRect(x: markX, y: -1.5, width: markWidth, height: barHeight + 3)
     }
@@ -323,7 +351,7 @@ final class UsageProviderSectionView: NSView {
             addSubview(v)
         }
         cardBox.layer?.cornerRadius = 7
-        cardBox.layer?.borderWidth = 1
+        cardBox.layer?.borderWidth = 0
         leftRule.layer?.cornerRadius = 1
         dotView.layer?.cornerRadius = 2.5
 
@@ -334,6 +362,7 @@ final class UsageProviderSectionView: NSView {
         addSubview(headerLabel)
 
         for gauge in allGauges {
+            gauge.accentColor = provider.accent
             gauge.isHidden = true
             addSubview(gauge)
         }
@@ -356,17 +385,27 @@ final class UsageProviderSectionView: NSView {
         }
     }
 
+    var hideCardBackground: Bool = false {
+        didSet {
+            if hideCardBackground != oldValue {
+                cardBox.isHidden = hideCardBackground || (scheme != .cardA)
+                needsLayout = true
+            }
+        }
+    }
+
     func applyTheme() {
         let theme = ChromeTheme.current
         headerLabel.textColor = theme.mutedText
         dotView.layer?.backgroundColor = provider.accent.cgColor
 
-        cardBox.layer?.backgroundColor = theme.hover.withAlphaComponent(0.45).cgColor
-        cardBox.layer?.borderColor = theme.separator.cgColor
+        cardBox.layer?.backgroundColor = theme.hover.withAlphaComponent(0.42).cgColor
+        cardBox.layer?.borderWidth = 0
+        cardBox.layer?.borderColor = nil
         topDivider.layer?.backgroundColor = theme.separator.cgColor
         leftRule.layer?.backgroundColor = provider.accent.withAlphaComponent(0.6).cgColor
 
-        cardBox.isHidden = (scheme != .cardA)
+        cardBox.isHidden = hideCardBackground || (scheme != .cardA)
         topDivider.isHidden = (scheme != .inlineB)
         leftRule.isHidden = (scheme != .leftRuleC)
         dotView.isHidden = (scheme == .leftRuleC)
@@ -377,7 +416,18 @@ final class UsageProviderSectionView: NSView {
         needsLayout = true
     }
 
+    var compactHeight: CGFloat {
+        let active = visibleGauges
+        guard !active.isEmpty else { return 0 }
+        let headerH: CGFloat = 13
+        let gaugeH = active[0].rowHeight
+        let gap: CGFloat = 4.0
+        let gaugesTotal = CGFloat(active.count) * gaugeH + CGFloat(max(0, active.count - 1)) * gap
+        return headerH + 3.5 + gaugesTotal
+    }
+
     var preferredHeight: CGFloat {
+        if hideCardBackground { return compactHeight }
         let active = visibleGauges
         guard !active.isEmpty else { return 0 }
         let headerH: CGFloat = 13
@@ -411,11 +461,11 @@ final class UsageProviderSectionView: NSView {
         switch scheme {
         case .cardA:
             cardBox.frame = bounds
-            contentX = 10
-            contentW = max(0, bounds.width - 20)
-            y = 7
+            contentX = hideCardBackground ? 0 : 10
+            contentW = hideCardBackground ? bounds.width : max(0, bounds.width - 20)
+            y = hideCardBackground ? 0 : 7
             dotView.frame = CGRect(x: contentX, y: y + 4, width: 5, height: 5)
-            headerLabel.frame = CGRect(x: contentX + 9, y: y, width: contentW - 9, height: headerH)
+            headerLabel.frame = CGRect(x: contentX + 9, y: y, width: max(0, contentW - 9), height: headerH)
             y += headerH + 4
 
         case .inlineB:
@@ -424,7 +474,7 @@ final class UsageProviderSectionView: NSView {
             contentW = max(0, bounds.width - 4)
             y = 6
             dotView.frame = CGRect(x: contentX, y: y + 4, width: 5, height: 5)
-            headerLabel.frame = CGRect(x: contentX + 9, y: y, width: contentW - 9, height: headerH)
+            headerLabel.frame = CGRect(x: contentX + 9, y: y, width: max(0, contentW - 9), height: headerH)
             y += headerH + 3.5
 
         case .leftRuleC:
@@ -535,6 +585,144 @@ final class SidebarPillButton: NSView {
         let textH = ceil(label.attributedStringValue.size().height)
         let y = floor((bounds.height - textH) / 2)
         label.frame = CGRect(x: 4, y: y, width: max(0, bounds.width - 8), height: textH)
+    }
+}
+
+/// An integrated, borderless deck (Scheme 2) that groups all active provider
+/// rate-limit sections into a unified translucent capsule, separated by
+/// subtle hairline dividers.
+final class UsageDeckView: NSView {
+    let grokSection = UsageProviderSectionView(provider: .grok, scheme: .cardA)
+    let claudeSection = UsageProviderSectionView(provider: .claude, scheme: .cardA)
+    let geminiSection = UsageProviderSectionView(provider: .gemini, scheme: .cardA)
+
+    private var dividers = [NSView]()
+
+    override var isFlipped: Bool { true }
+
+    var allSections: [UsageProviderSectionView] {
+        [grokSection, claudeSection, geminiSection]
+    }
+
+    var visibleSections: [UsageProviderSectionView] {
+        allSections.filter { !$0.isHidden && $0.compactHeight > 0 }
+    }
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        layer?.borderWidth = 0
+        layer?.masksToBounds = false
+        isHidden = true
+
+        for s in allSections {
+            s.hideCardBackground = true
+            addSubview(s)
+        }
+        applyTheme()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    func applyTheme() {
+        let theme = ChromeTheme.current
+        layer?.backgroundColor = theme.hover.withAlphaComponent(0.40).cgColor
+
+        for s in allSections {
+            s.applyTheme()
+            s.hideCardBackground = true
+        }
+
+        for d in dividers {
+            d.layer?.backgroundColor = theme.separator.withAlphaComponent(0.35).cgColor
+        }
+        needsLayout = true
+    }
+
+    func showClaudeUsage(_ usage: AccountUsage?) {
+        guard claudeSection.usage != usage else { return }
+        claudeSection.usage = usage
+        syncVisibility()
+    }
+
+    func showGeminiUsage(_ usage: AccountUsage?) {
+        guard geminiSection.usage != usage else { return }
+        geminiSection.usage = usage
+        syncVisibility()
+    }
+
+    func showGrokUsage(_ usage: AccountUsage?) {
+        guard grokSection.usage != usage else { return }
+        grokSection.usage = usage
+        syncVisibility()
+    }
+
+    private func syncVisibility() {
+        let active = visibleSections
+        let shouldHide = active.isEmpty
+        if isHidden != shouldHide {
+            isHidden = shouldHide
+        }
+        needsLayout = true
+    }
+
+    var preferredHeight: CGFloat {
+        let active = visibleSections
+        guard !active.isEmpty else { return 0 }
+        let topPad: CGFloat = 8
+        let bottomPad: CGFloat = 8
+        let gap: CGFloat = 7
+        var total: CGFloat = topPad + bottomPad
+        for (idx, section) in active.enumerated() {
+            total += section.compactHeight
+            if idx < active.count - 1 {
+                total += gap + 1
+            }
+        }
+        return total
+    }
+
+    override func layout() {
+        super.layout()
+        let active = visibleSections
+        guard !active.isEmpty else {
+            for d in dividers { d.isHidden = true }
+            return
+        }
+
+        let theme = ChromeTheme.current
+        let topPad: CGFloat = 8
+        let gap: CGFloat = 7
+        let insetX: CGFloat = 9
+        let contentW = max(0, bounds.width - insetX * 2)
+
+        let neededDividers = max(0, active.count - 1)
+        while dividers.count < neededDividers {
+            let d = NSView()
+            d.wantsLayer = true
+            d.layer?.backgroundColor = theme.separator.withAlphaComponent(0.35).cgColor
+            dividers.append(d)
+            addSubview(d)
+        }
+        for (i, d) in dividers.enumerated() {
+            d.isHidden = (i >= neededDividers)
+        }
+
+        var y: CGFloat = topPad
+        for (idx, section) in active.enumerated() {
+            let h = section.compactHeight
+            section.frame = CGRect(x: insetX, y: y, width: contentW, height: h)
+            section.needsLayout = true
+            y += h
+
+            if idx < active.count - 1 {
+                y += floor(gap / 2)
+                dividers[idx].frame = CGRect(x: insetX, y: y, width: contentW, height: 1)
+                y += 1 + ceil(gap / 2)
+            }
+        }
     }
 }
 

@@ -1,0 +1,1470 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attaché · 底部 Usage 进度条无边框与现代化设计方案对比</title>
+<style>
+  :root {
+    /* 主题变量：默认暗黑模式 (Afterglow / Attache 经典色调) */
+    --bg-page: #141517;
+    --card-surface: #1e2024;
+    --card-border: #2d3139;
+    --text-primary: #e5e7eb;
+    --text-muted: #9ca3af;
+    --text-faint: #64748b;
+    --accent: #4e7fb8;
+    
+    /* 侧边栏真实配色 */
+    --rail-bg: #1a1c1e;
+    --rail-hover: rgba(255, 255, 255, 0.06);
+    --rail-separator: rgba(255, 255, 255, 0.10);
+    --rail-text: #d6d9e0;
+    --rail-muted: #8c93a0;
+    --rail-faint: #596170;
+
+    /* 品牌专有色 */
+    --claude-accent: #d97757;
+    --gemini-accent: #669df6;
+    --grok-accent: #cbd5e1;
+
+    /* 进度条警示色 */
+    --gauge-green: #34d399;
+    --gauge-yellow: #fbbf24;
+    --gauge-red: #f87171;
+    --gauge-track: rgba(255, 255, 255, 0.12);
+    --gauge-mark: rgba(255, 255, 255, 0.65);
+
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  /* 浅色模式支持 */
+  body.theme-light {
+    --bg-page: #f1f3f6;
+    --card-surface: #ffffff;
+    --card-border: #e2e8f0;
+    --text-primary: #1f2937;
+    --text-muted: #6b7280;
+    --text-faint: #9ca3af;
+    
+    --rail-bg: #f8fafc;
+    --rail-hover: rgba(0, 0, 0, 0.05);
+    --rail-separator: rgba(0, 0, 0, 0.08);
+    --rail-text: #1e293b;
+    --rail-muted: #64748b;
+    --rail-faint: #94a3b8;
+
+    --gauge-track: rgba(0, 0, 0, 0.08);
+    --gauge-mark: rgba(0, 0, 0, 0.45);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg-page);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    padding: 32px 36px 80px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 顶部导航与说明 */
+  header {
+    max-width: 1480px;
+    margin: 0 auto 28px;
+  }
+  .title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 8px;
+  }
+  h1 {
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .tag-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: rgba(52, 211, 153, 0.12);
+    color: #34d399;
+    border: 1px solid rgba(52, 211, 153, 0.3);
+  }
+  .tag-status::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #34d399;
+  }
+  .subtitle {
+    font-size: 14px;
+    color: var(--text-muted);
+    max-width: 860px;
+    line-height: 1.6;
+  }
+
+  /* 互动控制台 */
+  .control-bar {
+    max-width: 1480px;
+    margin: 0 auto 32px;
+    background: var(--card-surface);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 14px 20px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 24px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    position: sticky;
+    top: 16px;
+    z-index: 100;
+  }
+  .ctl-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+  }
+  .ctl-label {
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+  .ctl-val {
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    font-size: 12px;
+    min-width: 46px;
+  }
+  input[type=range] {
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .seg-btn-group {
+    display: inline-flex;
+    background: rgba(0,0,0,0.2);
+    padding: 2px;
+    border-radius: 8px;
+    border: 1px solid var(--card-border);
+  }
+  body.theme-light .seg-btn-group {
+    background: #edf2f7;
+  }
+  .seg-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    font-weight: 500;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .seg-btn.active {
+    background: var(--card-surface);
+    color: var(--text-primary);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+
+  /* 方案网格布局 */
+  .gallery-grid {
+    max-width: 1480px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+    gap: 28px;
+    align-items: start;
+  }
+
+  /* 单个方案卡片 */
+  .option-card {
+    background: var(--card-surface);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  }
+  .option-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+  }
+  .option-card.recommended {
+    border-color: rgba(99, 102, 241, 0.6);
+    box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.4), 0 8px 24px rgba(99, 102, 241, 0.12);
+  }
+  .option-header {
+    padding: 16px 20px 14px;
+    border-bottom: 1px solid var(--card-border);
+  }
+  .opt-badge-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .opt-tag {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-muted);
+  }
+  .opt-tag.gold {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+  }
+  .opt-tag.rec {
+    background: rgba(99, 102, 241, 0.18);
+    color: #818cf8;
+    border: 1px solid rgba(99, 102, 241, 0.35);
+  }
+  .option-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .option-desc {
+    font-size: 12.5px;
+    color: var(--text-muted);
+    margin-top: 4px;
+    line-height: 1.5;
+  }
+
+  /* 侧边栏预览视口容器 */
+  .preview-stage {
+    padding: 20px;
+    background: rgba(0, 0, 0, 0.15);
+    display: flex;
+    justify-content: center;
+  }
+  body.theme-light .preview-stage {
+    background: rgba(0, 0, 0, 0.03);
+  }
+
+  /* 仿 App 侧边栏真身 */
+  .attache-sidebar {
+    width: var(--sidebar-w, 204px);
+    background: var(--rail-bg);
+    border-radius: 10px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.35), inset 0 0 0 1px rgba(255,255,255,0.06);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 10px 10px 12px;
+    position: relative;
+    transition: width 0.1s ease;
+  }
+  body.theme-light .attache-sidebar {
+    box-shadow: 0 4px 18px rgba(0,0,0,0.08), inset 0 0 0 1px rgba(0,0,0,0.06);
+  }
+
+  /* 顶部模拟窗口控件与会话 */
+  .mac-lights {
+    display: flex;
+    gap: 6px;
+    margin: 2px 4px 12px;
+  }
+  .light {
+    width: 9.5px;
+    height: 9.5px;
+    border-radius: 50%;
+  }
+  .light.r { background: #ff5f56; }
+  .light.y { background: #ffbd2e; }
+  .light.g { background: #27c93f; }
+
+  /* 虚拟 Session & Window 列表 */
+  .session-section {
+    margin-bottom: 12px;
+  }
+  .s-head {
+    font-size: 9.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--rail-faint);
+    padding: 2px 6px;
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 2px;
+  }
+  .s-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    color: var(--rail-muted);
+  }
+  .s-row.active {
+    background: var(--accent);
+    color: #ffffff;
+    font-weight: 500;
+  }
+  .s-row .idx {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    opacity: 0.65;
+    width: 12px;
+    text-align: right;
+  }
+  .s-row .name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .s-row .git-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #34d399;
+  }
+
+  /* 底部按钮 */
+  .footer-btns {
+    display: flex;
+    gap: 5px;
+    margin-top: 10px;
+  }
+  .pill-btn {
+    flex: 1;
+    height: 23px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--rail-separator);
+    color: var(--rail-muted);
+    font-size: 10px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: default;
+  }
+  body.theme-light .pill-btn {
+    background: rgba(0,0,0,0.03);
+  }
+
+  /* ============================================================
+     各个方案的核心样式区域 (USAGES AREA)
+     ============================================================ */
+  .usage-container {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: auto; /* 推到最底部 */
+    padding-top: 8px;
+  }
+
+  /* ---- 基线方案：当前线上版本 (带 1px 描边边框) ---- */
+  .scheme-baseline .usage-card {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--rail-separator); /* 这就是用户讨厌的 1px 边框 */
+    border-radius: 7px;
+    padding: 7px 9px 8px;
+  }
+  body.theme-light .scheme-baseline .usage-card {
+    background: rgba(0, 0, 0, 0.03);
+    border-color: rgba(0, 0, 0, 0.12);
+  }
+
+  /* ---- 方案 0：原卡片直接去边框 (Soft Tint / Direct Borderless) ---- */
+  .scheme-opt0 .usage-card {
+    background: rgba(255, 255, 255, 0.055);
+    border: none; /* 去掉边框 */
+    border-radius: 8px;
+    padding: 8px 10px 9px;
+  }
+  body.theme-light .scheme-opt0 .usage-card {
+    background: rgba(0, 0, 0, 0.045);
+    border: none;
+  }
+
+  /* ---- 方案 1：无界融入极简流 (Pure Seamless Minimal) ---- */
+  .scheme-opt1 .usage-container {
+    gap: 9px;
+    border-top: 1px dashed rgba(255, 255, 255, 0.08);
+    padding-top: 10px;
+  }
+  body.theme-light .scheme-opt1 .usage-container {
+    border-top-color: rgba(0, 0, 0, 0.08);
+  }
+  .scheme-opt1 .usage-card {
+    background: transparent;
+    border: none;
+    padding: 0 2px;
+  }
+
+  /* ---- 方案 2：一体化磨砂舱体 (Unified Glass Deck) ---- */
+  .scheme-opt2 .unified-deck {
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(10px);
+    border: none; /* 无外框 */
+    border-radius: 9px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+  body.theme-light .scheme-opt2 .unified-deck {
+    background: rgba(0, 0, 0, 0.035);
+  }
+  .scheme-opt2 .deck-divider {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.05);
+    margin: 1px -2px;
+  }
+  body.theme-light .scheme-opt2 .deck-divider {
+    background: rgba(0, 0, 0, 0.05);
+  }
+
+  /* ---- 方案二 + 方案四结合：一体化微光舱体 (Unified Glow Deck - 用户选定) ---- */
+  .scheme-combo .unified-deck {
+    background: rgba(255, 255, 255, 0.045);
+    backdrop-filter: blur(12px);
+    border: none; /* 彻底去除硬边框 */
+    border-radius: 9px;
+    padding: 8px 10px 9px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+  body.theme-light .scheme-combo .unified-deck {
+    background: rgba(0, 0, 0, 0.038);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  }
+  .scheme-combo .deck-divider {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.06);
+    margin: 1px -2px;
+  }
+  body.theme-light .scheme-combo .deck-divider {
+    background: rgba(0, 0, 0, 0.06);
+  }
+  .scheme-combo .bar-fill.glow-claude {
+    background: linear-gradient(90deg, #d97757, #f97316) !important;
+    box-shadow: 0 0 6px rgba(217, 119, 87, 0.5);
+  }
+  .scheme-combo .bar-fill.glow-gemini {
+    background: linear-gradient(90deg, #669df6, #818cf8) !important;
+    box-shadow: 0 0 6px rgba(102, 157, 246, 0.5);
+  }
+  .scheme-combo .bar-fill.glow-grok {
+    background: linear-gradient(90deg, #94a3b8, #e2e8f0) !important;
+    box-shadow: 0 0 6px rgba(203, 213, 225, 0.5);
+  }
+  .scheme-combo .bar-fill.glow-red {
+    background: linear-gradient(90deg, #f87171, #ef4444) !important;
+    box-shadow: 0 0 7px rgba(239, 68, 68, 0.6);
+  }
+
+  /* ---- 方案 3：紧凑单行流 (Compact Inline Rows) ---- */
+  .scheme-opt3 .usage-container {
+    gap: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    padding-top: 8px;
+  }
+  body.theme-light .scheme-opt3 .usage-container {
+    border-top-color: rgba(0, 0, 0, 0.06);
+  }
+  .scheme-opt3 .inline-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 20px;
+    padding: 0 2px;
+    font-size: 10px;
+  }
+  .scheme-opt3 .inline-title {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 48px;
+    flex-shrink: 0;
+    color: var(--rail-muted);
+    font-weight: 500;
+  }
+  .scheme-opt3 .inline-track {
+    flex: 1;
+    height: 4px;
+    background: var(--gauge-track);
+    border-radius: 2px;
+    position: relative;
+    overflow: hidden;
+  }
+  .scheme-opt3 .inline-stat {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--rail-faint);
+    text-align: right;
+    width: 62px;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  /* ---- 方案 4：现代微光质感 (Ambient Glow & Gradient) ---- */
+  .scheme-opt4 .usage-card {
+    background: rgba(255, 255, 255, 0.035);
+    border: none;
+    border-radius: 8px;
+    padding: 8px 10px 9px;
+    position: relative;
+  }
+  body.theme-light .scheme-opt4 .usage-card {
+    background: rgba(0, 0, 0, 0.035);
+  }
+  .scheme-opt4 .bar-fill.glow-claude {
+    background: linear-gradient(90deg, #d97757, #f97316) !important;
+    box-shadow: 0 0 6px rgba(217, 119, 87, 0.45);
+  }
+  .scheme-opt4 .bar-fill.glow-gemini {
+    background: linear-gradient(90deg, #669df6, #818cf8) !important;
+    box-shadow: 0 0 6px rgba(102, 157, 246, 0.45);
+  }
+  .scheme-opt4 .bar-fill.glow-grok {
+    background: linear-gradient(90deg, #94a3b8, #e2e8f0) !important;
+    box-shadow: 0 0 6px rgba(203, 213, 225, 0.45);
+  }
+
+  /* ---- 方案 5：极简左侧品牌色轨 (Refined Left Accent Rail) ---- */
+  .scheme-opt5 .usage-card {
+    background: transparent;
+    border: none;
+    position: relative;
+    padding-left: 10px;
+    padding-top: 1px;
+    padding-bottom: 2px;
+  }
+  .scheme-opt5 .left-accent-line {
+    position: absolute;
+    left: 0;
+    top: 2px;
+    bottom: 2px;
+    width: 2.5px;
+    border-radius: 2px;
+  }
+
+  /* 通用内部结构：Header 与 Gauge */
+  .u-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 5px;
+  }
+  .u-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+  }
+  .u-title {
+    font-size: 9.5px;
+    font-weight: 600;
+    color: var(--rail-muted);
+    letter-spacing: 0.02em;
+  }
+  .u-badge {
+    margin-left: auto;
+    font-size: 8.5px;
+    font-family: var(--font-mono);
+    color: var(--rail-faint);
+  }
+
+  .gauge-item {
+    margin-top: 4px;
+  }
+  .gauge-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    line-height: 1.2;
+    margin-bottom: 2.5px;
+  }
+  .gauge-name {
+    color: var(--rail-faint);
+  }
+  .gauge-detail {
+    font-family: var(--font-mono);
+    color: var(--rail-muted);
+  }
+
+  /* 进度条轨道与滑块 */
+  .bar-track {
+    height: 4px;
+    background: var(--gauge-track);
+    border-radius: 2px;
+    position: relative;
+    overflow: visible;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    position: relative;
+    transition: width 0.3s ease;
+  }
+  .bar-fill.green { background: var(--gauge-green); }
+  .bar-fill.yellow { background: var(--gauge-yellow); }
+  .bar-fill.red { background: var(--gauge-red); }
+
+  /* 关键的流逝时间指示标 (Mark) */
+  .bar-mark {
+    position: absolute;
+    top: -1px;
+    width: 1.5px;
+    height: 6px;
+    background: var(--gauge-mark);
+    border-radius: 1px;
+    transform: translateX(-50%);
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  /* 底部技术落地方案分析 */
+  .option-footer {
+    padding: 14px 20px 16px;
+    border-top: 1px solid var(--card-border);
+    background: rgba(0,0,0,0.08);
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  body.theme-light .option-footer {
+    background: rgba(0,0,0,0.015);
+  }
+  .code-hint {
+    background: rgba(0,0,0,0.3);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+  }
+  body.theme-light .code-hint {
+    background: rgba(0,0,0,0.06);
+  }
+
+  /* 悬停微动效提示 */
+  .tag-compare {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 500;
+    color: #818cf8;
+    margin-top: 6px;
+  }
+
+  /* 响应式微调 */
+  @media (max-width: 900px) {
+    body { padding: 16px 16px 60px; }
+    .gallery-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title-row">
+    <h1>Attaché · 左下角 Usage 进度条无边框现代化设计探索</h1>
+    <span class="tag-status">交互式保真度评审原型</span>
+  </div>
+  <p class="subtitle">
+    针对用户提出的“去除 Grok、Claude、Gemini 各自独立外边框、提升现代化质感”的需求。本页面使用真实 App 尺寸与调色盘，还原 macOS 侧边栏环境，横向对比当前线上基线与 5 种现代化无边框设计演进方案。
+  </p>
+</header>
+
+<!-- 互动控制台 -->
+<div class="control-bar">
+  <div class="ctl-group">
+    <span class="ctl-label">侧边栏宽度：</span>
+    <input type="range" id="widthSlider" min="170" max="250" value="204" oninput="updateSidebarWidth(this.value)">
+    <span class="ctl-val" id="widthVal">204 px</span>
+  </div>
+
+  <div class="ctl-group">
+    <span class="ctl-label">外观主题：</span>
+    <div class="seg-btn-group">
+      <button class="seg-btn active" id="themeDarkBtn" onclick="setTheme('dark')">Dark (Afterglow)</button>
+      <button class="seg-btn" id="themeLightBtn" onclick="setTheme('light')">Light (Ayu Light)</button>
+    </div>
+  </div>
+
+  <div class="ctl-group">
+    <span class="ctl-label">配额使用状态：</span>
+    <div class="seg-btn-group">
+      <button class="seg-btn active" id="stateNormalBtn" onclick="setUsageState('normal')">正常使用 (绿/黄)</button>
+      <button class="seg-btn" id="stateHighBtn" onclick="setUsageState('high')">高负荷警报 (≥75% 红)</button>
+    </div>
+  </div>
+</div>
+
+<!-- 方案画廊 -->
+<div class="gallery-grid">
+
+  <!-- ======================== 用户最终选定：方案二 + 方案四结合 ======================== -->
+  <div class="option-card recommended" style="grid-column: 1 / -1; border-color: rgba(99, 102, 241, 0.9); box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.4), 0 12px 36px rgba(99, 102, 241, 0.2);">
+    <div class="option-header" style="background: rgba(99, 102, 241, 0.08);">
+      <div class="opt-badge-row">
+        <span class="opt-tag gold" style="font-size:12px; padding:3px 10px; font-weight:800;">🌟 您选定的设计：方案二 ＋ 方案四结合版</span>
+        <span class="tag-compare" style="font-size:13px; font-weight:700; color:#a5b4fc;">一体化通透舱体 + 品牌流光微发光</span>
+      </div>
+      <div class="option-title" style="font-size:18px;">最终选定：一体化流光微发光舱体 (Unified Glow Deck)</div>
+      <div class="option-desc" style="font-size:13.5px;">融合方案二的“统一舱体去边框”结构与方案四的“品牌渐变流光与微发光（Ambient Glow）”：彻底告别孤立碎片化的小方框，所有模型汇聚于统一磨砂底板中；进度条流光溢彩，兼顾高颜值与极高清晰度。</div>
+    </div>
+
+    <div class="preview-stage" style="padding: 28px 20px;">
+      <div class="attache-sidebar scheme-combo" style="width: 220px;">
+        <div class="mac-lights"><div class="light r"></div><div class="light y"></div><div class="light g"></div></div>
+        
+        <div class="session-section">
+          <div class="s-head"><span>ATTACHÉ</span><span>3</span></div>
+          <div class="s-row active"><span class="idx">1</span><span class="name">agent-core</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">2</span><span class="name">ui-redesign</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">3</span><span class="name">server-relay</span></div>
+        </div>
+
+        <!-- 底部 Usage：方案二+方案四结合体 -->
+        <div class="usage-container">
+          <div class="unified-deck">
+            
+            <!-- Grok -->
+            <div>
+              <div class="u-header">
+                <div class="u-dot" style="background:var(--grok-accent); box-shadow: 0 0 5px var(--grok-accent);"></div>
+                <span class="u-title" style="color:var(--rail-text);">Grok</span>
+                <span class="u-badge data-grok-week" style="color:var(--rail-muted);">38% · 3d18h</span>
+              </div>
+              <div class="gauge-item">
+                <div class="bar-track">
+                  <div class="bar-fill glow-grok fill-grok" style="width:38%;"></div>
+                  <div class="bar-mark mark-grok" style="left:52%;"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="deck-divider"></div>
+
+            <!-- Claude -->
+            <div>
+              <div class="u-header">
+                <div class="u-dot" style="background:var(--claude-accent); box-shadow: 0 0 5px var(--claude-accent);"></div>
+                <span class="u-title" style="color:var(--rail-text);">Claude</span>
+                <span class="u-badge data-claude-5h" style="color:var(--rail-muted);">64% · 1h22m</span>
+              </div>
+              <div class="gauge-item">
+                <div class="bar-track">
+                  <div class="bar-fill glow-claude fill-claude-5h" style="width:64%;"></div>
+                  <div class="bar-mark mark-claude-5h" style="left:72%;"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="deck-divider"></div>
+
+            <!-- Gemini -->
+            <div>
+              <div class="u-header">
+                <div class="u-dot" style="background:var(--gemini-accent); box-shadow: 0 0 5px var(--gemini-accent);"></div>
+                <span class="u-title" style="color:var(--rail-text);">Gemini</span>
+                <span class="u-badge data-gemini-5h" style="color:var(--rail-muted);">42% · 2h50m</span>
+              </div>
+              <div class="gauge-item">
+                <div class="bar-track">
+                  <div class="bar-fill glow-gemini fill-gemini-5h" style="width:42%;"></div>
+                  <div class="bar-mark mark-gemini-5h" style="left:40%;"></div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <div class="footer-btns">
+          <div class="pill-btn">+ Session</div>
+          <div class="pill-btn">+ Server…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="option-footer" style="font-size: 13px;">
+      <strong>落地设计点：</strong>
+      <span>1. 移除各 Provider 独立卡片外框；2. 使用一体化统一舱体（`UsageDeckView`），内部分隔线极度轻柔；3. 进度条使用品牌流光渐变（`CAGradientLayer`）并叠加 3px 微发光（`shadowRadius`）。</span>
+    </div>
+  </div>
+
+  <!-- ======================== 基线：当前线上 (带边框) ======================== -->
+  <div class="option-card">
+    <div class="option-header">
+      <div class="opt-badge-row">
+        <span class="opt-tag">Current Baseline</span>
+        <span style="font-size:11px;color:#f87171;">带 1px 外框</span>
+      </div>
+      <div class="option-title">现状：独立边框卡片 (Card A)</div>
+      <div class="option-desc">每个 Provider 都是带 1px 描边的独立深色卡片。当 Claude、Gemini、Grok 同时出现时，底部会挤满 3 个方框盒子，线条繁复生硬。</div>
+    </div>
+
+    <div class="preview-stage">
+      <div class="attache-sidebar scheme-baseline">
+        <div class="mac-lights"><div class="light r"></div><div class="light y"></div><div class="light g"></div></div>
+        
+        <div class="session-section">
+          <div class="s-head"><span>ATTACHÉ</span><span>3</span></div>
+          <div class="s-row active"><span class="idx">1</span><span class="name">agent-core</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">2</span><span class="name">ui-redesign</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">3</span><span class="name">server-relay</span></div>
+        </div>
+
+        <!-- 底部 Usage -->
+        <div class="usage-container">
+          <!-- Grok -->
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--grok-accent);"></div>
+              <span class="u-title">Grok</span>
+            </div>
+            <div class="gauge-item">
+              <div class="gauge-labels"><span class="gauge-name">Week</span><span class="gauge-detail data-grok-week">38% · 3d18h</span></div>
+              <div class="bar-track">
+                <div class="bar-fill green fill-grok" style="width:38%;"></div>
+                <div class="bar-mark mark-grok" style="left:52%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Claude -->
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--claude-accent);"></div>
+              <span class="u-title">Claude</span>
+            </div>
+            <div class="gauge-item">
+              <div class="gauge-labels"><span class="gauge-name">5h</span><span class="gauge-detail data-claude-5h">64% · 1h22m</span></div>
+              <div class="bar-track">
+                <div class="bar-fill yellow fill-claude-5h" style="width:64%;"></div>
+                <div class="bar-mark mark-claude-5h" style="left:72%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Gemini -->
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--gemini-accent);"></div>
+              <span class="u-title">Gemini</span>
+            </div>
+            <div class="gauge-item">
+              <div class="gauge-labels"><span class="gauge-name">5h</span><span class="gauge-detail data-gemini-5h">42% · 2h50m</span></div>
+              <div class="bar-track">
+                <div class="bar-fill green fill-gemini-5h" style="width:42%;"></div>
+                <div class="bar-mark mark-gemini-5h" style="left:40%;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="footer-btns">
+          <div class="pill-btn">+ Session</div>
+          <div class="pill-btn">+ Server…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="option-footer">
+      <strong>代码对应：</strong><code class="code-hint">cardBox.layer?.borderWidth = 1</code>
+      <br><strong>痛点：</strong>多个独立方框割裂侧边栏，边框造成视觉噪音。
+    </div>
+  </div>
+
+
+  <!-- ======================== 方案 0：原卡片直接去边框 ======================== -->
+  <div class="option-card">
+    <div class="option-header">
+      <div class="opt-badge-row">
+        <span class="opt-tag">Option 0</span>
+        <span style="font-size:11px;color:#34d399;">改动最微小</span>
+      </div>
+      <div class="option-title">纯去边框：微柔底色块 (Direct Borderless)</div>
+      <div class="option-desc">保持现有卡片布局不变，仅将 1px 描边完全移除，仅靠微弱的半透明浮动底色（hover 灰阶）形成柔和区分。</div>
+    </div>
+
+    <div class="preview-stage">
+      <div class="attache-sidebar scheme-opt0">
+        <div class="mac-lights"><div class="light r"></div><div class="light y"></div><div class="light g"></div></div>
+        
+        <div class="session-section">
+          <div class="s-head"><span>ATTACHÉ</span><span>3</span></div>
+          <div class="s-row active"><span class="idx">1</span><span class="name">agent-core</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">2</span><span class="name">ui-redesign</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">3</span><span class="name">server-relay</span></div>
+        </div>
+
+        <!-- 底部 Usage -->
+        <div class="usage-container">
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--grok-accent);"></div>
+              <span class="u-title">Grok</span>
+            </div>
+            <div class="gauge-item">
+              <div class="gauge-labels"><span class="gauge-name">Week</span><span class="gauge-detail data-grok-week">38% · 3d18h</span></div>
+              <div class="bar-track">
+                <div class="bar-fill green fill-grok" style="width:38%;"></div>
+                <div class="bar-mark mark-grok" style="left:52%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--claude-accent);"></div>
+              <span class="u-title">Claude</span>
+            </div>
+            <div class="gauge-item">
+              <div class="gauge-labels"><span class="gauge-name">5h</span><span class="gauge-detail data-claude-5h">64% · 1h22m</span></div>
+              <div class="bar-track">
+                <div class="bar-fill yellow fill-claude-5h" style="width:64%;"></div>
+                <div class="bar-mark mark-claude-5h" style="left:72%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--gemini-accent);"></div>
+              <span class="u-title">Gemini</span>
+            </div>
+            <div class="gauge-item">
+              <div class="gauge-labels"><span class="gauge-name">5h</span><span class="gauge-detail data-gemini-5h">42% · 2h50m</span></div>
+              <div class="bar-track">
+                <div class="bar-fill green fill-gemini-5h" style="width:42%;"></div>
+                <div class="bar-mark mark-gemini-5h" style="left:40%;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="footer-btns">
+          <div class="pill-btn">+ Session</div>
+          <div class="pill-btn">+ Server…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="option-footer">
+      <strong>代码对应：</strong><code class="code-hint">cardBox.layer?.borderWidth = 0</code>
+      <br><strong>效果：</strong>立刻消除了白边生硬感，视觉更柔润，但多卡片仍有块状分割感。
+    </div>
+  </div>
+
+
+  <!-- ======================== 方案 1：无界融入极简流 ======================== -->
+  <div class="option-card recommended">
+    <div class="option-header">
+      <div class="opt-badge-row">
+        <span class="opt-tag rec">推荐方案 A</span>
+        <span class="tag-compare">极致纯粹 · Linear 风格</span>
+      </div>
+      <div class="option-title">方案 1：无界融入极简流 (Pure Seamless)</div>
+      <div class="option-desc">彻底摒弃“卡片盒子”思维。无外框、无底色块，进度条直接自然落入侧边栏背景中，仅靠排版层次与微型品牌圆点引导视线，呼吸感极佳。</div>
+    </div>
+
+    <div class="preview-stage">
+      <div class="attache-sidebar scheme-opt1">
+        <div class="mac-lights"><div class="light r"></div><div class="light y"></div><div class="light g"></div></div>
+        
+        <div class="session-section">
+          <div class="s-head"><span>ATTACHÉ</span><span>3</span></div>
+          <div class="s-row active"><span class="idx">1</span><span class="name">agent-core</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">2</span><span class="name">ui-redesign</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">3</span><span class="name">server-relay</span></div>
+        </div>
+
+        <!-- 底部 Usage -->
+        <div class="usage-container">
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--grok-accent);"></div>
+              <span class="u-title" style="color:var(--rail-text);">Grok</span>
+              <span class="u-badge data-grok-week">38%</span>
+            </div>
+            <div class="gauge-item">
+              <div class="gauge-labels"><span class="gauge-name">Week</span><span class="gauge-detail data-grok-sub">3d18h left</span></div>
+              <div class="bar-track" style="height:3.5px;">
+                <div class="bar-fill green fill-grok" style="width:38%;"></div>
+                <div class="bar-mark mark-grok" style="left:52%;height:5.5px;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--claude-accent);"></div>
+              <span class="u-title" style="color:var(--rail-text);">Claude</span>
+              <span class="u-badge data-claude-5h">64%</span>
+            </div>
+            <div class="gauge-item">
+              <div class="gauge-labels"><span class="gauge-name">5h Window</span><span class="gauge-detail data-claude-sub">1h22m left</span></div>
+              <div class="bar-track" style="height:3.5px;">
+                <div class="bar-fill yellow fill-claude-5h" style="width:64%;"></div>
+                <div class="bar-mark mark-claude-5h" style="left:72%;height:5.5px;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--gemini-accent);"></div>
+              <span class="u-title" style="color:var(--rail-text);">Gemini</span>
+              <span class="u-badge data-gemini-5h">42%</span>
+            </div>
+            <div class="gauge-item">
+              <div class="gauge-labels"><span class="gauge-name">5h Window</span><span class="gauge-detail data-gemini-sub">2h50m left</span></div>
+              <div class="bar-track" style="height:3.5px;">
+                <div class="bar-fill green fill-gemini-5h" style="width:42%;"></div>
+                <div class="bar-mark mark-gemini-5h" style="left:40%;height:5.5px;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="footer-btns">
+          <div class="pill-btn">+ Session</div>
+          <div class="pill-btn">+ Server…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="option-footer">
+      <strong>优势：</strong>最纯粹的现代无界感，零视觉多余元素，最符合 2026 年现代客户端趋势。
+      <br><strong>代码对应：</strong>隐藏 `cardBox`，内边距归拢，进度条高度微调为 3.5pt。
+    </div>
+  </div>
+
+
+  <!-- ======================== 方案 2：一体化磨砂舱体 ======================== -->
+  <div class="option-card recommended">
+    <div class="option-header">
+      <div class="opt-badge-row">
+        <span class="opt-tag rec">推荐方案 B</span>
+        <span class="tag-compare">统一整合 · Apple 质感</span>
+      </div>
+      <div class="option-title">方案 2：一体化磨砂舱体 (Unified Deck)</div>
+      <div class="option-desc">不再将 3 个 AI 割裂为 3 个小盒子，而是合成一个连贯统一的“AI 配额面板”。内部采用微妙的渐隐分割线，整体感与沉浸感拉满。</div>
+    </div>
+
+    <div class="preview-stage">
+      <div class="attache-sidebar scheme-opt2">
+        <div class="mac-lights"><div class="light r"></div><div class="light y"></div><div class="light g"></div></div>
+        
+        <div class="session-section">
+          <div class="s-head"><span>ATTACHÉ</span><span>3</span></div>
+          <div class="s-row active"><span class="idx">1</span><span class="name">agent-core</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">2</span><span class="name">ui-redesign</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">3</span><span class="name">server-relay</span></div>
+        </div>
+
+        <!-- 底部 Usage：整合一体舱体 -->
+        <div class="usage-container">
+          <div class="unified-deck">
+            
+            <!-- Grok -->
+            <div>
+              <div class="u-header">
+                <div class="u-dot" style="background:var(--grok-accent);"></div>
+                <span class="u-title">Grok</span>
+                <span class="u-badge data-grok-week">38%</span>
+              </div>
+              <div class="gauge-item">
+                <div class="bar-track">
+                  <div class="bar-fill green fill-grok" style="width:38%;"></div>
+                  <div class="bar-mark mark-grok" style="left:52%;"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="deck-divider"></div>
+
+            <!-- Claude -->
+            <div>
+              <div class="u-header">
+                <div class="u-dot" style="background:var(--claude-accent);"></div>
+                <span class="u-title">Claude</span>
+                <span class="u-badge data-claude-5h">64% · 1h22m</span>
+              </div>
+              <div class="gauge-item">
+                <div class="bar-track">
+                  <div class="bar-fill yellow fill-claude-5h" style="width:64%;"></div>
+                  <div class="bar-mark mark-claude-5h" style="left:72%;"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="deck-divider"></div>
+
+            <!-- Gemini -->
+            <div>
+              <div class="u-header">
+                <div class="u-dot" style="background:var(--gemini-accent);"></div>
+                <span class="u-title">Gemini</span>
+                <span class="u-badge data-gemini-5h">42% · 2h50m</span>
+              </div>
+              <div class="gauge-item">
+                <div class="bar-track">
+                  <div class="bar-fill green fill-gemini-5h" style="width:42%;"></div>
+                  <div class="bar-mark mark-gemini-5h" style="left:40%;"></div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <div class="footer-btns">
+          <div class="pill-btn">+ Session</div>
+          <div class="pill-btn">+ Server…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="option-footer">
+      <strong>优势：</strong>消除 3 个独立盒子的杂乱碎片感，将 AI 状态视作一个有机整体。
+      <br><strong>代码对应：</strong>由单个背景容器统一绘制，各模型段落仅作为内部 stack 排布。
+    </div>
+  </div>
+
+
+  <!-- ======================== 方案 3：紧凑单行流 ======================== -->
+  <div class="option-card">
+    <div class="option-header">
+      <div class="opt-badge-row">
+        <span class="opt-tag">Option 3</span>
+        <span class="tag-compare">高度压缩 · 极客空间利用</span>
+      </div>
+      <div class="option-title">方案 3：紧凑单行流 (Compact Inline Rows)</div>
+      <div class="option-desc">为侧边栏垂直高度极致减负。将 Provider 名称、进度条、百分比全部压缩至一行内展示，节省超过 45% 的垂直空间。</div>
+    </div>
+
+    <div class="preview-stage">
+      <div class="attache-sidebar scheme-opt3">
+        <div class="mac-lights"><div class="light r"></div><div class="light y"></div><div class="light g"></div></div>
+        
+        <div class="session-section">
+          <div class="s-head"><span>ATTACHÉ</span><span>3</span></div>
+          <div class="s-row active"><span class="idx">1</span><span class="name">agent-core</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">2</span><span class="name">ui-redesign</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">3</span><span class="name">server-relay</span></div>
+        </div>
+
+        <!-- 底部 Usage：极度紧凑 -->
+        <div class="usage-container">
+          
+          <div class="inline-row">
+            <div class="inline-title">
+              <div class="u-dot" style="background:var(--grok-accent);"></div>
+              <span>Grok</span>
+            </div>
+            <div class="inline-track">
+              <div class="bar-fill green fill-grok" style="width:38%;"></div>
+              <div class="bar-mark mark-grok" style="left:52%;"></div>
+            </div>
+            <div class="inline-stat data-grok-week">38%·3d</div>
+          </div>
+
+          <div class="inline-row">
+            <div class="inline-title">
+              <div class="u-dot" style="background:var(--claude-accent);"></div>
+              <span>Claude</span>
+            </div>
+            <div class="inline-track">
+              <div class="bar-fill yellow fill-claude-5h" style="width:64%;"></div>
+              <div class="bar-mark mark-claude-5h" style="left:72%;"></div>
+            </div>
+            <div class="inline-stat data-claude-5h">64%·1h</div>
+          </div>
+
+          <div class="inline-row">
+            <div class="inline-title">
+              <div class="u-dot" style="background:var(--gemini-accent);"></div>
+              <span>Gemini</span>
+            </div>
+            <div class="inline-track">
+              <div class="bar-fill green fill-gemini-5h" style="width:42%;"></div>
+              <div class="bar-mark mark-gemini-5h" style="left:40%;"></div>
+            </div>
+            <div class="inline-stat data-gemini-5h">42%·2h</div>
+          </div>
+
+        </div>
+
+        <div class="footer-btns">
+          <div class="pill-btn">+ Session</div>
+          <div class="pill-btn">+ Server…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="option-footer">
+      <strong>优势：</strong>最适合 Session/Window 很多、嫌底部占用过多高度的极客用户。
+      <br><strong>代码对应：</strong>直接激活已有 `inlineB` 布局样式，并去掉顶部分割线。
+    </div>
+  </div>
+
+
+  <!-- ======================== 方案 4：现代微光质感 ======================== -->
+  <div class="option-card">
+    <div class="option-header">
+      <div class="opt-badge-row">
+        <span class="opt-tag gold">Option 4</span>
+        <span class="tag-compare">微光渐变 · 未来科技感</span>
+      </div>
+      <div class="option-title">方案 4：流光质感与微发光 (Ambient Glow)</div>
+      <div class="option-desc">进度条不再是单调纯色，而是引入品牌色轻柔渐变与 1~2px 柔和微光辉度（Glow），配合无边框卡片，质感精致且高级。</div>
+    </div>
+
+    <div class="preview-stage">
+      <div class="attache-sidebar scheme-opt4">
+        <div class="mac-lights"><div class="light r"></div><div class="light y"></div><div class="light g"></div></div>
+        
+        <div class="session-section">
+          <div class="s-head"><span>ATTACHÉ</span><span>3</span></div>
+          <div class="s-row active"><span class="idx">1</span><span class="name">agent-core</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">2</span><span class="name">ui-redesign</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">3</span><span class="name">server-relay</span></div>
+        </div>
+
+        <!-- 底部 Usage：微光流光 -->
+        <div class="usage-container">
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--grok-accent);"></div>
+              <span class="u-title">Grok</span>
+              <span class="u-badge data-grok-week">38%</span>
+            </div>
+            <div class="gauge-item">
+              <div class="bar-track">
+                <div class="bar-fill glow-grok fill-grok" style="width:38%;"></div>
+                <div class="bar-mark mark-grok" style="left:52%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--claude-accent);"></div>
+              <span class="u-title">Claude</span>
+              <span class="u-badge data-claude-5h">64% · 1h22m</span>
+            </div>
+            <div class="gauge-item">
+              <div class="bar-track">
+                <div class="bar-fill glow-claude fill-claude-5h" style="width:64%;"></div>
+                <div class="bar-mark mark-claude-5h" style="left:72%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="usage-card">
+            <div class="u-header">
+              <div class="u-dot" style="background:var(--gemini-accent);"></div>
+              <span class="u-title">Gemini</span>
+              <span class="u-badge data-gemini-5h">42% · 2h50m</span>
+            </div>
+            <div class="gauge-item">
+              <div class="bar-track">
+                <div class="bar-fill glow-gemini fill-gemini-5h" style="width:42%;"></div>
+                <div class="bar-mark mark-gemini-5h" style="left:40%;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="footer-btns">
+          <div class="pill-btn">+ Session</div>
+          <div class="pill-btn">+ Server…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="option-footer">
+      <strong>优势：</strong>暗色主题下视觉层次绝佳，带有一丝前沿 AI IDE 的先锋质感。
+      <br><strong>代码对应：</strong>`CAGradientLayer` 替换单色 `fill.layer?.backgroundColor`，并加上 `shadowRadius`。
+    </div>
+  </div>
+
+
+  <!-- ======================== 方案 5：极简左侧品牌色轨 ======================== -->
+  <div class="option-card">
+    <div class="option-header">
+      <div class="opt-badge-row">
+        <span class="opt-tag">Option 5</span>
+        <span class="tag-compare">纵向标尺 · 层次分明</span>
+      </div>
+      <div class="option-title">方案 5：精致品牌色彩轨 (Accent Notch Rail)</div>
+      <div class="option-desc">优化现有的 Scheme C（LeftRule）。抛弃闭合方框，仅在左侧以 2.5px 圆角品牌色立柱做锚定，右侧通透延展。</div>
+    </div>
+
+    <div class="preview-stage">
+      <div class="attache-sidebar scheme-opt5">
+        <div class="mac-lights"><div class="light r"></div><div class="light y"></div><div class="light g"></div></div>
+        
+        <div class="session-section">
+          <div class="s-head"><span>ATTACHÉ</span><span>3</span></div>
+          <div class="s-row active"><span class="idx">1</span><span class="name">agent-core</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">2</span><span class="name">ui-redesign</span><span class="git-dot"></span></div>
+          <div class="s-row"><span class="idx">3</span><span class="name">server-relay</span></div>
+        </div>
+
+        <!-- 底部 Usage：左侧色轨 -->
+        <div class="usage-container">
+          <div class="usage-card">
+            <div class="left-accent-line" style="background:var(--grok-accent);"></div>
+            <div class="u-header">
+              <span class="u-title" style="color:var(--rail-text);">Grok</span>
+              <span class="u-badge data-grok-week">38% · 3d18h</span>
+            </div>
+            <div class="gauge-item">
+              <div class="bar-track">
+                <div class="bar-fill green fill-grok" style="width:38%;"></div>
+                <div class="bar-mark mark-grok" style="left:52%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="usage-card">
+            <div class="left-accent-line" style="background:var(--claude-accent);"></div>
+            <div class="u-header">
+              <span class="u-title" style="color:var(--rail-text);">Claude</span>
+              <span class="u-badge data-claude-5h">64% · 1h22m</span>
+            </div>
+            <div class="gauge-item">
+              <div class="bar-track">
+                <div class="bar-fill yellow fill-claude-5h" style="width:64%;"></div>
+                <div class="bar-mark mark-claude-5h" style="left:72%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="usage-card">
+            <div class="left-accent-line" style="background:var(--gemini-accent);"></div>
+            <div class="u-header">
+              <span class="u-title" style="color:var(--rail-text);">Gemini</span>
+              <span class="u-badge data-gemini-5h">42% · 2h50m</span>
+            </div>
+            <div class="gauge-item">
+              <div class="bar-track">
+                <div class="bar-fill green fill-gemini-5h" style="width:42%;"></div>
+                <div class="bar-mark mark-gemini-5h" style="left:40%;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="footer-btns">
+          <div class="pill-btn">+ Session</div>
+          <div class="pill-btn">+ Server…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="option-footer">
+      <strong>优势：</strong>不使用闭合框，但又具备清晰的段落感，适合喜欢色块定位的用户。
+      <br><strong>代码对应：</strong>继承 Scheme C，微调左轨圆角与内边距。
+    </div>
+  </div>
+
+</div>
+
+<!-- 方案选型与落地指引 -->
+<div style="max-width:1480px; margin:40px auto 0; background:var(--card-surface); border:1px solid var(--card-border); border-radius:14px; padding:24px 28px;">
+  <h2 style="font-size:18px; margin-bottom:12px;">💡 选型建议与落地指南</h2>
+  <div style="font-size:13.5px; color:var(--text-muted); line-height:1.7;">
+    <p><strong>推荐首选：方案 1 (无界融入极简流) 或 方案 2 (一体化磨砂舱体)</strong></p>
+    <ul style="margin:8px 0 16px 20px;">
+      <li><strong>如果你追求极致通透与现代化：</strong>选 <strong>方案 1 (Pure Seamless)</strong>。彻底剥离了陈旧的“卡片容器”，进度条与侧边栏浑然天成，信息一目了然，科技感强。</li>
+      <li><strong>如果你希望保留轻量区域感：</strong>选 <strong>方案 2 (Unified Deck)</strong>。把分散的 3 个带框盒子合并为一个通透的玻璃底舱，干净整洁且极具 macOS 系统级原生精致感。</li>
+      <li><strong>如果你侧边栏经常开很多会话、想要多留出高度：</strong>选 <strong>方案 3 (Compact Inline Rows)</strong>，单行压缩率高达 45%。</li>
+    </ul>
+    <p>当您选定喜欢的方案后，只需告诉我方案编号（如方案 1 或方案 2），我将直接为您修改 Swift 源码，完成无缝更新！</p>
+  </div>
+</div>
+
+<script>
+  function updateSidebarWidth(val) {
+    document.documentElement.style.setProperty('--sidebar-w', val + 'px');
+    document.getElementById('widthVal').textContent = val + ' px';
+  }
+
+  function setTheme(mode) {
+    if (mode === 'light') {
+      document.body.classList.add('theme-light');
+      document.getElementById('themeLightBtn').classList.add('active');
+      document.getElementById('themeDarkBtn').classList.remove('active');
+    } else {
+      document.body.classList.remove('theme-light');
+      document.getElementById('themeDarkBtn').classList.add('active');
+      document.getElementById('themeLightBtn').classList.remove('active');
+    }
+  }
+
+  function setUsageState(state) {
+    const isHigh = (state === 'high');
+    document.getElementById('stateNormalBtn').classList.toggle('active', !isHigh);
+    document.getElementById('stateHighBtn').classList.toggle('active', isHigh);
+
+    // 切换数据
+    const grokData = isHigh ? { pct: '88%', sub: '88% · 12h left', fill: '88%', mark: '90%', cls: 'red' }
+                            : { pct: '38%', sub: '38% · 3d18h', fill: '38%', mark: '52%', cls: 'green' };
+
+    const claudeData = isHigh ? { pct: '92%', sub: '92% · 18m left', fill: '92%', mark: '80%', cls: 'red' }
+                              : { pct: '64%', sub: '64% · 1h22m', fill: '64%', mark: '72%', cls: 'yellow' };
+
+    const geminiData = isHigh ? { pct: '79%', sub: '79% · 45m left', fill: '79%', mark: '65%', cls: 'red' }
+                              : { pct: '42%', sub: '42% · 2h50m', fill: '42%', mark: '40%', cls: 'green' };
+
+    // 更新 DOM
+    document.querySelectorAll('.data-grok-week').forEach(el => el.textContent = grokData.pct);
+    document.querySelectorAll('.data-grok-sub').forEach(el => el.textContent = grokData.sub);
+    document.querySelectorAll('.fill-grok').forEach(el => {
+      el.style.width = grokData.fill;
+      if (!el.classList.contains('glow-grok')) {
+        el.className = 'bar-fill fill-grok ' + grokData.cls;
+      }
+    });
+    document.querySelectorAll('.mark-grok').forEach(el => el.style.left = grokData.mark);
+
+    document.querySelectorAll('.data-claude-5h').forEach(el => el.textContent = isHigh ? '92% · 18m' : '64% · 1h22m');
+    document.querySelectorAll('.data-claude-sub').forEach(el => el.textContent = claudeData.sub);
+    document.querySelectorAll('.fill-claude-5h').forEach(el => {
+      el.style.width = claudeData.fill;
+      if (!el.classList.contains('glow-claude')) {
+        el.className = 'bar-fill fill-claude-5h ' + claudeData.cls;
+      }
+    });
+    document.querySelectorAll('.mark-claude-5h').forEach(el => el.style.left = claudeData.mark);
+
+    document.querySelectorAll('.data-gemini-5h').forEach(el => el.textContent = isHigh ? '79% · 45m' : '42% · 2h50m');
+    document.querySelectorAll('.data-gemini-sub').forEach(el => el.textContent = geminiData.sub);
+    document.querySelectorAll('.fill-gemini-5h').forEach(el => {
+      el.style.width = geminiData.fill;
+      if (!el.classList.contains('glow-gemini')) {
+        el.className = 'bar-fill fill-gemini-5h ' + geminiData.cls;
+      }
+    });
+    document.querySelectorAll('.mark-gemini-5h').forEach(el => el.style.left = geminiData.mark);
+  }
+</script>
+
+</body>
+</html>
