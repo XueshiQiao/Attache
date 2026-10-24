@@ -35,15 +35,22 @@ env:
   HAS_APPLE_SECRETS: ${{ secrets.MAC_CERTS_P12_BASE64 != '' }}
   HAS_SPARKLE_KEY: ${{ secrets.SPARKLE_EDDSA_KEY != '' }}
   SPARKLE_VERSION: "2.9.6"
+  # The toolchain this app is developed with, which CI must match exactly so
+  # what ships is what was tested. Change all three together when the local
+  # Xcode moves; the Verify toolchain step fails the build otherwise.
+  XCODE_VERSION: "27.1"
+  XCODE_BUILD: "27A9275"
+  MACOS_SDK: "27.0"
 
 jobs:
   build:
-    # Xcode 27 on macOS 27, matching the toolchain this app is built with
-    # locally (Xcode 27.1, macOS 27.0 SDK). From this generation GitHub names
-    # macOS images by Xcode major, not by OS — there is no `macos-27` label
-    # (changelog 2026-10-15, "Xcode 27 runner image generally available").
-    # `xcode-27` is the standard runner, free in a public repository; the
-    # `xcode-27-xlarge` sibling is a larger runner, billed even here.
+    # The macOS 27 image, which carries the Xcode this app is developed with
+    # (pinned in Setup Xcode below). For Xcode 27 GitHub provides the
+    # `xcode-27` label rather than `macos-27` (changelog 2026-10-15, "Xcode
+    # 27 runner image generally available"). Taken to be the standard runner,
+    # free in a public repository, by GitHub's convention that `-large` and
+    # `-xlarge` mark larger runners, which are billed even here — the
+    # changelog itself says nothing about pricing.
     runs-on: xcode-27
 
     steps:
@@ -62,7 +69,22 @@ jobs:
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
-          xcode-version: latest-stable
+          # Not `latest-stable`: on 2026-10-24 that picked the 27.2 release
+          # candidate and built against the 27.2 SDK, so what shipped would
+          # not have been what was tested. A version here selects any 27.1.x
+          # and checks no build number, so the next step is what pins it.
+          xcode-version: ${{ env.XCODE_VERSION }}
+
+      - name: Verify toolchain matches local
+        run: |
+          xcodebuild -version
+          build=$(xcodebuild -version | awk '/^Build version/ {print $3}')
+          sdk=$(xcrun --sdk macosx --show-sdk-version)
+          echo "Xcode build $build, macOS SDK $sdk — expected $XCODE_BUILD, $MACOS_SDK"
+          if [ "$build" != "$XCODE_BUILD" ] || [ "$sdk" != "$MACOS_SDK" ]; then
+            echo "::error::CI toolchain is Xcode build $build with the macOS $sdk SDK; this app is developed with build $XCODE_BUILD and the $MACOS_SDK SDK. Update XCODE_VERSION, XCODE_BUILD and MACOS_SDK together with the local Xcode."
+            exit 1
+          fi
 
       - name: Install build tools
         run: brew install xcodegen create-dmg

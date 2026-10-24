@@ -8,10 +8,11 @@ options:
   # both are silent if omitted. Without defaultConfig, XcodeGen picks the first
   # configuration alphabetically — Debug — so an `xcodebuild build` with no
   # `-configuration` would quietly switch from a Release build to a Debug one.
-  # Without xcodeVersion, LastUpgradeCheck is stamped 1430 instead of 2630 and
-  # Xcode offers to "update to recommended settings" after every generate.
+  # Without xcodeVersion, LastUpgradeCheck is stamped 1430 and Xcode offers
+  # to "update to recommended settings" after every generate. Keep it at the
+  # Xcode CI pins in .github/workflows/build.yml.
   defaultConfig: Release
-  xcodeVersion: "26.3"
+  xcodeVersion: "27.1"
   # `syncedFolder` sources below need 2.44.
   minimumXcodeGenVersion: "2.44.0"
 
