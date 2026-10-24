@@ -38,9 +38,13 @@ env:
 
 jobs:
   build:
-    # macos-26 ships Xcode 26 (the macOS 26 SDK this app is built with locally).
-    # AnyDrag builds on the same image.
-    runs-on: macos-26
+    # Xcode 27 on macOS 27, matching the toolchain this app is built with
+    # locally (Xcode 27.1, macOS 27.0 SDK). From this generation GitHub names
+    # macOS images by Xcode major, not by OS — there is no `macos-27` label
+    # (changelog 2026-10-15, "Xcode 27 runner image generally available").
+    # `xcode-27` is the standard runner, free in a public repository; the
+    # `xcode-27-xlarge` sibling is a larger runner, billed even here.
+    runs-on: xcode-27
 
     steps:
       # submodules: recursive is load-bearing and is the one place this differs
@@ -49,7 +53,7 @@ jobs:
       # which SwiftPM downloads during resolution. Without recursive checkout the
       # package path is empty and `xcodegen generate` fails.
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -276,7 +280,7 @@ jobs:
           [ -s appcast.xml ]     || { echo "::error::appcast.xml missing"; exit 1; }
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.DMG_NAME }}-dmg
           path: ${{ env.DMG_NAME }}.dmg
@@ -288,7 +292,7 @@ jobs:
       # a missing one here is a real failure, not a silent skip.
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             ${{ env.DMG_NAME }}.dmg
