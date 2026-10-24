@@ -676,7 +676,7 @@ final class MainViewController: NSSplitViewController {
         id: String, from: String, to: String,
         before anchor: String?, emptying: Bool, following: Bool
     ) {
-        guard let destination = server.connection(id: to) else { return }
+        guard let destination = connection(id: to) else { return }
         TmuxLog.lifecycle(
             "moving window \(id) from \(describe(from)) into \(describe(to))"
                 + (emptying ? " — \(describe(from)) has no other window and tmux will destroy it" : "")
@@ -696,6 +696,10 @@ final class MainViewController: NSSplitViewController {
                 session: describe(to)
             )
             return
+        }
+
+        if !emptying, let sourceSession = SessionKey(composite: from)?.session {
+            destination.renumberWindows(inSession: sourceSession)
         }
 
         guard following else { return }

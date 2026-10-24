@@ -1156,6 +1156,13 @@ final class TmuxSessionConnection {
         return true
     }
 
+    /// Close the index gap left behind in `sessionID` after a window was moved
+    /// out of it on this connection's pipe, so both commands arrive at the
+    /// server in order.
+    func renumberWindows(inSession sessionID: String) {
+        client.send("move-window -r -t \(sessionID)")
+    }
+
     /// Whether this session's windows currently hold `id`.
     ///
     /// Asked before a move that a human has been sitting in front of a
