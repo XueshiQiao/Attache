@@ -200,8 +200,7 @@ final class MainViewController: NSSplitViewController {
     private var settingsObserver: NSObjectProtocol?
     private var occlusionObserver: NSObjectProtocol?
     private var appearanceObservation: NSKeyValueObservation?
-    private let geminiQuotaService = GeminiQuotaService()
-    private let grokQuotaService = GrokQuotaService()
+    private let aiQuotaService = AIQuotaService()
 
     var onStatusChange: ((String) -> Void)?
 
@@ -548,14 +547,10 @@ final class MainViewController: NSSplitViewController {
             self?.inSession(session) { $0.restoreHiddenWindows() }
         }
 
-        geminiQuotaService.onChange = { [weak self] _ in
+        aiQuotaService.onChange = { [weak self] in
             self?.refreshSidebar()
         }
-        geminiQuotaService.start()
-        grokQuotaService.onChange = { [weak self] _ in
-            self?.refreshSidebar()
-        }
-        grokQuotaService.start()
+        aiQuotaService.start()
     }
 
     // MARK: - Host management
@@ -1533,12 +1528,14 @@ final class MainViewController: NSSplitViewController {
         // Across every session, not the one on screen. Rate limits belong to
         // the account, so the answer must not change when the rail is pointed
         // at a different session — and the session being looked at is often
-        // the one with no agent in it.
+        // the one with no agent in it. Merged with `AIQuotaService` so the
+        // deck still paints when no Claude session is running at all.
+        let paneClaudeUsage = hosts.flatMap { host in
+            host.server.sessionIDs.compactMap { host.server.connection(id: $0)?.accountUsage }
+        }
+        .reduce(nil) { AccountUsage.fresher($0, $1) }
         sidebar.showUsage(
-            hosts.flatMap { host in
-                host.server.sessionIDs.compactMap { host.server.connection(id: $0)?.accountUsage }
-            }
-            .reduce(nil) { AccountUsage.fresher($0, $1) }
+            AccountUsage.merged(aiQuotaService.claudeUsage, paneClaudeUsage)
         )
 
         let paneGeminiUsage = hosts.flatMap { host in
@@ -1546,12 +1543,9 @@ final class MainViewController: NSSplitViewController {
         }
         .reduce(nil) { AccountUsage.merged($0, $1) }
         sidebar.showGeminiUsage(
-            AccountUsage.merged(geminiQuotaService.currentUsage, paneGeminiUsage)
+            AccountUsage.merged(aiQuotaService.geminiUsage, paneGeminiUsage)
         )
-        // Account-wide, and not carried on a tmux connection. Merging pane
-        // snapshots into it would invent a second source this number does
-        // not have.
-        sidebar.showGrokUsage(grokQuotaService.currentUsage)
+        sidebar.showGrokUsage(aiQuotaService.grokUsage)
 
         refreshConversation()
     }
@@ -1938,8 +1932,7 @@ final class MainViewController: NSSplitViewController {
     /// to break, but a teardown that runs twice is a teardown whose order
     /// nobody can reason about.
     func stop() {
-        geminiQuotaService.stop()
-        grokQuotaService.stop()
+        aiQuotaService.stop()
         for controller in embedded.values { controller.detach() }
         for host in hosts { host.stop() }
     }

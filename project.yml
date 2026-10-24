@@ -3,7 +3,7 @@ name: Attache
 options:
   bundleIdPrefix: me.xueshi
   deploymentTarget:
-    macOS: "13.0"
+    macOS: "14.0"
   # Both of these are here to match what the hand-maintained project had, and
   # both are silent if omitted. Without defaultConfig, XcodeGen picks the first
   # configuration alphabetically — Debug — so an `xcodebuild build` with no
@@ -29,6 +29,9 @@ packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     exactVersion: 2.9.6
+  AIUsageKit:
+    url: https://github.com/XueshiQiao/AIUsageKit.git
+    revision: a08b005087f474ea6987c2be49a1bbcff5926497
 
 schemes:
   Attache:
@@ -91,6 +94,8 @@ targets:
       # workflow signs the bundle by hand, inside out, rather than letting
       # xcodebuild do it (see .github/workflows/build.yml).
       - package: Sparkle
+      - package: AIUsageKit
+        product: AIUsageKit
     postBuildScripts:
       # Named by path rather than pasted in here: the body is shell, and a YAML
       # block scalar mangles indentation-sensitive text quietly. XcodeGen copies

@@ -259,7 +259,7 @@ jobs:
             echo "      <pubDate>${PUB_DATE}</pubDate>"
             echo "      <sparkle:version>${BUILD}</sparkle:version>"
             echo "      <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>"
-            echo '      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>'
+            echo '      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>'
             echo "      <enclosure url=\"${DOWNLOAD_URL}\" length=\"${FILE_LENGTH}\" type=\"application/octet-stream\" sparkle:edSignature=\"${ED_SIGNATURE}\" />"
             echo '    </item>'
             echo '  </channel>'
