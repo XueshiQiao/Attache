@@ -197,6 +197,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         // remote host already gets.
         let transport = TmuxTransport.local(tmuxPath: tmuxPath, socket: socket)
         switch TmuxControlClient.listSessions(transport: transport) {
+        case .failed(let message) where TmuxVersion.meansIncompatibleClient(message):
+            // This binary cannot talk to the running server — a version
+            // mismatch, which the local host's probe names with the fix. A
+            // "not answering" here first would only send the reader the wrong
+            // way.
+            break
         case .failed(let message):
             DiagnosticsCenter.shared.notice(AppNotice(
                 severity: .error,
@@ -207,6 +213,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         case .noServer:
             guard offerToCreateFirstSession(transport: transport) else { return }
         case .sessions(let sessions) where sessions.isEmpty:
+            // A running server with no sessions (`exit-empty off`) may be a
+            // different version from this binary, and a session created
+            // through it would never show — the rail makes no connection
+            // across versions. The local host's probe says why instead.
+            if TmuxControlClient.serverDiffersFromBinary(transport: transport) { break }
             guard offerToCreateFirstSession(transport: transport) else { return }
         case .sessions:
             break

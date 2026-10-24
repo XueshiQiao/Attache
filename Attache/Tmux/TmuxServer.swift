@@ -30,6 +30,61 @@ final class TmuxServer {
     /// only a caller that skipped `HostContext` can produce.
     var tmuxVersion: TmuxVersion?
 
+    /// The server turned out to be a different version from the one probed —
+    /// it was replaced while the app ran. `HostContext` keeps its own copy
+    /// for the Hosts page and the subscription notice.
+    var onVersionChange: ((TmuxVersion) -> Void)?
+
+    /// `tmux -V` of the binary every connection runs, as `TmuxVersion.bareText`.
+    /// nil until probed, and nil disables the mismatch guard below.
+    var binaryVersionText: String?
+
+    /// Why no control connection is being made, when the binary and the
+    /// running server are different versions — see `TmuxVersion` for what a
+    /// control client does across versions (nothing, or kill the server).
+    /// The server's version, or nil when the binary could not even ask it.
+    private(set) var versionMismatch: VersionMismatch?
+
+    struct VersionMismatch: Equatable {
+        let server: String?
+        let binary: String
+
+        /// The server half of a message: its version, or why there is none.
+        var serverDescription: String {
+            guard let server else { return "a version this tmux cannot talk to" }
+            return server.isEmpty ? "older than tmux 2.4" : "tmux \(server)"
+        }
+    }
+
+    /// Fires when `versionMismatch` changes, either way.
+    var onVersionMismatchChange: ((VersionMismatch?) -> Void)?
+
+    /// Also called by `HostContext` with what its probe already knows, so
+    /// the host never shows as ready in the gap before the first listing.
+    func setVersionMismatch(_ mismatch: VersionMismatch?) {
+        guard mismatch != versionMismatch else { return }
+        versionMismatch = mismatch
+        if let mismatch {
+            TmuxLog.lifecycle(
+                "tmux server is \(mismatch.server ?? "unreachable from this binary"), binary is "
+                    + "\(mismatch.binary) — making no control connection"
+            )
+        } else {
+            TmuxLog.lifecycle("tmux server and binary agree again — connecting")
+        }
+        onVersionMismatchChange?(mismatch)
+    }
+
+    /// What every pane on this server is told its terminal's colours are —
+    /// the scheme this app paints. Handed to each connection, including the
+    /// ones made later. See `TmuxPaneColours`.
+    var paneColours: TmuxPaneColours? {
+        didSet {
+            guard paneColours != oldValue else { return }
+            for connection in connections.values { connection.paneColours = paneColours }
+        }
+    }
+
     /// tmux's session ids, in tmux's own order. The identity of a session
     /// everywhere in this app: a name is user text and any terminal can change
     /// it at any moment, which used to read here as the session disappearing.
@@ -61,6 +116,23 @@ final class TmuxServer {
         )
         for connection in connections.values { connection.stop() }
         connections.removeAll()
+    }
+
+    /// Re-read the server's version from the listing, before any connection
+    /// below is made, so a connection to a replaced server is built for the
+    /// server that is actually there. A replaced server has replaced every
+    /// session, so the connections made for the old one are already gone or
+    /// have a dead client, and the loops below remake them with this.
+    private func adoptListedVersion(_ listed: [TmuxSessionListing]) {
+        guard let raw = listed.first?.serverVersion,
+              let version = TmuxVersion.parseServerAnswer("tmux \(raw)"),
+              version != tmuxVersion else { return }
+        TmuxLog.lifecycle(
+            "tmux server is now \(version.text), was \(tmuxVersion?.text ?? "unprobed") — "
+                + "connections from here on are made for \(version.text)"
+        )
+        tmuxVersion = version
+        onVersionChange?(version)
     }
 
     func connection(id: String) -> TmuxSessionConnection? {
@@ -118,14 +190,58 @@ final class TmuxServer {
         }
         listingInFlight = true
         let transport = transport
+        // The sessions that already have a live connection. Any other listed
+        // session is about to get one, and that is the moment the binary's
+        // version is asked again: it can be replaced under a running app
+        // (`brew upgrade`) while the server stays, and a control client of
+        // the wrong version is silent one way and kills the server the
+        // other. While a mismatch stands nothing has a connection, so it is
+        // asked on every listing — which is also what notices the fix.
+        let connected = Set(connections.filter { $0.value.clientIsRunning }.keys)
+        let guarding = binaryVersionText != nil
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = TmuxControlClient.listSessions(transport: transport)
-            DispatchQueue.main.async { self?.reconcile(with: result) }
+            var binary: String?
+            var asked = false
+            if guarding {
+                switch result {
+                case .sessions(let sessions) where !Set(sessions.map(\.id)).isSubset(of: connected):
+                    asked = true
+                    binary = TmuxControlClient.binaryVersion(transport: transport)
+                case .failed(let message) where TmuxVersion.meansIncompatibleClient(message):
+                    asked = true
+                    binary = TmuxControlClient.binaryVersion(transport: transport)
+                default:
+                    break
+                }
+            }
+            let unverified = asked && binary == nil
+            DispatchQueue.main.async {
+                self?.reconcile(with: result, binary: binary, connected: connected, unverified: unverified)
+            }
         }
     }
 
-    private func reconcile(with result: TmuxControlClient.SessionListResult) {
+    private func reconcile(
+        with result: TmuxControlClient.SessionListResult, binary: String? = nil,
+        connected: Set<String> = [], unverified: Bool = false
+    ) {
         listingInFlight = false
+        if let binary, binary != binaryVersionText {
+            TmuxLog.lifecycle("tmux binary is now \(binary), was \(binaryVersionText ?? "unknown")")
+            binaryVersionText = binary
+        }
+        // `-V` was asked because a connection was about to be made, and it
+        // did not answer — a dropped ssh channel, a full MaxSessions. The old
+        // value cannot vouch for a binary that may just have been replaced,
+        // so nothing new is connected this round: the sessions that already
+        // have a live connection keep it, the rest wait for the next ask.
+        if unverified, case .sessions(let sessions) = result {
+            TmuxLog.lifecycle("tmux -V did not answer before connecting — trying again shortly")
+            scheduleRetryAfterFailedListing()
+            reconcile(with: .sessions(sessions.filter { connected.contains($0.id) }))
+            return
+        }
         // A refresh asked for while this one was on the wire ran against a
         // list that may already be stale; honour it after reconciling.
         defer {
@@ -150,6 +266,18 @@ final class TmuxServer {
         switch result {
         case .failed(let message):
             TmuxLog.lifecycle("list-sessions failed, changing nothing: \(message)")
+            // An older binary than the server fails every command this way,
+            // and attaching it in control mode is the case that kills the
+            // server — so this is named, not just retried, and it reconciles
+            // as an empty listing: a connection made before the binary was
+            // swapped must not stay, or opening its session would start a
+            // `tmux attach` with that binary.
+            if let binary = binaryVersionText, TmuxVersion.meansIncompatibleClient(message) {
+                setVersionMismatch(VersionMismatch(server: nil, binary: binary))
+                scheduleRetryAfterFailedListing()
+                listed = []
+                break
+            }
             // Retry unconditionally, not only when `connections` is empty:
             // the dictionary still holds a connection whose client has
             // *exited* — reconciliation is what removes entries, and it needs
@@ -161,11 +289,26 @@ final class TmuxServer {
             scheduleRetryAfterFailedListing()
             return
         case .noServer:
+            // Nothing to be mismatched with; the next server is judged afresh.
+            setVersionMismatch(nil)
             listed = []
         case .sessions(let sessions):
-            listed = sessions
+            // A newer binary than the server lists sessions fine and then
+            // attaches control clients that never hear a reply. While the two
+            // differ the listing counts as empty: no connection is made, and
+            // any made before the server was replaced are dropped below.
+            if let binary = binaryVersionText, let raw = sessions.first?.serverVersion,
+               TmuxVersion.serverDiffers(serverText: TmuxVersion.bareText(raw), binaryText: binary)
+            {
+                setVersionMismatch(VersionMismatch(server: TmuxVersion.bareText(raw), binary: binary))
+                listed = []
+            } else {
+                if !sessions.isEmpty { setVersionMismatch(nil) }
+                listed = sessions
+            }
         }
         sessionIDs = listed.map(\.id)
+        adoptListedVersion(listed)
 
         // A connection whose client has *exited* while its session lives on —
         // an ssh channel dying under it is the common way — is dead weight the
@@ -196,6 +339,10 @@ final class TmuxServer {
                 self?.scheduleSessionRefresh()
             }
             connection.onExit = { [weak self] _ in self?.scheduleSessionRefresh() }
+            // Unprobed is assumed modern, as the reply decoding above assumes;
+            // an old server answers each report with an `%error` and no harm.
+            connection.reportsPaneColours = tmuxVersion?.supportsPaneColourReports ?? true
+            connection.paneColours = paneColours
             connections[session.id] = connection
             connection.start()
         }
@@ -259,6 +406,18 @@ final class TmuxServer {
     /// Off the main thread for the same reason the listing is: on a remote
     /// host this is an ssh round trip, and it is wired to a button.
     func newSession() {
+        // A session made through a binary of the wrong version lands on the
+        // server but never in the rail, which counts the listing as empty
+        // while the two differ — every click one more invisible session.
+        if let mismatch = versionMismatch {
+            DiagnosticsCenter.shared.notice(AppNotice(
+                severity: .error,
+                title: "Not creating a session while tmux versions differ",
+                body: "The tmux server is \(mismatch.serverDescription)"
+                    + " and \(transport.tmuxPath) is tmux \(mismatch.binary)."
+            ))
+            return
+        }
         // A word, not tmux's next number — picked against the sessions this
         // server currently has. Another client can win the same name in the
         // gap, so a duplicate answer falls back to a nameless create rather

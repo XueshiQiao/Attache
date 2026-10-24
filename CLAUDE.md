@@ -89,6 +89,23 @@ it means changing the cell width, which the owner has ruled out. Three models
 were asked for a way round on 2026-10-24 and found none that keeps tmux drawing
 every pane.
 
+**The scheme's colours are reported to tmux, and that is the other appearance
+write.** A program in a pane that follows the terminal's background — Claude
+Code's `auto` theme — asks with OSC 11 and tmux answers for the terminal: from
+the first client on the session in attach order, with a control client counted
+as black. So every pane was told "dark" over a light scheme, or whatever
+Ghostty.app's theme was while it was attached first. Each connection now sends
+`refresh-client -r` (tmux ≥ 3.5) for every pane with the scheme's foreground
+and background, which outranks every client. A report changes only what tmux
+*answers*, so on a colour change — and whenever new panes are reported, since
+a program that asked first was told dark and is never told again otherwise —
+the global `window-style` is also read and written straight back: that is the
+one command a control client can send that makes tmux tell running programs
+(mode 2031) to ask again, and it flags every pane on the server without
+changing any value. Not `set-option -gwa window-style ''`, which looks like the
+same thing without the read and appends a comma each time. `TmuxPaneColours`
+has the measurements.
+
 `Attache/Tmux/` has no AppKit imports and should stay that way.
 `Attache/UI/` is the only place that touches views.
 
@@ -247,14 +264,16 @@ terminal's `command` goes through a local `/bin/sh -c` first — and a session i
 is `$N`, which every unquoted layer expands to nothing. The check renders each
 command and runs it through a real `/bin/sh` with an `ssh` stand-in that does
 what OpenSSH documents, comparing the argv that falls out the far end
-byte-for-byte. `HostConfig` validation and `TmuxVersion` parsing ride along.
-Run it after touching `TmuxTransport.swift`, `HostConfig.swift` or
-`TmuxVersion.swift`:
+byte-for-byte. `HostConfig` validation, `TmuxVersion` parsing and the
+version-probe script, and the `list-sessions` parse ride along. Run it after
+touching `TmuxTransport.swift`, `HostConfig.swift`, `TmuxVersion.swift` or
+`TmuxSessionListing.swift`:
 
 ```sh
 swiftc -O -o /tmp/transportcheck Attache/Tmux/TmuxSocket.swift \
   Attache/Tmux/TmuxTransport.swift Attache/Tmux/HostConfig.swift \
-  Attache/Tmux/TmuxVersion.swift Tools/TransportCheck/main.swift
+  Attache/Tmux/TmuxVersion.swift Attache/Tmux/TmuxSessionListing.swift \
+  Tools/TransportCheck/main.swift
 /tmp/transportcheck
 ```
 
@@ -380,6 +399,25 @@ only **4**, and that is the finding rather than a weak case: since the floors
 are solved on the composite they walk a wrong-way tone out the other side, so
 that choice buys the system's own calibration rather than legibility.
 Unmutated it is `485 schemes (398 dark, 87 light), all pass`, exit 0.
+
+**`TmuxPaneColours` has one, and it runs a program in a pane that asks.**
+The report crosses tmux's command parser (which makes `\033` an ESC only inside
+double quotes) and then its OSC 10/11 parser, and a command that parses to
+nothing is answered with no error while the pane goes on hearing black. So the
+check starts an isolated `-L attache-panecolours-check` server (tmux ≥ 3.5),
+attaches a control client over a pipe, and compares the bytes a probe is
+answered with — including a program that asked before its report landed, one
+already running that hears light and then the flip to dark, and that a global
+`window-style` full of spaces, `#` and braces comes back byte for byte.
+Mutation, measured 2026-10-24: single-quoting the report fails 5 cases,
+replacing the write-back with a no-op fails 2.
+
+```sh
+swiftc -O -o /tmp/panecolourscheck Attache/Tmux/TmuxCommand.swift \
+  Attache/Tmux/TmuxPaneColours.swift Attache/Tmux/TmuxVersion.swift \
+  Attache/Tmux/TmuxSocket.swift Tools/PaneColoursCheck/main.swift
+/tmp/panecolourscheck
+```
 
 **`TerminalLinkTarget` has one, and it decides what a click opens on the user's
 machine.** libghostty matches the link and draws the underline; this turns the
@@ -828,6 +866,25 @@ one of them presents as "the code is obviously correct and yet".
   server version (`TmuxVersion.escapesControlModeReplies`), because a decode
   applied to a 3.6 reply would corrupt content that legitimately contains
   backslash-digit runs.
+- **`tmux -V` is the binary's version, not the server's — and every gate is
+  the server's.** After `brew upgrade tmux` the old server keeps running, and
+  the new client talks to it without complaint. Measured 2026-10-24 with a
+  3.5a server on an isolated socket: `-V` said 3.6a, `display-message -p
+  '#{version}'` said 3.5a. Gating on `-V` there skips 3.5's reply decoding
+  and every window list stays empty. So the probe asks the server first and
+  falls back to `-V` only when there is none, and every `list-sessions`
+  carries `#{version}` too, because the server can be replaced under a
+  running app. Do not reintroduce `-V` as the source of a gate.
+  **And the binary must *equal* the server, not merely be new enough** —
+  both builds are protocol 8 and tmux checks nothing else. Measured
+  2026-10-24 on isolated sockets, twice each: a 3.6a control client attached
+  to a 3.5a server gets no reply, not even the handshake, so the rail stays
+  empty with nothing said; a 3.5a control client attached to a 3.6a server
+  **makes the server exit, every session in it**. One-shot commands work in
+  the first direction and fail with `server exited unexpectedly` in the
+  second, the server surviving. So `TmuxServer` makes no control connection
+  while `#{version}` and `-V` differ, and `HostContext` says which is which
+  and that one fix ends every session.
 - **A `readabilityHandler` that ignores empty data never stops running.** A
   dispatch read source on a pipe is *permanently readable* once the write end
   closes: `read` returns zero bytes at once and keeps doing so. The obvious

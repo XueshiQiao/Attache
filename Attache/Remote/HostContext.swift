@@ -168,6 +168,13 @@ final class HostContext {
             RemoteAgentSetup(helper: $0, transport: transport, hostName: displayName)
         }
         server = TmuxServer(transport: transport)
+        server.onVersionChange = { [weak self] version in
+            self?.tmuxVersion = version
+            self?.supportsSubscriptions = version.supportsSubscriptions
+        }
+        server.onVersionMismatchChange = { [weak self] mismatch in
+            self?.versionMismatchChanged(mismatch)
+        }
 
         preflight?.addObserver { [weak self] preflightState in
             self?.preflightChanged(preflightState)
@@ -263,6 +270,13 @@ final class HostContext {
     /// The host row was clicked while down: skip the backoff and try now.
     func retry() {
         guard !retired else { return }
+        // A version mismatch is down with ssh still up, and `retryNow` only
+        // acts on a pre-flight that is down — so clicking the row did nothing.
+        // Ask both versions again instead; a fixed host comes back from here.
+        if server.versionMismatch != nil {
+            probeTmux()
+            return
+        }
         preflight?.retryNow()
     }
 
@@ -315,48 +329,104 @@ final class HostContext {
         }
     }
 
-    /// One `tmux -V` between auth and attach. It answers two different
+    /// The binary and the running server are different tmux versions, or
+    /// agree again. Said loudly, because the symptom on its own is an empty
+    /// rail with nothing to explain it — and named precisely, because one of
+    /// the two fixes ends every session on the server.
+    private func versionMismatchChanged(_ mismatch: TmuxServer.VersionMismatch?) {
+        let path = transport.tmuxPath
+        guard let mismatch else {
+            if case .down = state, server.versionMismatch == nil { state = .ready }
+            return
+        }
+        let reason = "The tmux server on \(displayName) is \(mismatch.serverDescription), but \(path) is tmux"
+            + " \(mismatch.binary). tmux cannot attach a control client across versions, so"
+            + " this app is not connecting. Either restart the tmux server with \(path) —"
+            + " this ends every session on it — or set tmux_path to a tmux"
+            + " \(mismatch.server.flatMap { $0.isEmpty ? nil : $0 } ?? "of the server's version")."
+        DiagnosticsCenter.shared.notice(AppNotice(
+            severity: .error,
+            title: "tmux server and binary are different versions",
+            body: reason
+        ))
+        if !isLocal { state = .down(reason) }
+    }
+
+    /// One version probe between auth and attach. It answers two different
     /// questions: is there a tmux at `tmux_path` at all — the failure that
     /// must name its fix, because bare `tmux` is missing from most
-    /// non-interactive PATHs — and is it new enough for subscriptions.
+    /// non-interactive PATHs — and how new the *server* is, which is what
+    /// every version gate is about.
     private func probeTmux() {
         state = .connecting
         probeGeneration &+= 1
         let generation = probeGeneration
-        let argv = transport.oneShotArgv(["-V"])
+        let serverArgv = transport.oneShotArgv(TmuxVersion.serverQuery)
+        let binaryArgv = transport.oneShotArgv(["-V"])
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: argv[0])
-            process.arguments = Array(argv.dropFirst())
-            let out = Pipe(), err = Pipe()
-            process.standardOutput = out
-            process.standardError = err
-            var answer = ""
-            var problem = ""
-            var status: Int32 = -1
-            if (try? process.run()) != nil {
-                answer = String(decoding: out.fileHandleForReading.readDataToEndOfFile(),
-                                as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                problem = String(decoding: err.fileHandleForReading.readDataToEndOfFile(),
-                                 as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            func ask(_ argv: [String]) -> (status: Int32, answer: String, problem: String) {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: argv[0])
+                process.arguments = Array(argv.dropFirst())
+                let out = Pipe(), err = Pipe()
+                process.standardOutput = out
+                process.standardError = err
+                guard (try? process.run()) != nil else { return (-1, "", "") }
+                // The same deadline the Test Connection probe keeps: a remote
+                // shell that hangs after auth must not hold this thread and
+                // the child for ever.
+                DispatchQueue.global().asyncAfter(deadline: .now() + 20) {
+                    if process.isRunning { process.terminate() }
+                }
+                let answer = String(decoding: out.fileHandleForReading.readDataToEndOfFile(),
+                                    as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                let problem = String(decoding: err.fileHandleForReading.readDataToEndOfFile(),
+                                     as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                 process.waitUntilExit()
-                status = process.terminationStatus
+                return (process.terminationStatus, answer, problem)
             }
+            // The running server first — see `TmuxVersion` for why `-V` is
+            // the wrong question while one exists. No server (`no server
+            // running`, exit 1) means the next one will be started by this
+            // binary, so `-V` is then the right answer. A failure `-V` would
+            // only repeat — no tmux there, ssh down, a timeout — is reported
+            // from the first answer instead of waiting for a second.
+            let server = ask(serverArgv)
+            let fromServer = server.status == 0 ? TmuxVersion.parseServerAnswer(server.answer) : nil
+            // `-V` too, whenever it can answer: the binary has to *match* the
+            // server, and `TmuxServer` makes no control connection while it
+            // does not (see `TmuxVersion`).
+            let binary = TmuxVersion.binaryMightAnswer(afterServerQueryExited: server.status)
+                ? ask(binaryArgv) : nil
+            let reply = fromServer != nil ? server : binary ?? server
+            let binaryText = binary.flatMap { $0.status == 0 ? TmuxVersion.bareText($0.answer) : nil }
+            TmuxLog.lifecycle(
+                "tmux server: \(fromServer != nil ? server.answer : "not answering (\(server.problem))")"
+                    + " — binary: \(binary?.answer ?? "not asked")"
+            )
+            let incompatible = TmuxVersion.meansIncompatibleClient(server.problem)
             DispatchQueue.main.async { [weak self] in
                 self?.probeAnswered(
-                    generation: generation, status: status, version: answer, problem: problem
+                    generation: generation, status: reply.status, version: reply.answer,
+                    problem: reply.problem, fromServer: fromServer, binaryText: binaryText,
+                    serverText: fromServer != nil ? TmuxVersion.bareText(server.answer) : nil,
+                    incompatible: incompatible
                 )
             }
         }
     }
 
-    private func probeAnswered(generation: Int, status: Int32, version: String, problem: String) {
+    private func probeAnswered(
+        generation: Int, status: Int32, version: String, problem: String,
+        fromServer: TmuxVersion?, binaryText: String?, serverText: String?, incompatible: Bool
+    ) {
         guard !retired, generation == probeGeneration, case .connecting = state else { return }
         // Belt to the generation's braces: a remote host's result only
         // counts while the master it rode is still up. The local host has
         // no pre-flight and no such condition.
         if let preflight, preflight.state != .up { return }
-        guard status == 0, let parsed = TmuxVersion.parse(version) ?? Self.masterBuild(version)
+        guard status == 0,
+              let parsed = fromServer ?? TmuxVersion.parse(version) ?? TmuxVersion.unnumbered(version)
         else {
             let path = transport.tmuxPath
             if isLocal {
@@ -376,8 +446,20 @@ final class HostContext {
             )
             return
         }
+        // A server that answered with a binary that did not: the mismatch
+        // guard needs both, and connecting without it is the one risk it
+        // exists to remove.
+        if fromServer != nil, binaryText == nil {
+            state = .down(
+                "tmux at \"\(transport.tmuxPath)\" on \(displayName) did not report its version"
+                    + " (tmux -V), so this app cannot check it matches the running server."
+                    + (problem.isEmpty ? "" : " \(problem)")
+            )
+            return
+        }
         tmuxVersion = parsed
         server.tmuxVersion = parsed
+        server.binaryVersionText = binaryText
         if !parsed.supportsSubscriptions {
             supportsSubscriptions = false
             DiagnosticsCenter.shared.notice(AppNotice(
@@ -389,12 +471,30 @@ final class HostContext {
             ))
         }
         state = .ready
+        // What the probe already knows, before the first listing could say
+        // it — so the host never reads as ready, and + Session is refused,
+        // in that gap. The listing keeps the verdict current from here on.
+        if let binaryText {
+            let verdict: TmuxServer.VersionMismatch? =
+                if incompatible {
+                    .init(server: nil, binary: binaryText)
+                } else if let serverText,
+                          TmuxVersion.serverDiffers(serverText: serverText, binaryText: binaryText)
+                {
+                    .init(server: serverText, binary: binaryText)
+                } else {
+                    nil
+                }
+            let before = server.versionMismatch
+            server.setVersionMismatch(verdict)
+            // An unchanged verdict fires no change — but `.ready` was just
+            // set above, so a retry that finds the same mismatch has to put
+            // the host back down itself, or it reads as connected with
+            // nothing behind it and no row to click again.
+            if let verdict, verdict == before { versionMismatchChanged(verdict) }
+        }
         helper?.start()
         server.start()
     }
 
-    /// `tmux master` and other unnumbered builds: newer than any release.
-    private static func masterBuild(_ output: String) -> TmuxVersion? {
-        output.hasPrefix("tmux ") ? TmuxVersion(major: 99, minor: 0) : nil
-    }
 }

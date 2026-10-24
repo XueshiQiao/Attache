@@ -169,12 +169,12 @@ struct AddServerSheet: View {
         HostProbe.run(config: config, sshPath: AppSettings.sshPath, discoverPath: discover) { outcome in
             guard generation == probeGeneration else { return }
             probing = false
-            if case .connected(_, let foundAt) = outcome, let foundAt {
+            if case .connected(_, let foundAt, _) = outcome, let foundAt {
                 fillingFromProbe = true
                 draft.tmuxPath = foundAt
             }
             probeMessage = outcome.message
-            if case .failed = outcome { probeFailed = true } else { probeFailed = false }
+            probeFailed = outcome.isFailure
         }
     }
 
@@ -192,7 +192,7 @@ struct AddServerSheet: View {
             HostProbe.run(config: config, sshPath: AppSettings.sshPath, discoverPath: true) { outcome in
                 guard generation == probeGeneration else { return }
                 probing = false
-                if case .connected(_, let foundAt) = outcome, let foundAt {
+                if case .connected(_, let foundAt, _) = outcome, let foundAt {
                     fillingFromProbe = true
                     draft.tmuxPath = foundAt
                 }

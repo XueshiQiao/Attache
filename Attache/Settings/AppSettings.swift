@@ -801,6 +801,14 @@ enum AppSettings {
             : themeDefinition(named: lightThemeName, default: defaultLightThemeName)
     }
 
+    /// The scheme on screen, as what a pane's program is told its terminal's
+    /// colours are. See `TmuxPaneColours`.
+    @MainActor
+    static func effectivePaneColours() -> TmuxPaneColours? {
+        let scheme = effectiveThemeDefinition()
+        return TmuxPaneColours(foreground: scheme.foreground, background: scheme.background)
+    }
+
     @MainActor
     static var isShowingDarkAppearance: Bool {
         NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua

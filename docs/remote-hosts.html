@@ -303,7 +303,7 @@ tmux_path = "/opt/homebrew/bin/tmux"   <span class="tok-comment"># usually requi
   <li><b>Optional, for agent badges and transcripts on that machine:</b> Settings &rarr; Behaviour &rarr; <i>Agent status on remote hosts</i> &rarr; Install. This writes the same hook script and status-line wrapper the local install writes, into <em>that machine&rsquo;s</em> <code>~/.claude/</code>, over ssh &mdash; with a timestamped backup, and it refuses to write if anything else edited the file meanwhile.</li>
 </ol>
 
-<div class="callout"><b>Why <code>tmux_path</code> is usually required.</b> A non-interactive ssh shell has no Homebrew on its PATH, so bare <code>tmux</code> is &ldquo;command not found&rdquo; on most Macs. The app probes <code>tmux -V</code> on connect and, when it fails, the host row says exactly this and names the fix.</div>
+<div class="callout"><b>Why <code>tmux_path</code> is usually required.</b> A non-interactive ssh shell has no Homebrew on its PATH, so bare <code>tmux</code> is &ldquo;command not found&rdquo; on most Macs. The app asks the running tmux server for its version on connect (<code>display-message -p '#{version}'</code>, falling back to <code>tmux -V</code> when no server is running yet) and, when tmux cannot be found, the host row says exactly this and names the fix. The server is asked rather than the binary because every version-dependent behaviour is the server&rsquo;s, and after an upgrade the two differ until the server is restarted.</div>
 
 <h3>Requirements on the host</h3>
 <ul>
@@ -349,7 +349,7 @@ tmux_path = "/opt/homebrew/bin/tmux"   <span class="tok-comment"># usually requi
   <rect x="0" y="48" width="180" height="52" rx="10" fill="#ffffff" stroke="#b6711c"/>
   <circle cx="24" cy="74" r="5" fill="#b6711c"/>
   <text x="40" y="70" font-weight="600" font-size="13">connecting&hellip;</text>
-  <text x="40" y="88" class="label-faint" font-size="11">auth + tmux -V probe</text>
+  <text x="40" y="88" class="label-faint" font-size="11">auth + tmux version probe</text>
   <rect x="310" y="48" width="180" height="52" rx="10" fill="#ffffff" stroke="#4f8a5c"/>
   <circle cx="334" cy="74" r="5" fill="#8a857c"/>
   <text x="350" y="70" font-weight="600" font-size="13">ready</text>

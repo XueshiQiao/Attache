@@ -1811,6 +1811,10 @@ final class TmuxSessionConnection {
             windows[index].visibleLayoutText = visible
             windows[index].savedLayoutText = saved
             notifyModelChanged()
+            // A split, or a `join-pane`, arrives as this alone — with `-d`
+            // there is no `%window-pane-changed` and so no `list-windows` to
+            // report the new pane from.
+            reportPaneColours()
 
         case .windowAdd, .windowClose:
             refreshWindows()
@@ -1901,6 +1905,68 @@ final class TmuxSessionConnection {
                 self.onStatusChange?(self.describeActive())
             }
             self.notifyModelChanged()
+            self.reportPaneColours()
+        }
+    }
+
+    // MARK: - Pane colours
+
+    /// What a pane's program is told its terminal's colours are. Set by the
+    /// server from the scheme this app's terminal paints; nil sends nothing,
+    /// and so does a server older than 3.5. See `TmuxPaneColours` for why
+    /// tmux's own answer is wrong without it.
+    var paneColours: TmuxPaneColours? {
+        didSet {
+            guard paneColours != oldValue else { return }
+            colourReportedPanes.removeAll()
+            themeAnnouncementWanted = true
+            reportPaneColours()
+        }
+    }
+    var reportsPaneColours = false
+
+    /// Panes already told the current colours. A pane tmux creates later is
+    /// reported from the `%layout-change` or `list-windows` that shows it.
+    private var colourReportedPanes = Set<String>()
+    /// Set when the colours change, cleared once the panes that were already
+    /// running have been told so.
+    private var themeAnnouncementWanted = false
+
+    private func reportPaneColours() {
+        guard reportsPaneColours, let colours = paneColours, !windows.isEmpty else { return }
+        // The saved layout's pane set, so a zoomed window's hidden panes are
+        // reported too.
+        let live = Set(windows.flatMap(\.paneIDs))
+        let unreported = live.subtracting(colourReportedPanes)
+        for pane in unreported.sorted() {
+            for command in colours.reportCommands(paneID: pane) { client.send(command) }
+        }
+        colourReportedPanes = live
+        // A new pane too, not only a colour change: a program that asked
+        // before its report landed was told black, and tmux clears the pane's
+        // theme flag when it answers — the report does not set it again — so
+        // without this it stays dark for good. Fast enough to lose the race
+        // on a local `new-window claude`, and certain to over ssh.
+        if themeAnnouncementWanted || !unreported.isEmpty {
+            themeAnnouncementWanted = false
+            announceThemeChange()
+        }
+    }
+
+    /// Tell the programs already running that the theme may have changed.
+    /// See `TmuxPaneColours.reassertWindowStyle` for why this is the way.
+    ///
+    /// Through this connection's own client, after its reports, so tmux has
+    /// applied them by the time it works out what each pane is told — which
+    /// is also why it is not coalesced into one per server: another
+    /// connection's announcement could overtake these reports. A program may
+    /// hear the same answer once per session; it just asks again.
+    private func announceThemeChange() {
+        client.run("show-options -gwv window-style") { [weak self] lines, failed in
+            guard let self, !failed, lines.count == 1,
+                  let command = TmuxPaneColours.reassertWindowStyle(currentValue: lines[0])
+            else { return }
+            self.client.send(command)
         }
     }
 
@@ -1986,24 +2052,5 @@ extension TmuxSessionConnection {
             remaining -= 1
             deliverIfReady()
         }
-    }
-}
-
-// MARK: - Quoting
-
-enum TmuxCommand {
-    /// Quote a string for tmux's command parser.
-    ///
-    /// Only needed for genuine user text such as a new window name — every
-    /// other target in this app is an id. tmux treats a single-quoted string
-    /// as literal with no escapes available inside it, so an embedded quote
-    /// has to close, escape, and reopen, the same trick sh uses.
-    static func quote(_ text: String) -> String {
-        // Control characters have no business in a window name and would let
-        // a newline split the command line in two.
-        let cleaned = text.unicodeScalars
-            .filter { $0.value >= 0x20 && $0.value != 0x7f }
-            .reduce(into: "") { $0.unicodeScalars.append($1) }
-        return "'" + cleaned.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

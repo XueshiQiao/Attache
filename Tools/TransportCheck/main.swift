@@ -7,7 +7,7 @@
 //      swiftc -O -o /tmp/transportcheck \
 //          Attache/Tmux/TmuxSocket.swift Attache/Tmux/TmuxTransport.swift \
 //          Attache/Tmux/HostConfig.swift Attache/Tmux/TmuxVersion.swift \
-//          Tools/TransportCheck/main.swift
+//          Attache/Tmux/TmuxSessionListing.swift Tools/TransportCheck/main.swift
 //      /tmp/transportcheck
 //
 //  What this file refuses to take on faith is the quoting. A remote command
@@ -365,6 +365,8 @@ do {
 
 check("version: 3.6a parses", TmuxVersion.parse("tmux 3.6a") == TmuxVersion(major: 3, minor: 6))
 check("version: 3.5a parses", TmuxVersion.parse("tmux 3.5a") == TmuxVersion(major: 3, minor: 5))
+check("version: 3.5 reports pane colours", TmuxVersion(major: 3, minor: 5).supportsPaneColourReports)
+check("version: 3.4 does not report pane colours", !TmuxVersion(major: 3, minor: 4).supportsPaneColourReports)
 check("version: next- builds parse",
       TmuxVersion.parse("tmux next-3.7") == TmuxVersion(major: 3, minor: 7))
 check("version: rc suffixes parse",
@@ -383,6 +385,158 @@ check("version: 3.5 escapes control-mode replies",
       TmuxVersion(major: 3, minor: 5).escapesControlModeReplies == true)
 check("version: 3.6 does not escape replies",
       TmuxVersion(major: 3, minor: 6).escapesControlModeReplies == false)
+
+// MARK: - The server's version, not the binary's
+
+// `tmux -V` names the binary on disk; every gate is about the running server.
+// Measured 2026-10-24: a 3.5a server answered `tmux 3.5a` to the server query
+// while the 3.6a binary's `-V` said `tmux 3.6a`.
+check("server answer: 3.5a", TmuxVersion.parseServerAnswer("tmux 3.5a") == TmuxVersion(major: 3, minor: 5))
+check("server answer: trailing newline", TmuxVersion.parseServerAnswer("tmux 3.6a\n") == TmuxVersion(major: 3, minor: 6))
+check("server answer: next-3.7", TmuxVersion.parseServerAnswer("tmux next-3.7") == TmuxVersion(major: 3, minor: 7))
+check("server answer: master is newer than any release",
+      TmuxVersion.parseServerAnswer("tmux master") == TmuxVersion(major: 99, minor: 0))
+check("server answer: empty #{version} is older than 2.4",
+      TmuxVersion.parseServerAnswer("tmux ") == TmuxVersion(major: 2, minor: 3))
+check("server answer: an error is not a version",
+      TmuxVersion.parseServerAnswer("no server running on /private/tmp/tmux-501/default") == nil)
+check("server answer: nothing is not a version", TmuxVersion.parseServerAnswer("") == nil)
+check("server query asks for the version format",
+      TmuxVersion.serverQuery == ["display-message", "-p", "tmux #{version}"])
+
+// The discovery script, executed: through the real ssh rendering and a real
+// remote `/bin/sh`, with a stand-in `tmux` first on PATH. The stand-in dumps
+// the argv the server query reached it with, so the socket word is compared
+// byte for byte — it is user config, and the script may hold no single quote,
+// so it is double-quoted with sh's specials escaped.
+let fakeTmuxDir = workDir.appendingPathComponent("fake-tmux-bin").path
+let argvFile = workDir.appendingPathComponent("tmux-argv").path
+let binaryAskedFile = workDir.appendingPathComponent("tmux-binary-asked").path
+enum FakeServer { case answers, none, garbage, incompatible, protocolMismatch }
+func installFakeTmux(_ server: FakeServer) {
+    let reply = switch server {
+    case .answers: "echo \"tmux 3.5a\""
+    case .none: "echo \"no server running\" >&2; exit 1"
+    // `display-message` aliased away: exit 0 and a line that is no version.
+    case .garbage: "echo \"hello from an alias\""
+    // What a 3.5a binary prints against a 3.6a server.
+    case .incompatible: "echo \"server exited unexpectedly\" >&2; exit 1"
+    case .protocolMismatch: "echo \"protocol version mismatch (client 9, server 8)\" >&2; exit 1"
+    }
+    _ = writeExecutable("fake-tmux-bin/tmux", """
+    #!/bin/sh
+    if [ "$1" = "-V" ]; then : > "\(binaryAskedFile)"; echo "tmux 3.6a"; exit 0; fi
+    for a in "$@"; do printf '%s\\0' "$a"; done > "\(argvFile)"
+    \(reply)
+    """)
+}
+func runDiscovery(socket: TmuxSocket) -> (lines: [String], argv: [String]) {
+    try? FileManager.default.removeItem(atPath: argvFile)
+    try? FileManager.default.removeItem(atPath: binaryAskedFile)
+    let transport = TmuxTransport(kind: .ssh(target), tmuxPath: "tmux", socket: socket)
+    let argv = transport.execArgv(["sh", "-c", TmuxVersion.discoveryScript(socket: socket)])
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: argv[0])
+    process.arguments = Array(argv.dropFirst())
+    var env = ProcessInfo.processInfo.environment
+    env["PATH"] = fakeTmuxDir + ":/usr/bin:/bin"
+    process.environment = env
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    try! process.run()
+    let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    process.waitUntilExit()
+    // The ssh stand-in puts `SSH-DEST=devbox` and a NUL in front of the
+    // script's first line.
+    let body = out.split(separator: "\0", maxSplits: 1, omittingEmptySubsequences: false).last ?? ""
+    let lines = body.split(separator: "\n").map(String.init)
+    let dumped = (FileManager.default.contents(atPath: argvFile) ?? Data())
+        .split(separator: 0).map { String(decoding: $0, as: UTF8.self) }
+    return (lines, dumped)
+}
+
+installFakeTmux(.answers)
+let nastySocket = "attache ver $HOME \"q\" `x` \\b *?[]~!#;&|()<>"
+for (label, socket) in [("standard", TmuxSocket.standard), ("nasty label", .label(nastySocket)),
+                        ("path with a space", .path("/tmp/sock dir/s"))] {
+    let result = runDiscovery(socket: socket)
+    check("discovery (\(label)): the server's answer is reported",
+          result.lines.contains("server: tmux 3.5a"), result.lines.joined(separator: " | "))
+    check("discovery (\(label)): the binary's -V is the last line",
+          result.lines.last == "tmux 3.6a", result.lines.joined(separator: " | "))
+    check("discovery (\(label)): the socket reached tmux byte for byte",
+          result.argv == socket.arguments + TmuxVersion.serverQuery, result.argv.debugDescription)
+    check("discovery (\(label)): the path is reported first",
+          result.lines.first == fakeTmuxDir + "/tmux", result.lines.joined(separator: " | "))
+    check("discovery (\(label)): -V is asked too, to compare",
+          FileManager.default.fileExists(atPath: binaryAskedFile))
+}
+installFakeTmux(.none)
+for (label, socket) in [("standard", TmuxSocket.standard), ("nasty label", .label(nastySocket))] {
+    let result = runDiscovery(socket: socket)
+    check("discovery (\(label)): no server, no server line, -V last",
+          result.lines.last == "tmux 3.6a" && !result.lines.contains { $0.hasPrefix("server:") },
+          result.lines.joined(separator: " | "))
+    check("discovery (\(label)): the server was asked first, on its socket",
+          result.argv == socket.arguments + TmuxVersion.serverQuery, result.argv.debugDescription)
+}
+installFakeTmux(.garbage)
+let garbage = runDiscovery(socket: .standard).lines
+check("discovery: an answer that is no version is not reported as the server's, as on the Swift side",
+      garbage.last == "tmux 3.6a" && !garbage.contains { $0.hasPrefix("server:") },
+      garbage.joined(separator: " | "))
+installFakeTmux(.incompatible)
+let incompatible = runDiscovery(socket: .standard).lines
+check("discovery: a binary the server cannot talk to says so",
+      incompatible.contains("server: incompatible") && incompatible.last == "tmux 3.6a",
+      incompatible.joined(separator: " | "))
+installFakeTmux(.protocolMismatch)
+let protocolMismatch = runDiscovery(socket: .standard).lines
+check("discovery: tmux's own protocol check reads as incompatible too",
+      protocolMismatch.contains("server: incompatible"), protocolMismatch.joined(separator: " | "))
+
+check("bare text: a pre-2.4 server query answer is empty", TmuxVersion.bareText("tmux") == "")
+check("differs: same version", !TmuxVersion.serverDiffers(serverText: "3.6a", binaryText: "3.6a"))
+check("differs: 3.5a server, 3.6a binary", TmuxVersion.serverDiffers(serverText: "3.5a", binaryText: "3.6a"))
+check("differs: pre-2.4 server with a pre-2.4 binary is not called a mismatch",
+      !TmuxVersion.serverDiffers(serverText: "", binaryText: "2.3"))
+check("differs: pre-2.4 server with a binary that knows #{version} is one",
+      TmuxVersion.serverDiffers(serverText: "", binaryText: "3.6a"))
+check("differs: master on both", !TmuxVersion.serverDiffers(serverText: "master", binaryText: "master"))
+
+// The listing every reconcile reads, four fields since `#{version}` joined.
+let listing = TmuxSessionListing.parse(listOutput: """
+$0 3.6a  name with spaces
+$1 3.6a 3 b
+$2   pre-2.4 server
+$3 3.6a 1   leading spaces kept
+garbage line
+""")
+check("listing: rows with an id", listing.map(\.id) == ["$0", "$1", "$2", "$3"], listing.map(\.id).description)
+check("listing: unset order, name with spaces whole",
+      listing.first == TmuxSessionListing(id: "$0", name: "name with spaces", order: nil, serverVersion: "3.6a"))
+check("listing: order read", listing.dropFirst().first?.order == 3)
+check("listing: empty #{version} is empty, name intact",
+      listing.dropFirst(2).first == TmuxSessionListing(id: "$2", name: "pre-2.4 server", order: nil, serverVersion: ""))
+check("listing: a name's own leading spaces survive", listing.last?.name == "  leading spaces kept")
+check("listing: format matches the parse", TmuxSessionListing.format
+      == "#{session_id} #{version} #{@attache_order} #{session_name}")
+
+check("bare text: -V and #{version} compare equal",
+      TmuxVersion.bareText("tmux 3.6a") == TmuxVersion.bareText("3.6a\n"))
+check("incompatible: what 3.5a prints against a 3.6a server",
+      TmuxVersion.meansIncompatibleClient("server exited unexpectedly"))
+check("incompatible: tmux's own protocol check",
+      TmuxVersion.meansIncompatibleClient("protocol version mismatch (client 7, server 8)"))
+check("incompatible: no server is not incompatibility",
+      !TmuxVersion.meansIncompatibleClient("no server running on /tmp/tmux-501/default"))
+
+check("fallback: after a non-version answer", TmuxVersion.binaryMightAnswer(afterServerQueryExited: 0))
+check("fallback: after tmux's own error (no server)", TmuxVersion.binaryMightAnswer(afterServerQueryExited: 1))
+check("no fallback: no tmux at that path", !TmuxVersion.binaryMightAnswer(afterServerQueryExited: 127))
+check("no fallback: ssh itself failed", !TmuxVersion.binaryMightAnswer(afterServerQueryExited: 255))
+check("no fallback: killed at the deadline", !TmuxVersion.binaryMightAnswer(afterServerQueryExited: 15))
 
 // MARK: - Verdict
 

@@ -6,14 +6,6 @@
 import Foundation
 
 /// One session as `list-sessions` reports it, before there is a connection.
-nonisolated struct TmuxSessionListing: Equatable {
-    let id: String
-    let name: String
-    /// Position chosen by dragging in the rail (`@attache_order`), or nil for
-    /// sessions that have never been reordered and stay in tmux's own order.
-    let order: Int?
-}
-
 /// A tmux control mode client: one `tmux -C attach` child process, its output
 /// parsed into `TmuxNotification`s.
 ///
@@ -642,10 +634,48 @@ final class TmuxControlClient {
     /// app is laggy when I drag" turned out to be. The launch path still
     /// calls it synchronously on purpose: that one is local and nothing
     /// else can happen before its answer.
+    /// `tmux -V` of the binary this transport runs, as `TmuxVersion.bareText`,
+    /// or nil when it did not answer. Asked again whenever a control
+    /// connection is about to be made, because the binary can be replaced
+    /// under a running app (`brew upgrade`) while the server stays.
+    nonisolated static func binaryVersion(transport: TmuxTransport) -> String? {
+        let argv = transport.oneShotArgv(["-V"])
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: argv[0])
+        process.arguments = Array(argv.dropFirst())
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let text = TmuxVersion.bareText(String(decoding: data, as: UTF8.self))
+        return text.isEmpty ? nil : text
+    }
+
+    /// Whether the running server answers with a version this binary is
+    /// not. False when the server does not answer at all — that is a
+    /// different problem, reported elsewhere.
+    nonisolated static func serverDiffersFromBinary(transport: TmuxTransport) -> Bool {
+        let argv = transport.oneShotArgv(TmuxVersion.serverQuery)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: argv[0])
+        process.arguments = Array(argv.dropFirst())
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return false }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let answer = String(decoding: data, as: UTF8.self)
+        guard process.terminationStatus == 0, TmuxVersion.parseServerAnswer(answer) != nil,
+              let binary = binaryVersion(transport: transport) else { return false }
+        return TmuxVersion.serverDiffers(serverText: TmuxVersion.bareText(answer), binaryText: binary)
+    }
+
     nonisolated static func listSessions(transport: TmuxTransport) -> SessionListResult {
-        let argv = transport.oneShotArgv([
-            "list-sessions", "-F", "#{session_id} #{@attache_order} #{session_name}",
-        ])
+        let argv = transport.oneShotArgv(["list-sessions", "-F", TmuxSessionListing.format])
         let process = Process()
         process.executableURL = URL(fileURLWithPath: argv[0])
         process.arguments = Array(argv.dropFirst())
@@ -698,22 +728,7 @@ final class TmuxControlClient {
             )
         }
 
-        let sessions = String(decoding: data, as: UTF8.self)
-            .split(separator: "\n")
-            .compactMap { line -> TmuxSessionListing? in
-                // Two splits (`omittingEmptySubsequences: false` because an
-                // unset `@attache_order` expands to nothing between the two
-                // spaces), so a name containing spaces arrives whole. A row
-                // with no id is not a session this app can address and is
-                // dropped rather than guessed at.
-                let parts = line.split(
-                    separator: " ", maxSplits: 2, omittingEmptySubsequences: false
-                )
-                guard let id = parts.first, id.hasPrefix("$") else { return nil }
-                let order = parts.count > 1 ? Int(parts[1]) : nil
-                let name = parts.count > 2 ? String(parts[2]) : ""
-                return TmuxSessionListing(id: String(id), name: name, order: order)
-            }
+        let sessions = TmuxSessionListing.parse(listOutput: String(decoding: data, as: UTF8.self))
         return .sessions(Self.ordered(sessions))
     }
 

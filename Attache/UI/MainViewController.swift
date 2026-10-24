@@ -298,6 +298,7 @@ final class MainViewController: NSSplitViewController {
             return [ClaudeCodeConversationProvider(remoteHostID: host.id, helper: helper)]
         }
 
+        applyPaneColours()
         for host in hosts {
             wire(host)
             host.start()
@@ -1345,6 +1346,14 @@ final class MainViewController: NSSplitViewController {
     /// `TerminalController` — so a font change has to reach every one of them,
     /// not just the session on screen. A session left out would keep the old
     /// cell size and report a grid tmux disagrees with the moment it is shown.
+    /// Tell every server what this app's terminal paints, so a program in a
+    /// pane that asks for the background — Claude Code's `auto` theme — hears
+    /// this scheme rather than tmux's guess. See `TmuxPaneColours`.
+    private func applyPaneColours() {
+        let colours = AppSettings.effectivePaneColours()
+        for host in hosts { host.server.paneColours = colours }
+    }
+
     private func applySettings() {
         // Logged because this is the only thing that reaches into every
         // session's terminal controller after launch, and a font change there
@@ -1359,6 +1368,7 @@ final class MainViewController: NSSplitViewController {
         // Hosts first, so a host added by this very change is in `hosts`
         // before the per-host loops below hand out the new settings.
         applyHostConfigs()
+        applyPaneColours()
         // Only when the *setting* moved. Comparing against the rail's current
         // width instead would undo the user's own divider drag on the next
         // theme change, which is a thing a drag-resizable sidebar must not do
