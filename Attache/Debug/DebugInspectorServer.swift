@@ -199,7 +199,7 @@
 
         /// `/shot` is the exception: it writes a PNG whether or not it was told
         /// where, so there is no parameterless read of it.
-        private static let alwaysWriteRoutes: Set<String> = ["/shot"]
+        private static let alwaysWriteRoutes: Set<String> = ["/shot", "/settings-shot"]
 
         /// Header a write has to carry. Its value is irrelevant; its presence
         /// is the whole point. See `respond`.
@@ -308,6 +308,11 @@
                      contentType: "application/json", on: connection)
                 return
             }
+            if path == "/settings-shot" {
+                send(status: "200 OK", body: DebugInspector.settingsShotBody(query: query),
+                     contentType: "application/json", on: connection)
+                return
+            }
             if path == "/settings-window" {
                 send(status: "200 OK", body: DebugInspector.settingsWindowBody(query: query),
                      contentType: "application/json", on: connection)
@@ -317,7 +322,7 @@
             guard let body = DebugInspector.body(forPath: path) else {
                 send(
                     status: "404 Not Found",
-                    body: Data("no such route. read: /, /views, /tmux, /settings-window. write (POST + X-Attache-Inspect): /settings, /window, /select, /shot\n".utf8),
+                    body: Data("no such route. read: /, /views, /tmux, /focus, /settings-window. write (POST + X-Attache-Inspect): /settings, /window, /select, /shot, /settings-shot\n".utf8),
                     contentType: "text/plain",
                     on: connection
                 )

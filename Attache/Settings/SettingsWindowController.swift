@@ -341,12 +341,6 @@ final class SettingsStore: ObservableObject {
     static let allThemes: [GhosttyThemeDefinition] = GhosttyThemeCatalog.allThemes
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
-    static func themes(matching query: String) -> [GhosttyThemeDefinition] {
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return allThemes }
-        return allThemes.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
-    }
-
     // MARK: Behaviour
 
     func setScrollbackPrimeLines(_ lines: Int) {

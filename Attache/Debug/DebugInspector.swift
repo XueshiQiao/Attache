@@ -91,8 +91,49 @@
             case "/", "/snapshot": encode(report())
             case "/views": encode(viewsOnly())
             case "/tmux": encode(tmuxOnly())
+            case "/focus": encode(focusReport())
             default: nil
             }
+        }
+
+        // MARK: - Focus
+
+        /// Where the keyboard is going: which window is key, and what each
+        /// window's first responder is. Read-only. Exists because "typing in
+        /// a field does nothing" can be a field that never got the keyboard,
+        /// a window that never became key, or a key window whose keystrokes
+        /// something else takes — and from outside they look identical.
+        struct FocusReport: Encodable {
+            struct Window: Encodable {
+                let title: String
+                let className: String
+                let isKey: Bool
+                let isMain: Bool
+                let isVisible: Bool
+                let canBecomeKey: Bool
+                let firstResponder: String
+            }
+            let appIsActive: Bool
+            let keyWindow: String?
+            let windows: [Window]
+        }
+
+        static func focusReport() -> FocusReport {
+            FocusReport(
+                appIsActive: NSApp.isActive,
+                keyWindow: NSApp.keyWindow.map { "\($0.title) (\(type(of: $0)))" },
+                windows: NSApp.windows.map { window in
+                    FocusReport.Window(
+                        title: window.title,
+                        className: String(describing: type(of: window)),
+                        isKey: window.isKeyWindow,
+                        isMain: window.isMainWindow,
+                        isVisible: window.isVisible,
+                        canBecomeKey: window.canBecomeKey,
+                        firstResponder: window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+                    )
+                }
+            )
         }
 
         // MARK: - Settings
@@ -411,6 +452,47 @@
                 generatedAt: ISO8601DateFormatter().string(from: Date()),
                 windows: [WindowNode(offScreenRoot: root)]
             ))
+        }
+
+        /// Render a settings page off screen to a PNG — a picture of a page
+        /// nobody opened, so the user's focus stays put and no Screen
+        /// Recording consent is involved. A write route (POST and the
+        /// header), because it writes a file; same path rule as `/shot`.
+        /// `page=` as for `/settings-window`, `appearance=dark` for the dark
+        /// half, `path=` for the file.
+        static func settingsShotBody(query: String) -> Data {
+            struct Report: Encodable { let path: String; let error: String? }
+            let parameters = parseQuery(query)
+            let path = parameters["path"] ?? "/tmp/attache/settings.png"
+            let resolved = URL(fileURLWithPath: path).standardizedFileURL.path
+            guard resolved.hasSuffix(".png"),
+                  resolved.hasPrefix("/tmp/") || resolved.hasPrefix("/private/tmp/")
+                  || resolved.hasPrefix("/private/var/folders/")
+            else {
+                return encode(Report(path: path, error: "path must be a .png under /tmp or the system temporary directory"))
+            }
+            let page = SettingsPage.allCases.first { $0.axID == parameters["page"] } ?? .terminal
+            let root = SettingsWindowController().debugBuildOffScreen(page: page)
+            root.appearance = NSAppearance(named: parameters["appearance"] == "dark" ? .darkAqua : .aqua)
+            root.frame = NSRect(x: 0, y: 0, width: 820, height: 1400)
+            root.layoutSubtreeIfNeeded()
+            guard let rep = root.bitmapImageRepForCachingDisplay(in: root.bounds) else {
+                return encode(Report(path: path, error: "could not make a bitmap"))
+            }
+            root.cacheDisplay(in: root.bounds, to: rep)
+            guard let data = rep.representation(using: .png, properties: [:]) else {
+                return encode(Report(path: path, error: "png encoding failed"))
+            }
+            do {
+                try FileManager.default.createDirectory(
+                    at: URL(fileURLWithPath: resolved).deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try data.write(to: URL(fileURLWithPath: resolved), options: .atomic)
+                return encode(Report(path: resolved, error: nil))
+            } catch {
+                return encode(Report(path: path, error: error.localizedDescription))
+            }
         }
 
         /// `a=b&c=d`, percent-decoded, with `+` read as a space so a font

@@ -123,24 +123,6 @@ private func glassSlider(
 
 struct AppearancePage: View {
     @EnvironmentObject var store: SettingsStore
-    @State private var editingDarkSlot: Bool?
-    @State private var query = ""
-
-    /// Which of the two theme slots the list is editing. Defaults to whichever
-    /// one is on screen, so the list opens on the scheme the user is looking at.
-    private var isEditingDarkSlot: Bool {
-        editingDarkSlot ?? {
-            switch store.appearance {
-            case .system: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            case .light: false
-            case .dark: true
-            }
-        }()
-    }
-
-    private var selectedName: String {
-        isEditingDarkSlot ? store.darkThemeName : store.lightThemeName
-    }
 
     var body: some View {
         Form {
@@ -213,50 +195,9 @@ struct AppearancePage: View {
             }
 
             Section {
-                Picker(selection: Binding(
-                    get: { isEditingDarkSlot },
-                    set: { editingDarkSlot = $0; query = "" }
-                )) {
-                    Text("Light scheme").tag(false)
-                    Text("Dark scheme").tag(true)
-                } label: { EmptyView() }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search \(SettingsStore.allThemes.count) schemes", text: $query)
-                        .textFieldStyle(.plain)
-                    if !query.isEmpty {
-                        Button {
-                            query = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                // A plain scrolling stack rather than a nested `List`: a List
-                // inside the split view's detail column loses its own layout
-                // and spills its rows into the title bar.
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(SettingsStore.themes(matching: query)) { definition in
-                            ThemeRow(definition: definition, isSelected: definition.name == selectedName) {
-                                if isEditingDarkSlot {
-                                    store.setDarkThemeName(definition.name)
-                                } else {
-                                    store.setLightThemeName(definition.name)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-                .frame(height: 260)
+                SchemePickerSection()
             } header: {
-                Text(isEditingDarkSlot ? "Dark scheme — \(store.darkThemeName)" : "Light scheme — \(store.lightThemeName)")
+                Text("Terminal scheme")
             } footer: {
                 Text(
                     "The tab strip, session rail and splitters follow the terminal scheme too. "
@@ -269,65 +210,6 @@ struct AppearancePage: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Appearance")
-    }
-}
-
-// MARK: - Rows
-
-private struct ThemeRow: View {
-    let definition: GhosttyThemeDefinition
-    let isSelected: Bool
-    let select: () -> Void
-
-    var body: some View {
-        Button(action: select) {
-            HStack(spacing: 10) {
-                ThemeSwatch(definition: definition)
-                Text(definition.name).lineLimit(1)
-                Spacer(minLength: 8)
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? Color.accentColor.opacity(0.14) : .clear)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// A scheme's background, its text colour, and four of its ANSI colours — the
-/// smallest sample that tells two schemes apart at list speed.
-private struct ThemeSwatch: View {
-    let definition: GhosttyThemeDefinition
-
-    var body: some View {
-        HStack(spacing: 3) {
-            Text("Aa")
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                .foregroundStyle(color(definition.foreground) ?? .primary)
-            ForEach([1, 2, 4, 5], id: \.self) { index in
-                Circle()
-                    .fill(definition.palette[index].flatMap(color) ?? .clear)
-                    .frame(width: 5, height: 5)
-            }
-        }
-        .padding(.horizontal, 5)
-        .frame(width: 62, height: 22)
-        .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(color(definition.background) ?? Color(nsColor: .textBackgroundColor))
-        )
-        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.primary.opacity(0.12)))
-    }
-
-    private func color(_ hex: String) -> Color? {
-        ChromeTheme.color(hex: hex).map(Color.init(nsColor:))
     }
 }
 
