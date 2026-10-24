@@ -14,18 +14,30 @@ import Foundation
 /// `tmux -V` reports the binary on disk, and after an upgrade that is not the
 /// server still running. Measured 2026-10-24 with a 3.5a server and the 3.6a
 /// binary on an isolated `-L` socket: `-V` said `tmux 3.6a`, `display-message
-/// -p 'tmux #{version}'` said `tmux 3.5a`, and the 3.6a client listed that
-/// server's sessions without complaint — so going by `-V`, the app would
-/// have skipped 3.5's reply decoding and shown every window list empty.
+/// -p 'tmux #{version}'` said `tmux 3.5a`.
 ///
-/// And the binary has to *be* the server's version, not merely be new
-/// enough. Measured 2026-10-24 on isolated sockets, both builds protocol 8:
-/// a 3.6a control client attached to a 3.5a server gets no reply at all —
-/// not even the handshake — so the rail just stays empty; and a 3.5a control
-/// client attached to a 3.6a server **takes the server down**, every session
-/// in it. One-shot commands survive the first direction and fail cleanly in
-/// the second. So `TmuxServer` makes no control connection while the two
-/// differ, and says why.
+/// And the binary has to be the server's version. Three things, kept apart:
+///
+/// - tmux's word: "it is very important to restart tmux entirely after
+///   upgrading. This is particularly important with this release because
+///   one of the libraries that tmux uses changed its protocol." (nicm, the
+///   tmux 3.6 announcement, tmux/tmux#4699, 2025-11-26). tmux's FAQ and
+///   CHANGES, read for this, offer no compatibility between versions.
+/// - What tmux checks: only `PROTOCOL_VERSION`, and it is 8 in both 3.5a
+///   and 3.6a (read from their source) — so the check tmux does make did not
+///   catch the change that announcement warns about.
+/// - This app's rule, derived from the two: the version strings must be
+///   equal, exactly. tmux asks for a restart after every upgrade, so
+///   anything short of equal is a pair tmux never said would work, whatever
+///   one test of one pair shows.
+///
+/// What a mismatch does, measured 2026-10-24 on isolated sockets: a 3.6a
+/// control client attached to a 3.5a server gets no reply at all — not even
+/// the handshake — so the rail just stays empty; and a 3.5a control client
+/// attached to a 3.6a server **takes the server down**, every session in it.
+/// One-shot commands survive the first direction and fail cleanly in the
+/// second. So `TmuxServer` makes no control connection while the two differ,
+/// and says why.
 ///
 /// The app has never had a version check (issue #5, risk 3): every server it
 /// met was the local one the person installed. A `[[host]]` can run anything,
@@ -94,7 +106,7 @@ nonisolated struct TmuxVersion: Equatable, Comparable {
     /// `server exited unexpectedly` is what a 3.5a client prints against a
     /// 3.6a server — measured 2026-10-24, the server itself lives on through
     /// a one-shot command; `protocol version mismatch` is tmux's own check
-    /// when the protocol numbers differ (both of these are protocol 8).
+    /// when the protocol numbers differ.
     static func meansIncompatibleClient(_ stderr: String) -> Bool {
         stderr.contains("server exited unexpectedly") || stderr.contains("protocol version mismatch")
     }

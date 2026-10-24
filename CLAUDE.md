@@ -867,24 +867,32 @@ one of them presents as "the code is obviously correct and yet".
   applied to a 3.6 reply would corrupt content that legitimately contains
   backslash-digit runs.
 - **`tmux -V` is the binary's version, not the server's — and every gate is
-  the server's.** After `brew upgrade tmux` the old server keeps running, and
-  the new client talks to it without complaint. Measured 2026-10-24 with a
-  3.5a server on an isolated socket: `-V` said 3.6a, `display-message -p
-  '#{version}'` said 3.5a. Gating on `-V` there skips 3.5's reply decoding
-  and every window list stays empty. So the probe asks the server first and
-  falls back to `-V` only when there is none, and every `list-sessions`
-  carries `#{version}` too, because the server can be replaced under a
-  running app. Do not reintroduce `-V` as the source of a gate.
-  **And the binary must *equal* the server, not merely be new enough** —
-  both builds are protocol 8 and tmux checks nothing else. Measured
-  2026-10-24 on isolated sockets, twice each: a 3.6a control client attached
-  to a 3.5a server gets no reply, not even the handshake, so the rail stays
-  empty with nothing said; a 3.5a control client attached to a 3.6a server
-  **makes the server exit, every session in it**. One-shot commands work in
-  the first direction and fail with `server exited unexpectedly` in the
-  second, the server surviving. So `TmuxServer` makes no control connection
-  while `#{version}` and `-V` differ, and `HostContext` says which is which
-  and that one fix ends every session.
+  the server's.** After `brew upgrade tmux` the old server keeps running.
+  Measured 2026-10-24 with a 3.5a server on an isolated socket: `-V` said
+  3.6a, `display-message -p '#{version}'` said 3.5a. So the probe asks the
+  server first and falls back to `-V` only when there is none, and every
+  `list-sessions` carries `#{version}` too, because the server can be
+  replaced under a running app. Do not reintroduce `-V` as the source of a
+  gate.
+  **And the binary must equal the server.** Keep three things apart when
+  touching this. *tmux's word*: "it is very important to restart tmux
+  entirely after upgrading" — nicm, in the tmux 3.6 announcement
+  (tmux/tmux#4699), adding that a library tmux uses changed its protocol;
+  tmux's FAQ and CHANGES offer no compatibility between versions. *What tmux
+  checks*: only `PROTOCOL_VERSION`, which is 8 in both 3.5a and 3.6a (read
+  from the source), so tmux's own check missed that change. *This app's
+  rule*, derived from both: the version strings must be exactly equal. Do
+  not relax it to major.minor because some pair was tested and worked — the
+  owner's ruling is that tmux's word decides this, not our tests.
+  What a mismatch does, measured 2026-10-24 on isolated sockets, twice
+  each: a 3.6a control client attached to a 3.5a server gets no reply, not
+  even the handshake, so the rail stays empty with nothing said; a 3.5a
+  control client attached to a 3.6a server **makes the server exit, every
+  session in it**. One-shot commands work in the first direction and fail
+  with `server exited unexpectedly` in the second, the server surviving. So
+  `TmuxServer` makes no control connection while `#{version}` and `-V`
+  differ, and `HostContext` says which is which and that one fix ends every
+  session.
 - **A `readabilityHandler` that ignores empty data never stops running.** A
   dispatch read source on a pipe is *permanently readable* once the write end
   closes: `read` returns zero bytes at once and keeps doing so. The obvious
