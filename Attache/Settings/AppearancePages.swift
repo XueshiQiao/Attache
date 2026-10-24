@@ -195,6 +195,24 @@ struct AppearancePage: View {
             }
 
             Section {
+                Toggle(isOn: Binding(
+                    get: { store.paneCards },
+                    set: { store.setPaneCards($0) }
+                )) {
+                    iconLabel("rectangle.split.2x1", .orange, "Draw panes as cards")
+                }
+            } footer: {
+                Text(
+                    "Each pane sits on its own rounded card, with the window showing "
+                        + "through the gaps. The gaps are tmux's own dividers drawn as blank "
+                        + "space, so while this is on, a plain `tmux attach` to the same "
+                        + "windows shows blank dividers too. Turning it off puts tmux's lines back."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
                 Picker(selection: Binding(
                     get: { isEditingDarkSlot },
                     set: { editingDarkSlot = $0; query = "" }

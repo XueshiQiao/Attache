@@ -41,6 +41,7 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var copyOnSelect: Bool
     @Published private(set) var quickActions: [QuickAction]
     @Published private(set) var sidebarShowsGit: Bool
+    @Published private(set) var paneCards: Bool
     @Published private(set) var sidebarShowsAgent: Bool
     @Published private(set) var sidebarShowsAgentText: Bool
     @Published private(set) var sidebarShowsAgentStats: Bool
@@ -272,6 +273,7 @@ final class SettingsStore: ObservableObject {
         copyOnSelect = AppSettings.copyOnSelect
         quickActions = AppSettings.quickActions
         sidebarShowsGit = AppSettings.sidebarShowsGit
+        paneCards = AppSettings.paneCards
         sidebarShowsAgent = AppSettings.sidebarShowsAgent
         sidebarShowsAgentText = AppSettings.sidebarShowsAgentText
         sidebarShowsAgentStats = AppSettings.sidebarShowsAgentStats
@@ -383,6 +385,12 @@ final class SettingsStore: ObservableObject {
     func setQuickActions(_ actions: [QuickAction]) {
         AppSettings.quickActions = actions
         quickActions = actions
+        AppSettings.notifyChanged()
+    }
+
+    func setPaneCards(_ on: Bool) {
+        AppSettings.paneCards = on
+        paneCards = on
         AppSettings.notifyChanged()
     }
 

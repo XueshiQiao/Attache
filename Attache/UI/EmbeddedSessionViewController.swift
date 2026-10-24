@@ -73,8 +73,9 @@ final class EmbeddedSessionViewController: NSViewController {
     private let statusRows: Int
 
     /// Whether those rows sit above the window instead of below it, which
-    /// shifts every pane down the screen by that many rows. Only `cell(at:)`
-    /// cares.
+    /// shifts every pane down the screen by that many rows. `cell(at:)` needs
+    /// it to turn a click into a cell, and the pane cards to know what the top
+    /// row of cards sits against.
     private let statusAtTop: Bool
 
     /// The machine this session lives on: its transport built the attach
@@ -94,6 +95,49 @@ final class EmbeddedSessionViewController: NSViewController {
     /// can be turned into the pane it landed in — see `paneID(at:)`.
     private var cellWidth: CGFloat = 0
     private var overhang: NSLayoutConstraint?
+
+    /// Under the terminal, and only populated while `AppSettings.paneCards`
+    /// is on. See `PaneCardsView`.
+    private let paneCards = PaneCardsView(frame: .zero)
+    private var terminalTop: NSLayoutConstraint?
+    private var terminalLeading: NSLayoutConstraint?
+    /// What `overhang` holds for the status row alone, before the cards take
+    /// their bottom margin off it.
+    private var statusOverhang: CGFloat = 0
+    private var terminalTrailing: NSLayoutConstraint?
+
+    /// How far the terminal is pulled in from the sides while cards are on:
+    /// the outermost cards' reach past their text, then the gap to the
+    /// window's edge. Both live in `PaneCardsView`, which draws in them.
+    private static let cardSideInset: CGFloat = PaneCardsView.horizontalReach + PaneCardsView.outerGap
+
+    /// The same at the top and bottom, where the reach is the divider
+    /// padding and so depends on the cell height.
+    private var cardVerticalInset: CGFloat {
+        PaneCardsView.verticalPadding(cellHeight: cellHeight) + PaneCardsView.outerGap
+    }
+
+    /// A status line actually drawn above the grid. `statusAtTop` alone is the
+    /// option, and `status-position top` with `status off` draws nothing there.
+    private var statusLineAbove: Bool { statusAtTop && statusRows > 0 }
+
+    /// The title band's height while cards are on: none. A band of empty
+    /// chrome above a field of cards read as a strip belonging to nothing, so
+    /// with cards the top gets the same margin as the other three sides. The
+    /// window's name is the rail's selected row already, and dragging falls to
+    /// the rail and the margins around the cards (mock-up round, 2026-10-24).
+    private var titleBandHeight: NSLayoutConstraint?
+
+    /// The windows already asked to draw blank dividers this run, so a model
+    /// change does not ask again. Only a cache of requests sent: which windows
+    /// actually carry blank dividers is recorded in tmux, by
+    /// `TmuxSessionConnection.blankBordersMarker`, and that is what turning
+    /// cards off reads.
+    private var blankBorderRequests = Set<String>()
+    /// Whether the hand-back has run since cards were last off. Runs once on
+    /// launch with cards off too, which is what cleans up after a run that
+    /// quit with them on.
+    private var restoredBlankBorders = false
 
 
     init(model: SessionModel, host: HostContext) {
@@ -166,6 +210,14 @@ final class EmbeddedSessionViewController: NSViewController {
         // The title band goes in last of the two siblings that draw, because on
         // macOS 26 a drawing view gets a backing layer 66pt taller than itself
         // and whichever sibling was added last wins the overlap. See CLAUDE.md.
+        // The cards go in first: they are the one sibling that must lose every
+        // overlap, since the terminal's transparent cells are what they show
+        // through. Sized by autoresizing rather than constraints because they
+        // cover the whole half, title band included — a top-row card reaches
+        // up into the band.
+        paneCards.frame = root.bounds
+        paneCards.autoresizingMask = [.width, .height]
+        root.addSubview(paneCards)
         root.addSubview(terminalView)
         root.addSubview(titleBand)
 
@@ -188,18 +240,24 @@ final class EmbeddedSessionViewController: NSViewController {
         // other way and shortened the view instead.
         let overhang = terminalView.bottomAnchor.constraint(equalTo: root.bottomAnchor)
         self.overhang = overhang
+        let bandHeight = titleBand.heightAnchor.constraint(equalToConstant: Self.titleBandHeight)
+        titleBandHeight = bandHeight
+        let top = terminalView.topAnchor.constraint(equalTo: titleBand.bottomAnchor)
+        terminalTop = top
+        let leading = terminalView.leadingAnchor.constraint(equalTo: root.leadingAnchor)
+        let trailing = terminalView.trailingAnchor.constraint(equalTo: root.trailingAnchor)
+        terminalLeading = leading
+        terminalTrailing = trailing
 
         NSLayoutConstraint.activate([
             titleBand.topAnchor.constraint(equalTo: root.topAnchor),
             titleBand.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             titleBand.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            titleBand.heightAnchor.constraint(
-                equalToConstant: Self.titleBandHeight
-            ),
+            bandHeight,
 
-            terminalView.topAnchor.constraint(equalTo: titleBand.bottomAnchor),
-            terminalView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            terminalView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            top,
+            leading,
+            trailing,
             overhang,
         ])
 
@@ -260,6 +318,93 @@ final class EmbeddedSessionViewController: NSViewController {
     /// did with layouts, pane sets and snapshots is tmux's business now.
     func syncWithModel() {
         titleBand.show(name: connection.windows.first { $0.isActive }?.name)
+        refreshPaneCards()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        refreshPaneCards()
+    }
+
+    /// Put the cards where tmux's visible layout says the panes are.
+    ///
+    /// Run on every model change, every grid resize and every layout pass —
+    /// cheap, because `PaneCardsView.show` does nothing when the rectangles
+    /// have not moved. The visible layout rather than the saved one, so a
+    /// zoomed pane gets one card the size of the window.
+    private func refreshPaneCards() {
+        let on = AppSettings.paneCards
+        let inset = on ? Self.cardSideInset : 0
+        if terminalLeading?.constant != inset {
+            terminalLeading?.constant = inset
+            terminalTrailing?.constant = -inset
+        }
+        let bandHeight = on ? 0 : Self.titleBandHeight
+        if titleBandHeight?.constant != bandHeight {
+            titleBandHeight?.constant = bandHeight
+        }
+        // Hidden as well as flattened: AppKit does not clip a view to its
+        // superview, so a zero-height band would still draw its label.
+        titleBand.isHidden = on
+        // A status line on top is what the window's top edge meets, not a
+        // card, so it gets the plain side margin rather than the corners' room.
+        let topInset = !on ? 0 : statusLineAbove ? PaneCardsView.outerGap : cardVerticalInset
+        if terminalTop?.constant != topInset {
+            terminalTop?.constant = topInset
+        }
+        // With no status line under the grid — `status off`, or the line on
+        // top — the bottom row of cards would end on the window's own edge.
+        // Lift the terminal by the same margin the sides get. A status line
+        // below keeps the terminal where it was: the cards stop just short of
+        // it, and the line itself separates them from the edge.
+        let nothingBelow = statusRows == 0 || statusAtTop
+        let bottom = statusOverhang
+            - (on && nothingBelow && !Self.hidesStatusRow ? cardVerticalInset : 0)
+        if overhang?.constant != bottom {
+            overhang?.constant = bottom
+        }
+        syncBlankBorders(on)
+        paneCards.isHidden = !on
+        guard on, cellWidth > 0, cellHeight > 0,
+              let window = connection.windows.first(where: \.isActive),
+              let layout = window.visibleLayout
+        else {
+            paneCards.show([])
+            return
+        }
+        // The terminal's own rectangle, in the cards' flipped coordinates.
+        // libghostty draws with no padding, so its top-left is the first cell.
+        let terminal = paneCards.convert(terminalView.bounds, from: terminalView)
+        let statusAbove = statusAtTop ? CGFloat(statusRows) * cellHeight : 0
+        paneCards.show(PaneCardsView.cards(
+            layout: layout,
+            activePaneID: window.activePaneID,
+            cell: CGSize(width: cellWidth, height: cellHeight),
+            gridOrigin: CGPoint(x: terminal.minX, y: terminal.minY + statusAbove),
+            rightEdge: terminal.maxX,
+            bottomEdge: nothingBelow ? terminal.maxY : nil,
+            // A status line below takes the client's last rows, and the client
+            // has as many rows as whole cells fit in the view.
+            paneAreaBottom: nothingBelow
+                ? terminal.maxY
+                : terminal.minY + (terminal.height / cellHeight).rounded(.down) * cellHeight
+                    - CGFloat(statusRows) * cellHeight,
+            statusAbove: statusLineAbove
+        ))
+    }
+
+    private func syncBlankBorders(_ on: Bool) {
+        if on {
+            restoredBlankBorders = false
+            for window in connection.windows where !blankBorderRequests.contains(window.id) {
+                connection.blankPaneBorders(windowID: window.id)
+                blankBorderRequests.insert(window.id)
+            }
+        } else if !restoredBlankBorders {
+            restoredBlankBorders = true
+            blankBorderRequests.removeAll()
+            connection.restoreBlankedPaneBorders { !AppSettings.paneCards }
+        }
     }
 
     /// Hand the keyboard to the terminal. **Only from `show`.**
@@ -402,13 +547,17 @@ final class EmbeddedSessionViewController: NSViewController {
         _ = terminalController.setTheme(AppSettings.terminalTheme())
         _ = terminalController.setTerminalConfiguration(AppSettings.terminalConfiguration())
         titleBand.applyChromeTheme()
+        paneCards.applyChromeTheme()
+        refreshPaneCards()
     }
 
     func applyChromeTheme() {
         titleBand.applyChromeTheme()
+        paneCards.applyChromeTheme()
     }
 
     private func gridDidResize(_ metrics: TerminalGridMetrics) {
+        defer { refreshPaneCards() }
         // Device pixels on the way in — the same unit `PaneGridView` counts in,
         // and the same conversion back to points.
         let scale = max(view.window?.backingScaleFactor ?? 1, 1)
@@ -421,7 +570,9 @@ final class EmbeddedSessionViewController: NSViewController {
         guard height > 0, height != cellHeight else { return }
         cellHeight = height
         let hidden = Self.hidesStatusRow ? statusRows : 0
-        overhang?.constant = height * CGFloat(hidden)
+        statusOverhang = height * CGFloat(hidden)
+        // `overhang` itself is set by `refreshPaneCards`, deferred above, which
+        // takes the cards' bottom margin off this.
         // Deliberately not `onStatusChange`: that channel writes the window
         // title and the rail's footer, and this app's title says which window
         // is active. A grid size parked there permanently would be this

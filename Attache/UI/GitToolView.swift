@@ -42,6 +42,7 @@ final class GitToolView: NSView {
     private let metaLabel = NSTextField(labelWithString: "")
     private let headerSeparator = NSBox()
     private let titleDragStrip = TitleDragStrip()
+    private var headerTop = NSLayoutConstraint()
     private lazy var headerTrailing = titleLabel.superview!.trailingAnchor
         .constraint(equalTo: trailingAnchor, constant: -9)
 
@@ -151,13 +152,14 @@ final class GitToolView: NSView {
         addSubview(header)
         addSubview(headerSeparator)
 
+        headerTop = header.topAnchor.constraint(equalTo: topAnchor, constant: 30)
         NSLayoutConstraint.activate([
             titleDragStrip.topAnchor.constraint(equalTo: topAnchor),
             titleDragStrip.leadingAnchor.constraint(equalTo: leadingAnchor),
             titleDragStrip.trailingAnchor.constraint(equalTo: trailingAnchor),
             titleDragStrip.heightAnchor.constraint(equalToConstant: 30),
 
-            header.topAnchor.constraint(equalTo: topAnchor, constant: 30),
+            headerTop,
             header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 11),
             headerTrailing,
 
@@ -179,6 +181,13 @@ final class GitToolView: NSView {
     /// has to stop where they start. Mirrors the conversation's.
     func reserveHeaderSpace(_ width: CGFloat) {
         headerTrailing.constant = -(9 + width)
+    }
+
+    /// How far down the header row starts. 30pt clears the content half's
+    /// title band; with pane cards there is no band, and the row moves up onto
+    /// the traffic lights' line. Set by `ToolRailView`.
+    func setHeaderTop(_ top: CGFloat) {
+        if headerTop.constant != top { headerTop.constant = top }
     }
 
     func applyChromeTheme() {

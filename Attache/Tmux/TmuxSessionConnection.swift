@@ -947,6 +947,65 @@ final class TmuxSessionConnection {
         client.send("resize-pane -Z -t \(paneID)")
     }
 
+    /// The window option that says "this app blanked these dividers".
+    ///
+    /// Kept in tmux rather than in a set on this side, because the question it
+    /// answers — which windows to hand back — outlives anything this process
+    /// remembers: the app quits, a window moves to a session no controller has
+    /// open, the setting is switched off in the file while the app is not
+    /// running. Each of those stranded blank dividers when the record was a
+    /// local set. tmux carries the mark with the window wherever it goes.
+    static let blankBordersMarker = "@attache_blank_borders"
+
+    /// Draw this window's pane dividers as blank cells.
+    ///
+    /// What the pane cards stand on: with the lines gone, the divider cells
+    /// carry the default background, which the embedded terminal draws fully
+    /// transparent, so the window shows through between the cards. Measured on
+    /// tmux 3.6a against an isolated server: `spaces` leaves the divider column
+    /// and row empty and moves no pane — the layout is identical to `single`.
+    ///
+    /// A window option, so every client looking at the window sees it; there is
+    /// no per-client form. A window that already has a value of its own is left
+    /// alone — that is the user's configuration, or this app's from an earlier
+    /// run, and either way there is nothing to add. tmux before 3.2 has no such
+    /// option, answers `%error`, and is left alone the same way.
+    func blankPaneBorders(windowID: String) {
+        client.run("show-options -wv -t \(windowID) pane-border-lines") { [weak self] lines, failed in
+            guard let self, !failed,
+                  lines.allSatisfy({ $0.trimmingCharacters(in: .whitespaces).isEmpty })
+            else { return }
+            self.client.send("set-option -w -t \(windowID) pane-border-lines spaces")
+            self.client.send("set-option -w -t \(windowID) \(Self.blankBordersMarker) 1")
+        }
+    }
+
+    /// Hand back every divider this app blanked, on any window of the server.
+    ///
+    /// `-u` rather than `single`, so a window falls back to the global value —
+    /// the user's own `pane-border-lines`, if they set one — instead of to this
+    /// app's guess at it. Only marked windows are touched, so a window whose
+    /// value the user set by hand keeps it.
+    ///
+    /// `stillWanted` is asked when tmux answers, not when this is called: off
+    /// and straight back on would otherwise let this run's unsets land after
+    /// the new run's blanks and put the lines back under the cards.
+    func restoreBlankedPaneBorders(stillWanted: @escaping () -> Bool) {
+        client.run(
+            "list-windows -a -F '#{window_id} #{\(Self.blankBordersMarker)}'"
+        ) { [weak self] lines, failed in
+            guard let self, !failed, stillWanted() else { return }
+            for line in lines {
+                let fields = line.split(separator: " ")
+                guard fields.count == 2, fields[1] == "1",
+                      fields[0].first == "@", fields[0].dropFirst().allSatisfy(\.isNumber)
+                else { continue }
+                self.client.send("set-option -wu -t \(fields[0]) pane-border-lines")
+                self.client.send("set-option -wu -t \(fields[0]) \(Self.blankBordersMarker)")
+            }
+        }
+    }
+
     /// Trade places with the neighbouring pane in one direction.
     ///
     /// `{left-of}` and its siblings are resolved against the window's *active*

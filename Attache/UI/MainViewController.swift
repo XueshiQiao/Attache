@@ -107,15 +107,15 @@ final class MainViewController: NSSplitViewController {
     /// drags; before auto-hide that meant a drag lasted until relaunch, and
     /// resetting on every window switch would have shortened that to seconds.
     private var preservedConversationWidth: CGFloat?
-    /// The title band's button cluster, top-right of the window: collapse
-    /// every turn, expand every turn, a hairline, and the rail toggle. The
-    /// fold pair acts on the rail's content and vanishes with it; the toggle
-    /// is the way back — Xcode's inspector-toggle interaction, chosen from an
-    /// HTML mock-up round on 2026-08-02 — and never moves.
-    private let collapseTurnsButton = RailButton()
-    private let expandTurnsButton = RailButton()
-    private let bandSeparator = NSBox()
+    /// The rail toggle, at the session rail's top-right on the traffic lights'
+    /// line. It used to end the fold pair's cluster in the content half's
+    /// title band; the band went when panes became cards (an HTML mock-up
+    /// round on 2026-10-24), and the toggle moved to the one strip of chrome
+    /// that is always on screen — the session rail cannot collapse.
     private let conversationToggle = RailButton()
+    /// The toggle sits on the traffic lights' centre line, which is the
+    /// system's to place; `viewDidLayout` reads it off the close button.
+    private var toggleCenterY: NSLayoutConstraint?
     private var railCollapseObservation: NSKeyValueObservation?
 
     /// The one place "should the rail be on screen" is decided. The setting is
@@ -162,15 +162,13 @@ final class MainViewController: NSSplitViewController {
         toggleConversationRail()
     }
 
-    @objc private func collapseTurnsClicked() { conversation.collapseAllTurns() }
-    @objc private func expandTurnsClicked() { conversation.expandAllTurns() }
 
     private func applyBandTheme() {
         let bandTint = ChromeTheme.current.faintText
-        collapseTurnsButton.contentTintColor = bandTint
-        expandTurnsButton.contentTintColor = bandTint
-        conversationToggle.contentTintColor = bandTint
-        bandSeparator.fillColor = bandTint.withAlphaComponent(0.35)
+        // Brighter while the rail is up, so the toggle says which way it will
+        // go without a second glyph.
+        conversationToggle.contentTintColor = isConversationRailVisible
+            ? ChromeTheme.current.mutedText : bandTint
     }
 
     /// Driven off the split item's *actual* collapsed state, via KVO, rather
@@ -185,9 +183,8 @@ final class MainViewController: NSSplitViewController {
         let foldable = isConversationRailVisible
             && rail.activeTool == .conversation
             && !(conversations.conversation?.isEmpty ?? true)
-        collapseTurnsButton.isHidden = !foldable
-        expandTurnsButton.isHidden = !foldable
-        bandSeparator.isHidden = !foldable
+        rail.showFoldButtons(foldable)
+        applyBandTheme()
     }
 
     /// The repositories behind the rail's rows live on `HostContext` now —
@@ -942,22 +939,19 @@ final class MainViewController: NSSplitViewController {
             self?.currentGitStatus?.reresolveIfNotRepository(path)
         }
 
-        // The title band's button cluster. A subview of the split view
-        // itself, which is safe only because NSSplitViewController runs its
-        // split view with `arrangesAllSubviews` off — checked below, because
-        // a split view that *does* arrange all subviews would adopt the
-        // cluster as a fourth pane. Added after every pane so the macOS 26
-        // sibling overdraw (CLAUDE.md) cannot put a pane's backing layer
-        // over it.
-        assert(!splitView.arrangesAllSubviews, "the band buttons would become a pane")
+        // The rail toggle. A subview of the split view itself, which is safe
+        // only because NSSplitViewController runs its split view with
+        // `arrangesAllSubviews` off — checked below, because a split view that
+        // *does* arrange all subviews would adopt the button as a fourth pane.
+        // Added after every pane so the macOS 26 sibling overdraw (CLAUDE.md)
+        // cannot put a pane's backing layer over it. The fold pair that used to
+        // share its cluster lives in the conversation rail's own header now
+        // (`ToolRailView.showFoldButtons`), next to the tool tabs.
+        assert(!splitView.arrangesAllSubviews, "the rail toggle would become a pane")
         // The toggle's tooltip is one phrasing for both states on purpose: a
         // "Hide"/"Show" pair keyed off the visibility rule says the wrong
         // word after a divider drag collapses the rail behind the rule's back.
         for (button, symbol, tip, action) in [
-            (collapseTurnsButton, "arrow.down.forward.and.arrow.up.backward",
-             "Collapse every turn", #selector(collapseTurnsClicked)),
-            (expandTurnsButton, "arrow.up.backward.and.arrow.down.forward",
-             "Expand every turn", #selector(expandTurnsClicked)),
             (conversationToggle, "sidebar.trailing",
              "Show or hide the conversation rail (⌘\\)", #selector(conversationToggleClicked)),
         ] {
@@ -972,29 +966,14 @@ final class MainViewController: NSSplitViewController {
             button.widthAnchor.constraint(equalToConstant: 24).isActive = true
             button.heightAnchor.constraint(equalToConstant: 20).isActive = true
         }
-        bandSeparator.boxType = .custom
-        bandSeparator.borderWidth = 0
-        bandSeparator.translatesAutoresizingMaskIntoConstraints = false
-        bandSeparator.widthAnchor.constraint(equalToConstant: 1).isActive = true
-        bandSeparator.heightAnchor.constraint(equalToConstant: 12).isActive = true
-
-        let band = NSStackView(views: [
-            collapseTurnsButton, expandTurnsButton, bandSeparator, conversationToggle,
-        ])
-        band.orientation = .horizontal
-        band.alignment = .centerY
-        band.spacing = 2
-        // The hairline needs air on both sides or it reads as a fourth glyph.
-        band.setCustomSpacing(7, after: expandTurnsButton)
-        band.setCustomSpacing(7, after: bandSeparator)
-        band.translatesAutoresizingMaskIntoConstraints = false
-        splitView.addSubview(band)
+        splitView.addSubview(conversationToggle)
+        let toggleY = conversationToggle.centerYAnchor.constraint(
+            equalTo: view.topAnchor, constant: 14
+        )
+        toggleCenterY = toggleY
         NSLayoutConstraint.activate([
-            // Centred in the 28pt title band, and 12pt off the window edge so
-            // the cluster sits beside the rounded corner rather than inside
-            // its curve — the complaint that started the mock-up round.
-            band.centerYAnchor.constraint(equalTo: view.topAnchor, constant: 14),
-            band.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            toggleY,
+            conversationToggle.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -8),
         ])
 
         // The fold pair tracks the rail's *actual* collapsed state — KVO,
@@ -1080,11 +1059,32 @@ final class MainViewController: NSSplitViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        alignToggleWithTrafficLights()
         // Until it lands, then never again — re-running it on every layout
         // would undo the person's own divider drag on each window resize, the
         // mistake `appliedSidebarWidth` exists to avoid on the other side.
         guard !hasPlacedConversation, conversationVisible else { return }
         applyConversationVisibility()
+    }
+
+    /// Put the rail toggle on the traffic lights' centre line.
+    ///
+    /// The lights are the system's and move with the title bar's height, so
+    /// the line is read off the close button rather than assumed — the same
+    /// fallback `SessionSidebarView.contentTopInset` uses to clear them.
+    private func alignToggleWithTrafficLights() {
+        // Same window or nothing: in full screen AppKit moves the title bar,
+        // buttons included, into a separate toolbar window, and a point
+        // converted out of that one means nothing in this one. The toggle
+        // keeps its last line until the lights are back.
+        guard let button = view.window?.standardWindowButton(.closeButton),
+              let superview = button.superview,
+              button.window === view.window
+        else { return }
+        let center = view.convert(NSPoint(x: button.frame.midX, y: button.frame.midY), from: superview)
+        let fromTop = view.isFlipped ? center.y : view.bounds.height - center.y
+        guard fromTop > 0, fromTop < 60 else { return }
+        if toggleCenterY?.constant != fromTop { toggleCenterY?.constant = fromTop }
     }
 
     /// Put both halves on the same material, or on none.

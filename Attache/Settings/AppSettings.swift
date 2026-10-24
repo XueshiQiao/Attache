@@ -64,6 +64,7 @@ enum AppSettings {
         static let gitToolCommand         = "git_tool_command"
         static let tmuxSocket             = "tmux_socket"
         static let sshPath                = "ssh_path"
+        static let paneCards              = "pane_cards"
     }
 
     /// The old `UserDefaults` name for each key, for the migration and nothing
@@ -607,6 +608,20 @@ enum AppSettings {
     static var sidebarShowsGit: Bool {
         get { store.object(forKey: Key.sidebarShowsGit) as? Bool ?? true }
         set { store.set(newValue, forKey: Key.sidebarShowsGit) }
+    }
+
+    /// Whether each pane is drawn as a separate rounded card, with the window
+    /// showing through the gaps between them.
+    ///
+    /// Off by default because it is the one appearance setting that writes to
+    /// tmux: the gaps are tmux's divider cells drawn as blanks, which takes
+    /// `pane-border-lines spaces` on every window this app shows, and a window
+    /// option is seen by every client. A plain `tmux attach` to the same
+    /// window shows blank dividers too while this is on. Turning it off puts
+    /// tmux's own lines back on those windows.
+    static var paneCards: Bool {
+        get { store.object(forKey: Key.paneCards) as? Bool ?? false }
+        set { store.set(newValue, forKey: Key.paneCards) }
     }
 
     /// Whether a window running a coding agent is marked.

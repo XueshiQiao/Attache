@@ -54,6 +54,7 @@ final class ConversationSidebarView: NSView {
     private let titleDragStrip = TitleDragStrip()
     /// Stored so `reserveHeaderSpace` can move it: the rail's tool tabs sit at
     /// the right end of this row, and the title has to stop where they start.
+    private var headerTop = NSLayoutConstraint()
     private lazy var headerTrailing = titleLabel.superview!.trailingAnchor
         .constraint(equalTo: trailingAnchor, constant: -9)
     private let scrollView = NSScrollView()
@@ -102,10 +103,10 @@ final class ConversationSidebarView: NSView {
         metaLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         metaLabel.lineBreakMode = .byTruncatingTail
 
-        // No buttons in this row any more: collapse-all, expand-all and the
-        // rail toggle live together in the title band, hosted by
-        // `MainViewController` — the band is window chrome and survives this
-        // whole view collapsing. The header is text and nothing else.
+        // No buttons of its own: the fold pair and the tool tabs are
+        // `ToolRailView`'s, laid over this row's right end, and the rail
+        // toggle is on the session rail, which survives this view collapsing.
+        // The header is text and nothing else.
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let header = NSStackView(views: [titleLabel, metaLabel])
@@ -162,6 +163,7 @@ final class ConversationSidebarView: NSView {
         addSubview(stickyHeader)
         addSubview(emptyLabel)
 
+        headerTop = header.topAnchor.constraint(equalTo: topAnchor, constant: 30)
         NSLayoutConstraint.activate([
             titleDragStrip.topAnchor.constraint(equalTo: topAnchor),
             titleDragStrip.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -170,7 +172,7 @@ final class ConversationSidebarView: NSView {
 
             // The title band the window drags by is 28pt; the header clears it
             // so the traffic lights and this never share a row.
-            header.topAnchor.constraint(equalTo: topAnchor, constant: 30),
+            headerTop,
             header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 11),
             headerTrailing,
 
@@ -252,6 +254,13 @@ final class ConversationSidebarView: NSView {
     /// has to stop where they start.
     func reserveHeaderSpace(_ width: CGFloat) {
         headerTrailing.constant = -(9 + width)
+    }
+
+    /// How far down the header row starts. 30pt clears the content half's
+    /// title band; with pane cards there is no band, and the row moves up onto
+    /// the traffic lights' line. Set by `ToolRailView`.
+    func setHeaderTop(_ top: CGFloat) {
+        if headerTop.constant != top { headerTop.constant = top }
     }
 
     // MARK: - Input
@@ -545,8 +554,8 @@ final class ConversationSidebarView: NSView {
         rebuild()
     }
 
-    // Called by the band buttons `MainViewController` hosts; nothing inside
-    // this view triggers them any more.
+    // Called by the fold pair in `ToolRailView`'s header cluster; nothing
+    // inside this view triggers them.
     func collapseAllTurns() {
         hasBeenTouched = true
         openTurns.removeAll()

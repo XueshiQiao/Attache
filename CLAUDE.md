@@ -47,6 +47,7 @@ MainViewController     the two-level rail + the current session's content
  ├─ SessionModel             one session's state and commands; no view at all
  ├─ EmbeddedSessionViewController   one session's content half
  │   ├─ TitleBandView        28pt drag band over the terminal; draws nothing
+ │   ├─ PaneCardsView        a rounded card under each pane (`pane_cards`); layers only
  │   └─ TmuxTerminalView     the surface tmux draws the whole session into
  └─ ToolRailView             the right rail: one tool up, tab icons in the header row
      ├─ ConversationSidebarView   the window's agent conversation
@@ -75,6 +76,18 @@ window ids in `SessionViewController`, `expandedSessions` in
 opinion about any of them. The Git tool's lazygit child is the app's own
 process on purpose — inside tmux it would appear in every attached client and
 outlive the app in their session lists.
+
+**Pane cards are the one appearance setting that writes to tmux.** The gaps
+between cards are tmux's own one-cell dividers drawn as blanks
+(`pane-border-lines spaces`, a window option every attached client sees), and
+each window this app blanks is stamped `@attache_blank_borders` so turning
+cards off — even on a later run — hands back exactly those windows. The cards
+themselves are derived from `window_visible_layout` and authored nowhere. The
+divider is always exactly one cell, so the gap between two side-by-side cards
+plus the two text paddings beside it is one character wide, full stop: widening
+it means changing the cell width, which the owner has ruled out. Three models
+were asked for a way round on 2026-10-24 and found none that keeps tmux drawing
+every pane.
 
 `Attache/Tmux/` has no AppKit imports and should stay that way.
 `Attache/UI/` is the only place that touches views.
