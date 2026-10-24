@@ -34,6 +34,10 @@ final class SessionSidebarView: NSView {
     var onSelect: ((String) -> Void)?
     /// The session to rename, and what to call it.
     var onRename: ((String, String) -> Void)?
+    /// A session dragged to a new position on its server: its id, and the id
+    /// of the session it should land in front of — nil meaning "after
+    /// everything already on this host".
+    var onMoveSession: ((String, String?) -> Void)?
     var onNew: (() -> Void)?
 
     // Window level. Every one of these was a callback on the old tab strip.
@@ -192,7 +196,7 @@ final class SessionSidebarView: NSView {
     private var rows = [Row]()
     private var editor: NSTextField?
     private var editTarget: EditTarget?
-    private weak var editingRow: NSView?
+    private weak var editingRow: SidebarEditableRow?
     private var pendingRebuild = false
     private var pendingUpdate: Update?
     /// The row the last mouse-down landed on, as an identity that survives a
@@ -204,6 +208,8 @@ final class SessionSidebarView: NSView {
     private var revealedWindowID: String?
 
     private var draggingWindowID: String?
+    private var draggingSessionID: String?
+    private var sessionDropSlot: Int?
     /// The session the pointer is currently over, and where in it the row would
     /// land. Both are read off the rows rather than remembered from where the
     /// drag started, because the pointer is free to leave the list it came from.
@@ -406,7 +412,7 @@ final class SessionSidebarView: NSView {
         expandedSessions.formIntersection(Set(entries.map(\.id)))
 
         let update = Update(hosts: hosts, entries: entries, selected: selected)
-        guard editor == nil, draggingWindowID == nil else {
+        guard editor == nil, draggingWindowID == nil, draggingSessionID == nil else {
             pendingUpdate = update
             return
         }
@@ -535,7 +541,7 @@ final class SessionSidebarView: NSView {
         // out from under a drag, just because tmux said something. tmux
         // chatters constantly and both gestures take longer than the gap
         // between two notifications.
-        guard editor == nil, draggingWindowID == nil else {
+        guard editor == nil, draggingWindowID == nil, draggingSessionID == nil else {
             pendingRebuild = true
             return
         }
@@ -632,17 +638,29 @@ final class SessionSidebarView: NSView {
                     agent: sessionAgent
                 )
                 header.onClick = { [weak self] in
+                    self?.finishEditing(commit: true)
                     self?.onSelect?(session)
                     self?.resumeUpdates()
                 }
                 header.onDoubleClick = { [weak self] in self?.beginRenameSession(session) }
+                header.onContextMenu = { [weak self, weak header] point in
+                    guard let header else { return }
+                    self?.showMenu(forSession: session, at: point, from: header)
+                }
                 header.onToggle = { [weak self] in self?.toggleExpanded(session) }
                 header.onNewWindow = { [weak self] in
+                    self?.finishEditing(commit: true)
                     self?.notePressElsewhere()
                     self?.onNewWindow?(session)
                 }
                 header.isDoubleClick = { [weak self] row, count in
                     self?.isDoubleClick(on: row, clickCount: count) ?? false
+                }
+                header.onDragged = { [weak self] location in
+                    self?.sessionDragMoved(sessionID: session, to: location)
+                }
+                header.onDragEnded = { [weak self] in
+                    self?.sessionDragEnded()
                 }
                 rowsView.addSubview(header)
                 rows.append(.session(header, id: session))
@@ -662,6 +680,7 @@ final class SessionSidebarView: NSView {
                         decoration: entry.decorations[window.id] ?? WindowDecoration()
                     )
                     row.onClick = { [weak self] in
+                        self?.finishEditing(commit: true)
                         self?.onSelectWindow?(session, window.id)
                         // The press held a rebuild back; the release is what lets
                         // it through. Without this a rail that nothing else
@@ -781,6 +800,10 @@ final class SessionSidebarView: NSView {
             width: width,
             height: max(y + 8, scrollView.contentSize.height)
         )
+        if let editingRow, let editor {
+            editingRow.layoutSubtreeIfNeeded()
+            editor.frame = editingRow.convert(editingRow.nameLabelFrame, to: rowsView)
+        }
     }
 
     /// Bring the active window's row on screen, but only when the active window
@@ -838,8 +861,14 @@ final class SessionSidebarView: NSView {
         dirtyRect.fill()
     }
 
-    @objc private func newClicked() { onNew?() }
-    @objc private func addServerClicked() { onAddServer?() }
+    @objc private func newClicked() {
+        finishEditing(commit: true)
+        onNew?()
+    }
+    @objc private func addServerClicked() {
+        finishEditing(commit: true)
+        onAddServer?()
+    }
 
     /// Open or close a session's window list.
     ///
@@ -848,6 +877,7 @@ final class SessionSidebarView: NSView {
     /// it. Nothing here reaches tmux — "this list is open" is not a thing tmux
     /// has an opinion about.
     private func toggleExpanded(_ session: String) {
+        finishEditing(commit: true)
         notePressElsewhere()
         if expandedSessions.contains(session) {
             expandedSessions.remove(session)
@@ -993,6 +1023,39 @@ final class SessionSidebarView: NSView {
         onCopyWindowPath?(target.session, target.id)
     }
 
+    // MARK: - Session context menu
+
+    private func showMenu(forSession id: String, at point: NSPoint, from row: NSView) {
+        let menu = NSMenu()
+
+        let rename = NSMenuItem(
+            title: "Rename…", action: #selector(renameSessionFromMenu(_:)), keyEquivalent: ""
+        )
+        rename.target = self
+        rename.representedObject = id
+        menu.addItem(rename)
+        menu.addItem(.separator())
+
+        let newWindow = NSMenuItem(
+            title: "New Window", action: #selector(newWindowInSessionFromMenu(_:)), keyEquivalent: ""
+        )
+        newWindow.target = self
+        newWindow.representedObject = id
+        menu.addItem(newWindow)
+
+        menu.popUp(positioning: nil, at: point, in: row)
+    }
+
+    @objc private func renameSessionFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        beginRenameSession(id)
+    }
+
+    @objc private func newWindowInSessionFromMenu(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        onNewWindow?(id)
+    }
+
     // MARK: - Host context menu
 
     /// Remote headings only — the local machine has nothing here to
@@ -1135,6 +1198,7 @@ final class SessionSidebarView: NSView {
         // the window one position above the line for every slot past where the
         // row would have been.
         guard target == source else {
+            expandedSessions.insert(target)
             let destination = visibleWindows(in: target)
             let anchor: String? = switch place {
             case .end: nil
@@ -1165,6 +1229,60 @@ final class SessionSidebarView: NSView {
         )
     }
 
+    /// Reorder a session within its own host's block.
+    private func sessionDragMoved(sessionID: String, to location: NSPoint) {
+        draggingSessionID = sessionID
+        let point = rowsView.convert(location, from: nil)
+        guard let sourceEntry = entry(sessionID) else { return }
+        let hostID = sourceEntry.host
+        let hostEntries = entries.filter { $0.host == hostID }
+
+        let sessionRows = rows.compactMap { row -> SidebarSessionRow? in
+            guard case .session(let view, let id) = row,
+                  hostEntries.contains(where: { $0.id == id }) else { return nil }
+            return view
+        }
+        guard !sessionRows.isEmpty else { return }
+
+        let slot = sessionRows.filter { point.y > $0.frame.midY }.count
+        sessionDropSlot = slot
+
+        let boundary: CGFloat
+        if slot < sessionRows.count {
+            boundary = sessionRows[slot].frame.minY
+        } else {
+            let lastSessionID = sessionRows[sessionRows.count - 1].sessionID
+            let lastRowInBlock = rows.last { $0.session == lastSessionID }?.view
+                ?? sessionRows[sessionRows.count - 1]
+            boundary = lastRowInBlock.frame.maxY
+        }
+        showDropLine(at: boundary)
+    }
+
+    private func sessionDragEnded() {
+        defer {
+            draggingSessionID = nil
+            sessionDropSlot = nil
+            dropIndicator.isHidden = true
+            resumeUpdates()
+        }
+
+        guard let id = draggingSessionID, let slot = sessionDropSlot,
+              let sourceEntry = entry(id) else { return }
+        let hostEntries = entries.filter { $0.host == sourceEntry.host }
+        guard let from = hostEntries.firstIndex(where: { $0.id == id }) else { return }
+
+        var others = hostEntries
+        others.remove(at: from)
+        let destination = slot > from ? slot - 1 : slot
+        guard destination != from else { return }
+
+        onMoveSession?(
+            id,
+            destination < others.count ? others[destination].id : nil
+        )
+    }
+
     // MARK: - Rename
 
     private func beginRenameSession(_ id: String) {
@@ -1183,17 +1301,27 @@ final class SessionSidebarView: NSView {
         beginEditing(over: row, text: window.name, target: .window(session: session, id: window.id))
     }
 
-    private func beginEditing(over row: NSView, text: String, target: EditTarget) {
+    private func beginEditing(over row: SidebarEditableRow, text: String, target: EditTarget) {
         finishEditing(commit: true)
 
-        // Into the scrolling container, because that is the coordinate space
-        // the row's frame is in.
-        let field = NSTextField(frame: row.frame.insetBy(dx: 2, dy: max(0, (row.frame.height - 20) / 2)))
-        field.stringValue = text
-        field.font = .systemFont(ofSize: 12)
-        field.isBordered = true
-        field.bezelStyle = .roundedBezel
+        row.layoutSubtreeIfNeeded()
+        // Built from `labelWithString:` so the cell shares the exact geometry
+        // and borderless padding of the static label it replaces, while the row
+        // itself stays visible with all of its lines, badges, and background
+        // styling intact.
+        let field = NSTextField(labelWithString: text)
+        field.frame = row.convert(row.nameLabelFrame, to: rowsView)
+        field.font = row.nameLabelFont
+        field.textColor = row.nameEditingColor
+        field.isEditable = true
+        field.isSelectable = true
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
         field.focusRingType = .none
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        field.cell?.usesSingleLineMode = true
         // Return is handled through the delegate rather than target/action: the
         // action only fires for some end-editing paths, and losing an edit
         // because the commit hook did not run is the worst outcome here.
@@ -1203,13 +1331,15 @@ final class SessionSidebarView: NSView {
         // supposed to commit the edit.
         field.isAutomaticTextCompletionEnabled = false
         rowsView.addSubview(field)
-        row.isHidden = true
+        row.isEditingName = true
         editingRow = row
         editTarget = target
         editor = field
         window?.makeFirstResponder(field)
 
         guard let fieldEditor = field.currentEditor() as? NSTextView else { return }
+        fieldEditor.drawsBackground = false
+        fieldEditor.insertionPointColor = row.nameEditingColor
         fieldEditor.isAutomaticTextReplacementEnabled = false
         fieldEditor.isAutomaticSpellingCorrectionEnabled = false
         fieldEditor.isContinuousSpellCheckingEnabled = false
@@ -1236,7 +1366,10 @@ final class SessionSidebarView: NSView {
 
         let new = editor.stringValue.trimmingCharacters(in: .whitespaces)
         editor.removeFromSuperview()
-        row?.isHidden = false
+        if commit, !new.isEmpty {
+            row?.previewEditedName(new)
+        }
+        row?.isEditingName = false
 
         if commit, !new.isEmpty {
             switch target {

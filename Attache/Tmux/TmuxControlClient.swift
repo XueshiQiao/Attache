@@ -6,9 +6,12 @@
 import Foundation
 
 /// One session as `list-sessions` reports it, before there is a connection.
-nonisolated struct TmuxSessionListing {
+nonisolated struct TmuxSessionListing: Equatable {
     let id: String
     let name: String
+    /// Position chosen by dragging in the rail (`@attache_order`), or nil for
+    /// sessions that have never been reordered and stay in tmux's own order.
+    let order: Int?
 }
 
 /// A tmux control mode client: one `tmux -C attach` child process, its output
@@ -640,7 +643,9 @@ final class TmuxControlClient {
     /// calls it synchronously on purpose: that one is local and nothing
     /// else can happen before its answer.
     nonisolated static func listSessions(transport: TmuxTransport) -> SessionListResult {
-        let argv = transport.oneShotArgv(["list-sessions", "-F", "#{session_id} #{session_name}"])
+        let argv = transport.oneShotArgv([
+            "list-sessions", "-F", "#{session_id} #{@attache_order} #{session_name}",
+        ])
         let process = Process()
         process.executableURL = URL(fileURLWithPath: argv[0])
         process.arguments = Array(argv.dropFirst())
@@ -696,16 +701,37 @@ final class TmuxControlClient {
         let sessions = String(decoding: data, as: UTF8.self)
             .split(separator: "\n")
             .compactMap { line -> TmuxSessionListing? in
-                // One split, so a name containing spaces arrives whole. A row
+                // Two splits (`omittingEmptySubsequences: false` because an
+                // unset `@attache_order` expands to nothing between the two
+                // spaces), so a name containing spaces arrives whole. A row
                 // with no id is not a session this app can address and is
                 // dropped rather than guessed at.
-                let parts = line.split(separator: " ", maxSplits: 1)
-                guard let id = parts.first, id.hasPrefix("$") else { return nil }
-                return TmuxSessionListing(
-                    id: String(id), name: parts.count > 1 ? String(parts[1]) : ""
+                let parts = line.split(
+                    separator: " ", maxSplits: 2, omittingEmptySubsequences: false
                 )
+                guard let id = parts.first, id.hasPrefix("$") else { return nil }
+                let order = parts.count > 1 ? Int(parts[1]) : nil
+                let name = parts.count > 2 ? String(parts[2]) : ""
+                return TmuxSessionListing(id: String(id), name: name, order: order)
             }
-        return .sessions(sessions)
+        return .sessions(Self.ordered(sessions))
+    }
+
+    /// Sort sessions by `@attache_order` when present, preserving tmux's own
+    /// listing order for ties and for sessions that have not been reordered.
+    nonisolated static func ordered(_ sessions: [TmuxSessionListing]) -> [TmuxSessionListing] {
+        sessions.enumerated().sorted { lhs, rhs in
+            switch (lhs.element.order, rhs.element.order) {
+            case let (l?, r?):
+                return l != r ? l < r : lhs.offset < rhs.offset
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            case (nil, nil):
+                return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
     }
 
     /// Create a detached session — and with it the server, when there is

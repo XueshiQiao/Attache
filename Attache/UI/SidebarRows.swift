@@ -132,6 +132,22 @@ final class SidebarHostRow: NSView {
     override var mouseDownCanMoveWindow: Bool { onRetry == nil }
 }
 
+// MARK: - Inline rename
+
+/// What `SessionSidebarView` asks of a row while editing its name in place.
+///
+/// The row stays on screen — background wash, index, activity dot, Git line,
+/// and agent stats untouched — while only the name label itself yields to a
+/// borderless editor matching its exact frame, font, and colour.
+@MainActor
+protocol SidebarEditableRow: NSView {
+    var nameLabelFrame: CGRect { get }
+    var nameLabelFont: NSFont { get }
+    var nameEditingColor: NSColor { get }
+    var isEditingName: Bool { get set }
+    func previewEditedName(_ name: String)
+}
+
 // MARK: - Session
 
 /// A session, drawn as a group heading rather than a selectable pill.
@@ -143,7 +159,7 @@ final class SidebarHostRow: NSView {
 /// the window count is replaced by the **+** that makes a new window. By the
 /// time the pointer is anywhere near it, it reads as a row.
 @MainActor
-final class SidebarSessionRow: NSView {
+final class SidebarSessionRow: NSView, SidebarEditableRow {
     let sessionID: String
     let sessionName: String
     /// Survives a rebuild, unlike the view itself. See
@@ -154,6 +170,7 @@ final class SidebarSessionRow: NSView {
 
     var onClick: (() -> Void)?
     var onDoubleClick: (() -> Void)?
+    var onContextMenu: ((NSPoint) -> Void)?
     var onNewWindow: (() -> Void)?
     /// The disclosure triangle, which opens the list without switching to it.
     /// Deliberately not the same gesture as clicking the heading: one is a look
@@ -163,6 +180,28 @@ final class SidebarSessionRow: NSView {
     /// enough here: selecting a session reflows the list, so the two clicks of
     /// a double-click can land on two different rows.
     var isDoubleClick: ((String, Int) -> Bool)?
+    /// Pointer location in window coordinates, while a drag is in progress.
+    var onDragged: ((NSPoint) -> Void)?
+    /// The drag finished. The rail commits the move here rather than on every
+    /// step, for the same reason `SidebarWindowRow` does.
+    var onDragEnded: (() -> Void)?
+
+    var isEditingName = false {
+        didSet { label.isHidden = isEditingName }
+    }
+    var nameLabelFrame: CGRect { label.frame }
+    var nameLabelFont: NSFont { .systemFont(ofSize: 10, weight: .semibold) }
+    var nameEditingColor: NSColor { ChromeTheme.current.text }
+
+    func previewEditedName(_ name: String) {
+        label.attributedStringValue = NSAttributedString(
+            string: name.uppercased(),
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                .kern: 0.55,
+            ]
+        )
+    }
 
     static let height: CGFloat = 24
     /// Air above a heading, so a session reads as starting a block rather than
@@ -184,7 +223,8 @@ final class SidebarSessionRow: NSView {
     private let activityDot = NSView()
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
-    private var pressed = false
+    private var dragOrigin: NSPoint?
+    private var didDrag = false
 
     init(id: String, name: String, windowCount: Int, hasActivity: Bool,
          isCurrent: Bool, isExpanded: Bool, agent: AgentState? = nil)
@@ -367,16 +407,32 @@ final class SidebarSessionRow: NSView {
             onDoubleClick?()
             return
         }
-        pressed = true
+        dragOrigin = event.locationInWindow
+        didDrag = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let dragOrigin else { return }
+        guard didDrag || abs(event.locationInWindow.y - dragOrigin.y) > 5 else { return }
+        didDrag = true
+        onDragged?(event.locationInWindow)
     }
 
     /// A press that started here, rather than `clickCount == 1`: synthesised
     /// events carry a click count of 0 and a guard on the exact value ignores
     /// them silently.
     override func mouseUp(with _: NSEvent) {
-        guard pressed else { return }
-        pressed = false
-        onClick?()
+        defer { dragOrigin = nil }
+        guard dragOrigin != nil else { return }
+        if didDrag {
+            onDragEnded?()
+        } else {
+            onClick?()
+        }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onContextMenu?(convert(event.locationInWindow, from: nil))
     }
 }
 
@@ -388,7 +444,7 @@ final class SidebarSessionRow: NSView {
 /// click to select, double-click to rename, right-click for hide and kill,
 /// and drag to reorder — vertically now, which is the only real difference.
 @MainActor
-final class SidebarWindowRow: NSView {
+final class SidebarWindowRow: NSView, SidebarEditableRow {
     let windowID: String
     /// Survives a rebuild, unlike the view itself. See
     /// `SessionSidebarView.isDoubleClick(on:clickCount:)`.
@@ -404,6 +460,22 @@ final class SidebarWindowRow: NSView {
     /// step: committing mid-drag sends `move-window`, tmux replies, the rail
     /// rebuilds, and the view being dragged stops existing.
     var onDragEnded: (() -> Void)?
+
+    var isEditingName = false {
+        didSet { label.isHidden = isEditingName }
+    }
+    var nameLabelFrame: CGRect { label.frame }
+    var nameLabelFont: NSFont {
+        label.font ?? .systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
+    }
+    var nameEditingColor: NSColor {
+        let theme = ChromeTheme.current
+        return isActive ? theme.onAccent : theme.text
+    }
+
+    func previewEditedName(_ name: String) {
+        label.stringValue = name
+    }
 
     /// One line or two, decided by the settings rather than by the row.
     ///

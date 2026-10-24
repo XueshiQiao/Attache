@@ -490,6 +490,12 @@ final class MainViewController: NSSplitViewController {
         sidebar.onRename = { [weak self] id, new in
             self?.connection(id: id)?.renameSession(to: new)
         }
+        sidebar.onMoveSession = { [weak self] id, anchor in
+            guard let self, let key = SessionKey(composite: id),
+                  let host = self.host(id: key.host) else { return }
+            let anchorSession = anchor.flatMap { SessionKey(composite: $0)?.session }
+            host.server.moveSession(id: key.session, before: anchorSession)
+        }
 
         sidebar.onNewWindow = { [weak self] id in
             guard let self, let connection = connection(id: id) else { return }

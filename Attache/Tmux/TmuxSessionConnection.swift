@@ -1052,6 +1052,24 @@ final class TmuxSessionConnection {
         client.send("rename-session -t \(sessionTarget) \(TmuxCommand.quote(name))")
     }
 
+    /// Stamp every session's `@attache_order` over this connection, then invoke
+    /// `completion` once the final `set-option` has answered so the caller can
+    /// relist with the new values already settled in tmux.
+    func setSessionOrder(_ orderedSessionIDs: [String], completion: @escaping () -> Void) {
+        guard !orderedSessionIDs.isEmpty else {
+            completion()
+            return
+        }
+        for (index, id) in orderedSessionIDs.enumerated() {
+            let cmd = "set-option -t \(id) @attache_order \(index)"
+            if index == orderedSessionIDs.count - 1 {
+                client.run(cmd) { _, _ in completion() }
+            } else {
+                client.send(cmd)
+            }
+        }
+    }
+
     func renameWindow(id: String, to name: String) {
         client.send("rename-window -t \(id) \(TmuxCommand.quote(name))")
     }

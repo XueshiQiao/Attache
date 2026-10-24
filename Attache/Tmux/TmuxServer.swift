@@ -234,6 +234,25 @@ final class TmuxServer {
         onChange?()
     }
 
+    /// Move `id` before `anchor` (or to the end when `anchor` is nil),
+    /// stamping `@attache_order` on every session in tmux so the order lives on
+    /// the server and comes back through `list-sessions`.
+    func moveSession(id: String, before anchor: String?) {
+        guard let from = sessionIDs.firstIndex(of: id) else { return }
+        var reordered = sessionIDs
+        reordered.remove(at: from)
+        if let anchor, let target = reordered.firstIndex(of: anchor) {
+            reordered.insert(id, at: target)
+        } else {
+            reordered.append(id)
+        }
+        guard reordered != sessionIDs else { return }
+        guard let connection = connections[id] ?? connections.values.first else { return }
+        connection.setSessionOrder(reordered) { [weak self] in
+            self?.refreshSessions()
+        }
+    }
+
     /// Create a detached session. Detached so the GUI decides when to show
     /// it, rather than tmux yanking every attached client over to it.
     ///
