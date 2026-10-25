@@ -33,6 +33,9 @@ packages:
   AIUsageKit:
     url: https://github.com/XueshiQiao/AIUsageKit.git
     revision: a08b005087f474ea6987c2be49a1bbcff5926497
+  Aptabase:
+    url: https://github.com/aptabase/aptabase-swift
+    exactVersion: 0.3.11
 
 schemes:
   Attache:
@@ -97,6 +100,8 @@ targets:
       - package: Sparkle
       - package: AIUsageKit
         product: AIUsageKit
+      - package: Aptabase
+        product: Aptabase
     postBuildScripts:
       # Named by path rather than pasted in here: the body is shell, and a YAML
       # block scalar mangles indentation-sensitive text quietly. XcodeGen copies

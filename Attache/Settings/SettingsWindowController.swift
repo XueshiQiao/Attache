@@ -39,6 +39,7 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var sidebarWidth: CGFloat
     @Published private(set) var closingTabKillsWindow: Bool
     @Published private(set) var copyOnSelect: Bool
+    @Published private(set) var analyticsEnabled: Bool
     @Published private(set) var quickActions: [QuickAction]
     @Published private(set) var sidebarShowsGit: Bool
     @Published private(set) var paneCards: Bool
@@ -271,6 +272,7 @@ final class SettingsStore: ObservableObject {
         sidebarWidth = AppSettings.sidebarWidth
         closingTabKillsWindow = AppSettings.closingTabKillsWindow
         copyOnSelect = AppSettings.copyOnSelect
+        analyticsEnabled = AppSettings.analyticsEnabled
         quickActions = AppSettings.quickActions
         sidebarShowsGit = AppSettings.sidebarShowsGit
         paneCards = AppSettings.paneCards
@@ -374,6 +376,11 @@ final class SettingsStore: ObservableObject {
         AppSettings.copyOnSelect = copies
         copyOnSelect = copies
         AppSettings.notifyChanged()
+    }
+
+    func setAnalyticsEnabled(_ enabled: Bool) {
+        AppSettings.analyticsEnabled = enabled
+        analyticsEnabled = AppSettings.analyticsEnabled
     }
 
     func setQuickActions(_ actions: [QuickAction]) {

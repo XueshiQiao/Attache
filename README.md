@@ -73,6 +73,18 @@ would draw.
   the lines it recognises, so your comments and anything it does not know about
   survive.
 
+## Privacy
+
+Attaché uses Aptabase to count app launches. This is enabled by default and can
+be turned off in **Settings → About → Privacy**, or by setting
+`analytics_enabled = false` in `~/.config/attache.toml`. Changes apply on the
+next launch; when disabled, the analytics SDK is not initialized.
+
+The only event sent is `app_launched`, without custom properties. No terminal
+content, commands, paths, host names, or other usage data is sent. Aptabase
+includes standard metadata with that event: OS version, device model, language,
+app version/build, SDK version, a timestamp, and a temporary session identifier.
+
 ## Building
 
 See [BUILDING.md](BUILDING.md).

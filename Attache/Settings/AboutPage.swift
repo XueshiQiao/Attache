@@ -69,6 +69,25 @@ struct AboutPage: View {
                 }
             }
 
+            Section {
+                optionRow(
+                    symbol: "chart.bar.fill", color: .purple,
+                    title: "Anonymous Launch Count",
+                    subtitle: "Only app launches are counted. No terminal content, commands, paths, host names, or other usage data is sent."
+                ) {
+                    Toggle("Anonymous Launch Count", isOn: Binding(
+                        get: { store.analyticsEnabled },
+                        set: { store.setAnalyticsEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .accessibilityIdentifier("analyticsEnabled")
+                }
+            } header: {
+                Text("Privacy")
+            } footer: {
+                Text("Enabled by default. Changes apply on the next launch. Aptabase includes standard system metadata such as OS version, device model, language, and app version with the launch event.")
+            }
+
             Section("Source") {
                 Link(destination: Self.repoURL) {
                     iconLabel("chevron.left.forwardslash.chevron.right", .gray, "GitHub Repository")

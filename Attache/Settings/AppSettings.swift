@@ -40,6 +40,7 @@ enum AppSettings {
         static let sidebarWidth           = "sidebar_width"
         static let closingTabKills        = "closing_tab_kills_window"
         static let copyOnSelect           = "copy_on_select"
+        static let analyticsEnabled       = "analytics_enabled"
         static let quickActions           = "quick_actions"
         static let windowOpacity          = "window_opacity"
         static let blurRadius             = "blur_radius"
@@ -725,6 +726,12 @@ enum AppSettings {
     static var copyOnSelect: Bool {
         get { store.object(forKey: Key.copyOnSelect) as? Bool ?? false }
         set { store.set(newValue, forKey: Key.copyOnSelect) }
+    }
+
+    /// Applies at launch, before the analytics SDK is initialized.
+    static var analyticsEnabled: Bool {
+        get { store.object(forKey: Key.analyticsEnabled) as? Bool ?? true }
+        set { store.set(newValue, forKey: Key.analyticsEnabled) }
     }
 
     /// The user's Quick Actions menu.
