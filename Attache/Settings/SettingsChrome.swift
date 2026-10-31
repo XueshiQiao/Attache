@@ -18,13 +18,14 @@ import SwiftUI
 // MARK: - Sidebar pages
 
 enum SettingsPage: Hashable, CaseIterable {
-    case terminal, appearance, behaviour, quickActions, hosts, about
+    case terminal, appearance, behaviour, permissions, quickActions, hosts, about
 
     var title: String {
         switch self {
         case .terminal: "Terminal"
         case .appearance: "Appearance"
         case .behaviour: "Behaviour"
+        case .permissions: "Permissions"
         case .quickActions: "Quick Actions"
         case .hosts: "Hosts"
         case .about: "About"
@@ -36,6 +37,7 @@ enum SettingsPage: Hashable, CaseIterable {
         case .terminal: "textformat"
         case .appearance: "paintpalette.fill"
         case .behaviour: "slider.horizontal.3"
+        case .permissions: "lock.shield.fill"
         case .quickActions: "bolt.fill"
         case .hosts: "server.rack"
         case .about: "info.circle.fill"
@@ -47,6 +49,7 @@ enum SettingsPage: Hashable, CaseIterable {
         case .terminal: .blue
         case .appearance: .purple
         case .behaviour: .teal
+        case .permissions: .green
         case .quickActions: .orange
         case .hosts: .indigo
         case .about: .pink
@@ -59,6 +62,7 @@ enum SettingsPage: Hashable, CaseIterable {
         case .terminal: "terminal"
         case .appearance: "appearance"
         case .behaviour: "behaviour"
+        case .permissions: "permissions"
         case .quickActions: "quickactions"
         case .hosts: "hosts"
         case .about: "about"
@@ -216,6 +220,7 @@ struct SettingsRootView: View {
                 case .terminal: TerminalPage()
                 case .appearance: AppearancePage()
                 case .behaviour: BehaviourPage()
+                case .permissions: PermissionsPage()
                 case .quickActions: QuickActionsPage()
                 case .hosts: HostsPage()
                 case .about: AboutPage()

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Partial Info.plist, merged on top of the plist Xcode generates
-  (GENERATE_INFOPLIST_FILE: YES). It exists only to carry the keys Sparkle reads
-  out of the bundle, which have no INFOPLIST_KEY_* build-setting form. Everything
+  (GENERATE_INFOPLIST_FILE: YES). It carries the keys Sparkle reads out of the bundle
+  (no INFOPLIST_KEY_* build-setting form) and the folder-access prompt wording. Everything
   else — CFBundleName, versions, the accent handling — is still generated.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -28,5 +28,15 @@
 	     toggle writes the user's own preference, which overrides this. -->
 	<key>SUEnableAutomaticChecks</key>
 	<false/>
+
+	<!-- The sentences macOS shows in its "Attaché would like to access your
+	     Downloads folder" prompts. Without them the prompt still appears but
+	     carries only the system's generic wording. -->
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Programs running in your terminal panes can open files you drag in from the Desktop.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Programs running in your terminal panes can open files you drag in from Documents.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Programs running in your terminal panes can open files you drag in from Downloads.</string>
 </dict>
 </plist>
