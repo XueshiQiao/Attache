@@ -658,7 +658,7 @@ final class SidebarWindowRow: NSView, SidebarEditableRow {
         case .silent:
             activityDot.isHidden = false
             tips.append(
-                AgentHookInstaller.isInstalled()
+                AgentHookInstaller.isInstalled(forKind: decoration.agent?.kind)
                     ? "\(agentName) is running. It started before the hook was installed —"
                         + " restart it to see what it is doing."
                     : "\(agentName) is running. Install the hook in Settings to see"
@@ -950,7 +950,7 @@ final class SidebarWindowRow: NSView, SidebarEditableRow {
     }
 
     private var agentName: String {
-        decoration.agent?.kind.map { $0 == "claude" ? "Claude Code" : $0 } ?? "An agent"
+        decoration.agent?.kind.map { AgentProcessCatalog.displayName(forKind: $0) } ?? "An agent"
     }
 
     /// The state in words. Nil when there is nothing to say, or when the

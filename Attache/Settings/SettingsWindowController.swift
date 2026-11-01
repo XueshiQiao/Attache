@@ -148,6 +148,7 @@ final class SettingsStore: ObservableObject {
     /// Installed, but not what this version installs. See `isUpToDate`.
     @Published private(set) var agentHookNeedsUpdate =
         AgentHookInstaller.isInstalled() && !AgentHookInstaller.isUpToDate()
+    @Published private(set) var agentHookSummary = AgentHookInstaller.statusSummary()
     /// The exact JSON an install would add, shown before anything is written.
     @Published private(set) var agentHookPlan = (try? AgentHookInstaller.plannedAdditions()) ?? ""
     /// What happened last, including where the backup went. Kept on screen
@@ -164,6 +165,7 @@ final class SettingsStore: ObservableObject {
     func refreshAgentHookState() {
         agentHookInstalled = AgentHookInstaller.isInstalled()
         agentHookNeedsUpdate = agentHookInstalled && !AgentHookInstaller.isUpToDate()
+        agentHookSummary = AgentHookInstaller.statusSummary()
         agentHookPlan = (try? AgentHookInstaller.plannedAdditions()) ?? ""
     }
 
@@ -172,11 +174,13 @@ final class SettingsStore: ObservableObject {
         agentHookBusy = true
         defer { agentHookBusy = false }
         do {
-            let backup = try AgentHookInstaller.install()
+            let backups = try AgentHookInstaller.install()
             agentHookFailed = false
-            agentHookMessage = "Installed. Your previous settings were copied to "
-                + backup.lastPathComponent
-                + ". Claude Code picks the hook up on its next session — restart any agent "
+            let backupNote = backups.isEmpty
+                ? ""
+                : " Backups saved: " + backups.map(\.lastPathComponent).joined(separator: ", ") + "."
+            agentHookMessage = "Installed." + backupNote
+                + " Agents pick up updated hooks on their next session — restart any agent "
                 + "that is already running to see its state."
         } catch {
             agentHookFailed = true
@@ -190,11 +194,13 @@ final class SettingsStore: ObservableObject {
         agentHookBusy = true
         defer { agentHookBusy = false }
         do {
-            let backup = try AgentHookInstaller.uninstall()
+            let backups = try AgentHookInstaller.uninstall()
             agentHookFailed = false
-            agentHookMessage = "Removed. Your previous settings were copied to "
-                + backup.lastPathComponent
-                + ". The script is left in ~/.claude/hooks/ and does nothing on its own."
+            let backupNote = backups.isEmpty
+                ? ""
+                : " Backups saved: " + backups.map(\.lastPathComponent).joined(separator: ", ") + "."
+            agentHookMessage = "Removed." + backupNote
+                + " The receiver binary is left in ~/.config/attache/bin/ and does nothing on its own."
         } catch {
             agentHookFailed = true
             agentHookMessage = error.localizedDescription

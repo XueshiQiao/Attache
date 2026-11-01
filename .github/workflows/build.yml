@@ -185,6 +185,12 @@ jobs:
             done
           fi
 
+          if [ -f "$APP_PATH/Contents/MacOS/attache-agent-hub" ]; then
+            codesign --force --options runtime --timestamp \
+              --entitlements "$ENTITLEMENTS" \
+              --sign "Developer ID Application" "$APP_PATH/Contents/MacOS/attache-agent-hub"
+          fi
+
           codesign --force --options runtime --timestamp \
             --entitlements "$ENTITLEMENTS" \
             --sign "Developer ID Application" "$APP_PATH"

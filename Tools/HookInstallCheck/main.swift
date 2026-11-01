@@ -18,7 +18,7 @@
 //  never writes it — the merge functions are pure, which is why they exist
 //  separately from `install()`.
 //
-//  swiftc -O -o /tmp/hookcheck Attache/Tmux/TmuxLog.swift \
+//  swiftc -O -o /tmp/hookcheck AgentHub/*.swift Attache/Tmux/TmuxLog.swift \
 //      Attache/Status/AgentHookInstaller.swift Tools/HookInstallCheck/main.swift \
 //      && /tmp/hookcheck
 //
@@ -304,6 +304,157 @@ if let data = try? Data(contentsOf: realURL),
 } else {
     print("      (no readable settings file here — the live checks were skipped)")
 }
+
+// MARK: - Legacy v1 -> v2 migration (Claude)
+
+print("\n— migrating legacy v1 tmuxgui-agent-state.sh entries —")
+
+check("v1 Claude entries are replaced cleanly with v2 hub commands and zero duplicates", {
+    let withLegacy = json("""
+    {
+      "hooks": {
+        "SessionStart": [
+          {"hooks": [{"type": "command", "command": "/Users/joey/.claude/hooks/tmuxgui-agent-state.sh SessionStart 2>/dev/null || true"}]}
+        ],
+        "Stop": [
+          {"matcher": "*", "hooks": [
+            {"type": "command", "command": "bash /Users/joey/Code/ccpet/scripts/ccpet-notify.sh"},
+            {"type": "command", "command": "/Users/joey/.claude/hooks/tmuxgui-agent-state.sh Stop 2>/dev/null || true"}
+          ]}
+        ]
+      }
+    }
+    """)
+    let upgraded = AgentHookInstaller.merge(intoSettings: withLegacy)
+    let serialized = String(
+        decoding: try! JSONSerialization.data(
+            withJSONObject: upgraded,
+            options: [.withoutEscapingSlashes]
+        ),
+        as: UTF8.self
+    )
+    if serialized.contains("tmuxgui-agent-state.sh") {
+        return "legacy v1 command survived into upgraded settings"
+    }
+    if !serialized.contains("ccpet-notify.sh") {
+        return "foreign ccpet hook in shared group was lost during v1 -> v2 upgrade"
+    }
+    if !serialized.contains(ourPath) {
+        return "v2 hub path was not installed"
+    }
+    return nil
+}())
+
+// MARK: - Antigravity (`~/.gemini/config/hooks.json`)
+
+print("\n— Antigravity named-group hooks.json —")
+
+let agyProvider = AntigravityHookProvider()
+let agyRealistic = json("""
+{
+  "user-linter": {
+    "PreToolUse": [
+      {"matcher": "write_file|edit_file", "hooks": [{"type": "command", "command": "~/.gemini/hooks/lint.sh"}]}
+    ],
+    "Stop": [
+      {"type": "command", "command": "~/.gemini/hooks/summary.sh"}
+    ]
+  }
+}
+""")
+
+let agyMerged = agyProvider.merge(into: agyRealistic, hubPath: ourPath)
+
+check("Antigravity: foreign hook groups survive byte-for-byte", {
+    same(agyRealistic["user-linter"], agyMerged["user-linter"])
+        ? nil : "`user-linter` group changed"
+}())
+
+check("Antigravity: flat lifecycle arrays vs matcher-wrapped tool arrays match agy schema", {
+    guard let group = agyMerged[AntigravityHookProvider.groupName] as? [String: Any] else {
+        return "missing `\(AntigravityHookProvider.groupName)` group"
+    }
+    for flatEvent in ["SessionStart", "PreInvocation", "Stop"] {
+        guard let list = group[flatEvent] as? [[String: Any]],
+              let first = list.first,
+              (first["type"] as? String) == "command",
+              first["hooks"] == nil,
+              let cmd = first["command"] as? String,
+              cmd.contains("printf")
+        else { return "`\(flatEvent)` was not a flat Handler list with fail-open JSON printf" }
+    }
+    for toolEvent in ["PreToolUse", "PostToolUse"] {
+        guard let list = group[toolEvent] as? [[String: Any]],
+              let first = list.first,
+              (first["matcher"] as? String) == "ask_question",
+              let inner = first["hooks"] as? [[String: Any]],
+              let cmd = inner.first?["command"] as? String,
+              cmd.contains("printf")
+        else { return "`\(toolEvent)` was not matcher-wrapped for `ask_question`" }
+    }
+    return nil
+}())
+
+check("Antigravity: merge is idempotent and unmerge round-trips exactly", {
+    let twice = agyProvider.merge(into: agyMerged, hubPath: ourPath)
+    guard same(agyMerged, twice) else { return "second merge changed the file" }
+    let restored = agyProvider.unmerge(from: agyMerged, hubPath: ourPath)
+    return same(agyRealistic, restored) ? nil : "unmerge did not round-trip"
+}())
+
+check("Antigravity: validateShape refuses non-object named groups and bad event lists", {
+    for bad in [
+        #"{"user-linter": ["not-an-object"]}"#,
+        #"{"attache-status": {"Stop": "not-a-list"}}"#,
+        #"{"attache-status": {"Stop": [123]}}"#,
+    ] {
+        do {
+            try agyProvider.validateShape(json(bad), path: "hooks.json")
+            return "accepted invalid shape: \(bad)"
+        } catch {}
+    }
+    do {
+        try agyProvider.validateShape(agyMerged, path: "hooks.json")
+        return nil
+    } catch {
+        return "refused valid agy config: \(error)"
+    }
+}())
+
+let realAgyURL = agyProvider.configURL(home: FileManager.default.homeDirectoryForCurrentUser)
+if let data = try? Data(contentsOf: realAgyURL),
+   let realAgy = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+{
+    check("real ~/.gemini/config/hooks.json: round-trips cleanly in memory", {
+        let pristine = agyProvider.unmerge(from: realAgy, hubPath: ourPath)
+        let m = agyProvider.merge(into: pristine, hubPath: ourPath)
+        return same(pristine, agyProvider.unmerge(from: m, hubPath: ourPath))
+            ? nil : "did not round-trip"
+    }())
+}
+
+// MARK: - Grok (`~/.grok/hooks/attache-status.json`)
+
+print("\n— Grok dedicated hook file —")
+
+let grokProvider = GrokHookProvider()
+let grokMerged = grokProvider.merge(into: [:], hubPath: ourPath)
+
+check("Grok: dedicated file owns removeFileWhenEmpty and registers Stop, StopFailure, StopCancelled", {
+    guard grokProvider.removeFileWhenEmpty else { return "removeFileWhenEmpty should be true" }
+    guard let hooks = grokMerged["hooks"] as? [String: Any] else { return "missing hooks object" }
+    for required in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification", "Stop", "StopFailure", "StopCancelled", "SessionEnd"] {
+        guard hooks[required] != nil else { return "missing \(required)" }
+    }
+    return nil
+}())
+
+check("Grok: merge is idempotent and unmerge empties the dedicated file cleanly", {
+    let twice = grokProvider.merge(into: grokMerged, hubPath: ourPath)
+    guard same(grokMerged, twice) else { return "second merge changed the file" }
+    let restored = grokProvider.unmerge(from: grokMerged, hubPath: ourPath)
+    return restored.isEmpty ? nil : "expected empty root after unmerge, got \(restored.keys.sorted())"
+}())
 
 print("")
 if failures == 0 {

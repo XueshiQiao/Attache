@@ -439,6 +439,9 @@ final class TmuxSessionConnection {
         pruneVanishedPanes()
         for (pane, evidence) in evidenceByPane
             where AgentDetector.isAgentCommand(evidence.currentCommand)
+                && !ScreenAgentStrategy.rules(
+                    for: AgentDetector.kind(ofCommand: evidence.currentCommand)
+                ).isEmpty
         {
             // The visible screen only, no history: the question is what the
             // pane is doing *now*, and scrollback from an hour ago answers a
@@ -457,8 +460,14 @@ final class TmuxSessionConnection {
                 self.lastScreenByPane[pane] = lines
                 self.evidenceByPane[pane]?.screen = lines
                 // Only once there is something to compare against. A first
-                // capture is not evidence of a repaint.
-                self.evidenceByPane[pane]?.screenChanged = previous != nil && previous != lines
+                // capture is not evidence of a repaint, and neither is a
+                // status-line tick or a terminal resize.
+                let kind = AgentDetector.kind(
+                    ofCommand: self.evidenceByPane[pane]?.currentCommand ?? evidence.currentCommand
+                )
+                self.evidenceByPane[pane]?.screenChanged = previous.map {
+                    ScreenAgentStrategy.didOutputChange(from: $0, to: lines, kind: kind)
+                } ?? false
                 self.recomputeAgentBadges()
             }
         }
@@ -1764,11 +1773,26 @@ final class TmuxSessionConnection {
                 guard fields.count >= 4 else { return }
                 var evidence = evidenceByPane[pane]
                     ?? AgentEvidence(paneID: pane, currentCommand: fields[3])
+                let previousState = evidence.optionState
+                let previousAt = evidence.optionAt
                 evidence.currentCommand = fields[3]
                 evidence.optionState = fields[0]
                 evidence.optionKind = fields[1]
                 evidence.optionAt = fields[2]
                 evidence.optionWhy = fields.count > 4 ? fields[4] : ""
+                evidence.recordSubscriptionUpdate(
+                    previousState: previousState,
+                    previousAt: previousAt,
+                    newTitle: fields.count > 6 ? fields[6] : ""
+                )
+                if !AgentDetector.isAgentCommand(evidence.currentCommand) {
+                    // Forget the finished session's screen when the pane drops
+                    // back to a shell, so a new agent started here later does
+                    // not briefly classify or diff against its predecessor.
+                    evidence.screen = nil
+                    evidence.screenChanged = false
+                    lastScreenByPane.removeValue(forKey: pane)
+                }
 
                 // **Re-parse only when the text moved.** The status line
                 // wrapper rewrites `@agent_stat` on every render — every five

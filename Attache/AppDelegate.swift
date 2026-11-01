@@ -64,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         // Before any setting is read: move them out of the plist if this is the
         // first run of a build that keeps them in a file. See `SettingsFile`.
         SettingsFile.migrateFromUserDefaultsIfNeeded(keys: AppSettings.plistKeys)
+        AgentHookInstaller.refreshInstalledHubBinaryIfNeeded()
         Analytics.start()
         AppSettings.applyAppearanceOverride()
         ChromeTheme.reload()

@@ -222,10 +222,8 @@ struct BehaviourPage: View {
                 HStack {
                     iconLabel(
                         store.agentHookInstalled ? "checkmark.seal.fill" : "seal",
-                        store.agentHookInstalled ? .green : .gray,
-                        store.agentHookInstalled
-                            ? "Claude Code reports its state"
-                            : "Claude Code is detected, but not what it is doing"
+                        store.agentHookInstalled && !store.agentHookNeedsUpdate ? .green : (store.agentHookInstalled ? .orange : .gray),
+                        store.agentHookSummary
                     )
                     Spacer()
                     if store.agentHookNeedsUpdate {
@@ -270,16 +268,18 @@ struct BehaviourPage: View {
                 Text("Agent status")
             } footer: {
                 Text(
-                    "Without this, the sidebar can tell that Claude Code is running in a window "
-                        + "but not whether it is working, waiting for you, or finished.\n\n"
-                        + "Installing adds one line per event to ~/.claude/settings.json and writes "
-                        + "a short readable script to ~/.claude/hooks/. Your existing hooks are kept "
-                        + "— nothing is replaced, only appended — and the file is copied to a "
-                        + "timestamped backup first. The state is stored in tmux itself, so "
-                        + "`tmux attach` from any terminal sees the same thing.\n\n"
-                        + "One thing it cannot preserve: the file comes back sorted and "
-                        + "re-indented, because there is no way to keep the original key order. "
-                        + "Nothing is lost, and the backup has the original."
+                    "Without this, the sidebar can tell that Claude Code, Antigravity, or Grok is "
+                        + "running in a window, but not whether it is working, waiting for you, or "
+                        + "finished.\n\n"
+                        + "Installing stages `attache-agent-hub` to ~/.config/attache/bin/ and "
+                        + "registers lifecycle hooks for every detected agent (~/.claude/settings.json, "
+                        + "~/.gemini/config/hooks.json, ~/.grok/hooks/attache-status.json). Existing "
+                        + "hooks are preserved and every modified file is copied to a timestamped "
+                        + "backup first. The normalised state is stored in tmux itself, so any "
+                        + "attached desktop or mobile client sees the same truth.\n\n"
+                        + "One thing it cannot preserve: edited JSON files come back sorted and "
+                        + "re-indented, because JSONSerialization does not retain key order. "
+                        + "Nothing is lost, and the backup holds the original."
                 )
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -11,7 +11,8 @@
 //  row where nothing is running. A false negative only costs a missing dot.
 //  So the cases lean on things that look like versions and are not.
 //
-//  swiftc -O -o /tmp/agentcheck Attache/Status/AgentState.swift \
+//  swiftc -O -o /tmp/agentcheck AgentHub/AgentHubTypes.swift \
+//      Attache/Status/AgentState.swift Attache/Status/AgentStateStrategy.swift \
 //      Tools/AgentStateCheck/main.swift && /tmp/agentcheck
 //
 
@@ -42,7 +43,7 @@ private func value(state: String, kind: String, at: String, command: String) -> 
 // MARK: - Which commands count as an agent
 
 print("— is this pane running an agent —")
-for command in ["2.1.220", "2.1", "0.0.1", "claude", "codex", "grok"] {
+for command in ["2.1.220", "2.1.308", "2.1", "0.0.1", "claude", "agy", "antigravity", "codex", "grok", "grok-1.0.52-mac", "opencode"] {
     check("`\(command)` is an agent", expect(AgentDetector.isAgentCommand(command), true))
 }
 for command in [
@@ -113,6 +114,18 @@ check("a kind the app has never heard of is kept, not overwritten", {
         fromSubscriptionValue: value(state: "working", kind: "some-new-agent", at: "0", command: "claude")
     )
     return expect(badge?.kind ?? "nil", "some-new-agent")
+}())
+
+check("stale options from a different known agent in the same pane are ignored", {
+    // Claude exited via ^C leaving `@agent_kind=claude @agent_state=working`,
+    // and the user later started `codex` in the same pane.
+    let badge = AgentDetector.badge(
+        fromSubscriptionValue: value(state: "working", kind: "claude", at: "1785247200", command: "codex")
+    )
+    return expect(badge != nil, true)
+        ?? expect(badge?.state == nil, true)
+        ?? expect(badge?.kind ?? "nil", "codex")
+        ?? expect(badge?.since == nil, true)
 }())
 
 // MARK: - Which pane speaks for the window
@@ -207,6 +220,85 @@ check("a tie between ranks still prefers urgency over recency", {
     let doneJustNow = badge(.done, since: 9000, seen: nil)
     return expect(AgentBadge.moreUrgent(blockedLongAgo, doneJustNow)?.state?.rawValue ?? "nil",
                   "needs-input")
+}())
+
+// MARK: - Multi-agent process catalog & HookAgentStrategy watchdog
+
+print("\n— multi-agent catalog & HookAgentStrategy reconciliation —")
+
+check("agy and truncated macOS p_comm grok-1.0.52-mac map to canonical kinds and display names", {
+    expect(AgentDetector.kind(ofCommand: "agy") ?? "nil", "agy")
+        ?? expect(AgentDetector.kind(ofCommand: "antigravity") ?? "nil", "agy")
+        ?? expect(AgentDetector.kind(ofCommand: "grok-1.0.52-mac") ?? "nil", "grok")
+        ?? expect(AgentProcessCatalog.displayName(forKind: "claude"), "Claude Code")
+        ?? expect(AgentProcessCatalog.displayName(forKind: "agy"), "Antigravity")
+        ?? expect(AgentProcessCatalog.displayName(forKind: "grok"), "Grok")
+}())
+
+check("live %17 regression: @agent_kind=claude left on a grok-1.0.52-mac pane is rejected", {
+    var ev = AgentEvidence(paneID: "%17", currentCommand: "grok-1.0.52-mac")
+    ev.optionKind = "claude"
+    ev.optionState = "working"
+    ev.optionWhy = "SessionStart"
+    let b = HookAgentStrategy.badge(from: ev)
+    return expect(b?.kind ?? "nil", "grok")
+        ?? expect(b?.state == nil, true)
+}())
+
+check("legacy v1 SessionStart -> working is normalised to idle presence", {
+    var ev = AgentEvidence(paneID: "%9", currentCommand: "claude")
+    ev.optionKind = "claude"
+    ev.optionState = "working"
+    ev.optionWhy = "SessionStart"
+    ev.optionAt = "1793540000"
+    let b = HookAgentStrategy.badge(from: ev)
+    return expect(b?.kind ?? "nil", "claude")
+        ?? expect(b?.state == nil, true)
+}())
+
+check("unhooked Claude pane with Braille spinner in pane_title upgrades to working", {
+    var ev = AgentEvidence(paneID: "%28", currentCommand: "2.1.308")
+    ev.recordSubscriptionUpdate(previousState: "", previousAt: "", newTitle: "⠋ Refactoring hooks")
+    let b = HookAgentStrategy.badge(from: ev)
+    return expect(b?.state?.rawValue ?? "nil", "working")
+        ?? expect(b?.reason ?? "nil", "osc_title_working")
+}())
+
+check("live %13 regression: static `✳` title in Claude 2.1.308 never overrides active working turn", {
+    var ev = AgentEvidence(paneID: "%13", currentCommand: "claude")
+    ev.optionKind = "claude"
+    ev.optionState = "working"
+    ev.optionAt = "1793542977"
+    ev.optionWhy = "PostToolUse"
+    ev.recordSubscriptionUpdate(
+        previousState: "working",
+        previousAt: "1793542970",
+        newTitle: "✳ Apple Speech 唤醒词"
+    )
+    let b = HookAgentStrategy.badge(from: ev)
+    return expect(b?.state?.rawValue ?? "nil", "working")
+        ?? expect(b?.reason ?? "nil", "PostToolUse")
+}())
+
+check("spinner-enabled Claude pane that drops from `⠋` back to `✳` on Esc reconciles to done", {
+    var ev = AgentEvidence(paneID: "%5", currentCommand: "claude")
+    ev.optionKind = "claude"
+    ev.optionState = "working"
+    ev.optionAt = "1793543000"
+    ev.optionWhy = "UserPromptSubmit"
+    ev.recordSubscriptionUpdate(previousState: "", previousAt: "", newTitle: "⠋ Running build")
+    if let err = expect(HookAgentStrategy.badge(from: ev)?.state?.rawValue ?? "nil", "working") {
+        return err
+    }
+    // User hits Esc: hook never sent Stop (`optionState` stays `working`), title returns to `✳`.
+    ev.recordSubscriptionUpdate(
+        previousState: "working",
+        previousAt: "1793543000",
+        newTitle: "✳ Running build"
+    )
+    let b = HookAgentStrategy.badge(from: ev)
+    return expect(b?.state?.rawValue ?? "nil", "done")
+        ?? expect(b?.reason ?? "nil", "osc_title_idle")
 }())
 
 // MARK: - Result

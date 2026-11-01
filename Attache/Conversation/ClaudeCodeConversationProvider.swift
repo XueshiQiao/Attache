@@ -81,6 +81,9 @@ struct ClaudeCodeConversationProvider: AgentConversationProvider {
         // nothing on screen saying otherwise. The same rule, for the same
         // reason, is why `AgentDetector.badge` reads the command.
         guard AgentDetector.isAgentCommand(evidence.currentCommand) else { return nil }
+        guard AgentDetector.optionsMatchCommand(
+            optionKind: evidence.kind, command: evidence.currentCommand
+        ) else { return nil }
 
         let kind = evidence.kind.isEmpty
             ? AgentDetector.kind(ofCommand: evidence.currentCommand)

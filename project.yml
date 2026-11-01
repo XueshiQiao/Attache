@@ -42,6 +42,7 @@ schemes:
     build:
       targets:
         Attache: all
+        attache-agent-hub: all
         # `[test]` is buildForTesting and nothing else, so `xcodebuild build`
         # does not drag the test bundle in — only `build-for-testing` and `test`
         # do. This is what the hand-maintained scheme had.
@@ -62,6 +63,8 @@ targets:
       # that is the churn this migration exists to remove. AppIcon.icon stays
       # whole for the same reason.
       - path: Attache
+        type: syncedFolder
+      - path: AgentHub
         type: syncedFolder
       # Folder references (`type: folder`), not groups, and that is the whole
       # point: ncurses looks a terminal up at <TERMINFO>/78/xterm-ghostty, so
@@ -102,6 +105,11 @@ targets:
         product: AIUsageKit
       - package: Aptabase
         product: Aptabase
+      - target: attache-agent-hub
+        embed: true
+        codeSign: true
+        copy:
+          destination: executables
     postBuildScripts:
       # Named by path rather than pasted in here: the body is shell, and a YAML
       # block scalar mangles indentation-sensitive text quietly. XcodeGen copies
@@ -187,6 +195,24 @@ targets:
           # does is write into TARGET_BUILD_DIR with no declared outputs — the
           # thing script sandboxing exists to stop.
           ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+  attache-agent-hub:
+    type: tool
+    platform: macOS
+    sources:
+      - path: AgentHub
+        type: syncedFolder
+      - path: AgentHubCLI
+        type: syncedFolder
+    settings:
+      base:
+        PRODUCT_NAME: attache-agent-hub
+        SWIFT_VERSION: "5.0"
+        SWIFT_APPROACHABLE_CONCURRENCY: YES
+        SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 584KQTRF3B
 
   AttacheUITests:
     type: bundle.ui-testing

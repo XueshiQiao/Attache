@@ -126,16 +126,14 @@ enum AgentDetector {
     /// The subscription this app registers, joined by U+0001 for the same
     /// reason every other multi-field format here is: a pane's current path and
     /// command are arbitrary text and a space is not a separator.
-    /// `@agent_stat` goes last, and everything reading this splits by index, so
-    /// a field added here must go on the end. It is also the only one that
-    /// carries a whole JSON object — about 1.3 KB, written by the status line
-    /// wrapper. Measured on tmux 3.6a: a 1864-byte single-line option value
-    /// arrives through `%subscription-changed` byte for byte, so it needs no
-    /// transport of its own. The separator stays safe because JSON cannot carry
-    /// a raw U+0001.
+    /// Everything reading this splits by index, so any field added here must go
+    /// on the end (`@agent_stat` at index 5 carries the ~1.3 KB status-line
+    /// JSON object, measured byte-for-byte intact on tmux 3.6a; `#{pane_title}`
+    /// at index 6 carries the pane's OSC 0/2 title). The separator stays safe
+    /// because neither JSON nor terminal titles carry a raw U+0001.
     static let paneFormat = [
         "#{@agent_state}", "#{@agent_kind}", "#{@agent_at}", "#{pane_current_command}",
-        "#{@agent_why}", "#{@agent_stat}",
+        "#{@agent_why}", "#{@agent_stat}", "#{pane_title}",
     ].joined(separator: "\u{01}")
 
     /// Parse one `%subscription-changed` value into a badge, or nil for a pane
@@ -153,12 +151,41 @@ enum AgentDetector {
         guard fields.count >= 4 else { return nil }
         let command = fields[3]
         guard isAgentCommand(command) else { return nil }
+        let commandKind = kind(ofCommand: command)
 
+        // `@agent_state` outlives a `^C` exit not only across a shell prompt
+        // (`zsh`, handled above) but across a *different* agent launched later
+        // in the same pane: observed on this machine (`@agent_kind=claude`,
+        // `@agent_state=working` left on a pane later running another agent).
+        // An unrecognised `@agent_kind` is still kept so a hook for a new
+        // agent can name itself, while a known kind that disagrees with the
+        // live command is stale state from an earlier occupant.
+        guard optionsMatchCommand(optionKind: fields[1], command: command) else {
+            return AgentBadge(state: nil, kind: commandKind, since: nil)
+        }
+
+        let why = fields.count > 4 ? fields[4] : ""
+        let parsedState = (fields[0] == "working" && why == "SessionStart")
+            ? nil
+            : AgentState.parse(fields[0])
         return AgentBadge(
-            state: AgentState.parse(fields[0]),
-            kind: fields[1].isEmpty ? kind(ofCommand: command) : fields[1],
-            since: TimeInterval(fields[2]).map { Date(timeIntervalSince1970: $0) }
+            state: parsedState,
+            kind: fields[1].isEmpty ? commandKind : fields[1],
+            since: parsedState == nil
+                ? nil
+                : TimeInterval(fields[2]).map { Date(timeIntervalSince1970: $0) }
         )
+    }
+
+    /// False when `@agent_kind` names a known agent other than the process
+    /// currently running in the pane.
+    static func optionsMatchCommand(optionKind: String, command: String) -> Bool {
+        let normalizedOptionKind = (optionKind == "antigravity") ? "agy" : optionKind
+        guard !normalizedOptionKind.isEmpty,
+              AgentProcessCatalog.allKnownKinds.contains(normalizedOptionKind),
+              let commandKind = kind(ofCommand: command)
+        else { return true }
+        return normalizedOptionKind == commandKind
     }
 
     /// Whether a pane's foreground process looks like a coding agent.
@@ -174,30 +201,10 @@ enum AgentDetector {
     /// still live. It never decides *which* state to show. When it is wrong the
     /// feature degrades to no badge, never to a confident wrong one.
     static func isAgentCommand(_ command: String) -> Bool {
-        !command.isEmpty && (looksLikeVersion(command) || namedAgents.contains(command))
+        AgentProcessCatalog.isAgentCommand(command)
     }
-
-    /// Agents that identify themselves by name rather than by version. Data
-    /// rather than logic, so adding one is a line.
-    private static let namedAgents: Set<String> = ["claude", "codex", "grok", "aider", "gemini"]
 
     static func kind(ofCommand command: String) -> String? {
-        if namedAgents.contains(command) { return command }
-        // A version and nothing else is Claude Code's signature; there is no
-        // other candidate, so naming it is more useful than "unknown".
-        return looksLikeVersion(command) ? "claude" : nil
-    }
-
-    /// `N.N` or `N.N.N`, digits and dots only.
-    ///
-    /// Tight on purpose. A loose test — "contains a digit and a dot" — would
-    /// match a pane running `python3.12` or a file called `2.txt`, and every
-    /// false positive here puts a dot on a row where nothing is running.
-    private static func looksLikeVersion(_ command: String) -> Bool {
-        let parts = command.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 2 || parts.count == 3 else { return false }
-        return parts.allSatisfy { part in
-            !part.isEmpty && part.allSatisfy(\.isNumber)
-        }
+        AgentProcessCatalog.kind(ofCommand: command)
     }
 }

@@ -67,7 +67,7 @@ final class RemoteAgentSetup {
         return (
             settings: home + "/.claude/settings.json",
             hooks: hooks,
-            hookScript: hooks + "/tmuxgui-agent-state.sh",
+            hookScript: AgentHubConstants.installedExecutablePath(home: home),
             wrapper: hooks + "/tmuxgui-statusline.sh",
             minimal: hooks + "/tmuxgui-statusline-minimal.sh",
             conf: hooks + "/tmuxgui-statusline.conf"
@@ -143,7 +143,9 @@ final class RemoteAgentSetup {
         // *and* the script carries the current stamp.
         let merged = AgentHookInstaller.merge(intoSettings: settings, scriptPath: paths.hookScript)
         let entriesCurrent = AgentHookInstaller.same(merged, settings)
-        let entriesPresent = settingsMentions(settings, path: paths.hookScript)
+        let entriesPresent = ClaudeHookProvider().hasAnyInstalledEntry(
+            in: settings, hubPath: paths.hookScript
+        )
         switch (entriesPresent, entriesCurrent, stamp(of: hookScript)) {
         case (false, _, _):
             hookState = .notInstalled
