@@ -329,7 +329,8 @@ final class TmuxServer {
             let connection = TmuxSessionConnection(
                 transport: transport,
                 sessionID: session.id, sessionName: session.name,
-                decodesOctalReplies: tmuxVersion?.escapesControlModeReplies ?? false
+                decodesOctalReplies: tmuxVersion?.escapesControlModeReplies ?? false,
+                suppressesPaneOutput: tmuxVersion?.supportsSubscriptions ?? true
             )
             connection.addModelObserver { [weak self] in self?.onChange?() }
             connection.onServerSessionsChanged = { [weak self] in

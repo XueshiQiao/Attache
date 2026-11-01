@@ -176,8 +176,11 @@ extension TmuxSocket.ParseResult {
 
 let local = TmuxTransport.local(tmuxPath: "/opt/homebrew/bin/tmux", socket: labelSocket)
 check("local pathsAreLocal", local.pathsAreLocal)
-check("local control attach argv",
+check("local control attach argv carries -f no-output by default",
       local.controlAttachArgv(sessionID: "$7")
+          == ["/opt/homebrew/bin/tmux", "-L", "work", "-C", "attach", "-f", "no-output", "-t", "$7"])
+check("local control attach argv omits -f no-output for pre-3.2 servers",
+      local.controlAttachArgv(sessionID: "$7", noOutput: false)
           == ["/opt/homebrew/bin/tmux", "-L", "work", "-C", "attach", "-t", "$7"])
 check("local one-shot argv",
       local.oneShotArgv(["list-sessions", "-F", "#{session_id} #{session_name}"])
@@ -198,8 +201,17 @@ let target = SSHTarget(
 )
 let ssh = TmuxTransport(kind: .ssh(target), tmuxPath: "tmux", socket: plainSocket)
 check("ssh pathsAreLocal is false", !ssh.pathsAreLocal)
-check("ssh control attach argv shape",
+check("ssh control attach argv shape carries -f no-output",
       ssh.controlAttachArgv(sessionID: "$7")
+          == [fakeSSHPath, "-T",
+              "-o", "BatchMode=yes",
+              "-o", "ControlMaster=no",
+              "-o", "ControlPath=/tmp/cp %C",
+              "-o", "ConnectTimeout=5",
+              "--", "devbox",
+              "'tmux'", "'-C'", "'attach'", "'-f'", "'no-output'", "'-t'", "'$7'"])
+check("ssh control attach argv shape without no-output",
+      ssh.controlAttachArgv(sessionID: "$7", noOutput: false)
           == [fakeSSHPath, "-T",
               "-o", "BatchMode=yes",
               "-o", "ControlMaster=no",
@@ -227,7 +239,8 @@ let sshSpaced = TmuxTransport(kind: .ssh(target), tmuxPath: spacedDumpPath, sock
 do {
     let out = run(sshSpaced.controlAttachArgv(sessionID: "$7"))
     check("ssh control attach delivers exact words remotely",
-          out.words == ["SSH-DEST=devbox", "-S", "/tmp/my sock/s", "-C", "attach", "-t", "$7"],
+          out.words == ["SSH-DEST=devbox", "-S", "/tmp/my sock/s",
+                        "-C", "attach", "-f", "no-output", "-t", "$7"],
           "got \(out.words.map(\.debugDescription))")
 }
 do {
@@ -537,6 +550,86 @@ check("fallback: after tmux's own error (no server)", TmuxVersion.binaryMightAns
 check("no fallback: no tmux at that path", !TmuxVersion.binaryMightAnswer(afterServerQueryExited: 127))
 check("no fallback: ssh itself failed", !TmuxVersion.binaryMightAnswer(afterServerQueryExited: 255))
 check("no fallback: killed at the deadline", !TmuxVersion.binaryMightAnswer(afterServerQueryExited: 15))
+
+// MARK: - Isolated `tmux -L` controlAttachArgv flood regression
+//
+// Proves against a real tmux server (on a private `-L` socket) that
+// `controlAttachArgv` attaches with `no-output` already armed: zero `%output`
+// lines ever enter `cs->all_blocks` while a pane blasts >8 KB bursts, and
+// `list-windows` answers cleanly instead of wedging behind `control_reset_offsets`.
+func realTmuxVersion(_ path: String) -> TmuxVersion? {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: path)
+    p.arguments = ["-V"]
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = FileHandle.nullDevice
+    guard (try? p.run()) != nil else { return nil }
+    let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    p.waitUntilExit()
+    return TmuxVersion.parse(text)
+}
+
+if let realTmux = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
+    .first(where: { FileManager.default.isExecutableFile(atPath: $0) }),
+   let ver = realTmuxVersion(realTmux),
+   ver.supportsSubscriptions
+{
+    let isolatedLabel = "attache-transportcheck-\(ProcessInfo.processInfo.processIdentifier)"
+    let isolatedSocket = TmuxSocket.label(isolatedLabel)
+    let isolatedTransport = TmuxTransport.local(tmuxPath: realTmux, socket: isolatedSocket)
+    func runIsolated(_ words: [String]) -> Int32 {
+        let argv = isolatedTransport.oneShotArgv(words)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: argv[0])
+        p.arguments = Array(argv.dropFirst())
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()
+        p.waitUntilExit()
+        return p.terminationStatus
+    }
+    defer { _ = runIsolated(["kill-server"]) }
+
+    let floodCmd = "/bin/sh -c 'line=$(printf \"%4096s\" x); i=0; while [ $i -lt 400 ]; do printf \"%s\\n\" \"$line\"; i=$((i+1)); done; sleep 5'"
+    let boot = Process()
+    let bootArgv = isolatedTransport.oneShotArgv([
+        "-f", "/dev/null", "new-session", "-d", "-P", "-F", "#{session_id}", floodCmd,
+    ])
+    boot.executableURL = URL(fileURLWithPath: bootArgv[0])
+    boot.arguments = Array(bootArgv.dropFirst())
+    let bootPipe = Pipe()
+    boot.standardOutput = bootPipe
+    boot.standardError = FileHandle.nullDevice
+    try! boot.run()
+    let sessionID = String(decoding: bootPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    boot.waitUntilExit()
+
+    let attachArgv = isolatedTransport.controlAttachArgv(sessionID: sessionID)
+    let client = Process()
+    client.executableURL = URL(fileURLWithPath: attachArgv[0])
+    client.arguments = Array(attachArgv.dropFirst())
+    let cIn = Pipe()
+    let cOut = Pipe()
+    client.standardInput = cIn
+    client.standardOutput = cOut
+    client.standardError = FileHandle.nullDevice
+    try! client.run()
+
+    let cmd = "list-windows -t \(sessionID) -F 'WIN_OK:#{window_id}'\ndetach-client\n"
+    try! cIn.fileHandleForWriting.write(contentsOf: Data(cmd.utf8))
+    let rawStream = String(decoding: cOut.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    client.waitUntilExit()
+
+    let lines = rawStream.split(separator: "\n").map(String.init)
+    let outputLines = lines.filter { $0.hasPrefix("%output ") || $0.hasPrefix("%extended-output ") }
+    let answeredListWindows = lines.contains { $0.hasPrefix("WIN_OK:@") }
+    check("isolated tmux -L: controlAttachArgv suppresses %output from byte 0 under 1.6 MB flood",
+          outputLines.isEmpty, "saw \(outputLines.count) %output line(s)")
+    check("isolated tmux -L: list-windows answers cleanly under flood without deadlocking",
+          answeredListWindows, "lines: \(lines.prefix(12))")
+}
 
 // MARK: - Verdict
 

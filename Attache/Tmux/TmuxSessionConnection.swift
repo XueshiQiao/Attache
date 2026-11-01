@@ -87,14 +87,16 @@ final class TmuxSessionConnection {
 
 
     init(transport: TmuxTransport, sessionID: String, sessionName: String,
-         decodesOctalReplies: Bool = false)
+         decodesOctalReplies: Bool = false,
+         suppressesPaneOutput: Bool = true)
     {
         self.transport = transport
         self.sessionID = sessionID
         self.sessionName = sessionName
         client = TmuxControlClient(
             transport: transport, sessionID: sessionID, sessionName: sessionName,
-            decodesOctalReplies: decodesOctalReplies
+            decodesOctalReplies: decodesOctalReplies,
+            suppressesPaneOutput: suppressesPaneOutput
         )
 
         // Deliberately empty, and it is the shortest way to say what changed.
@@ -103,10 +105,9 @@ final class TmuxSessionConnection {
         // read any of it: the pane renderer was removed on 2026-07-31 and tmux
         // draws the panes itself now, so `TmuxOutputRouter.register` has had no
         // call site since, and the bytes went into a per-pane backlog nothing
-        // drains. `subscribeToActivity` now sends `refresh-client -f no-output`,
-        // so tmux stops sending them at all and this closure barely fires —
-        // only in the window between attach and that command landing, which is
-        // why it must not accumulate anything.
+        // drains. `controlAttachArgv` now attaches with `-f no-output` (tmux ≥
+        // 3.2), so tmux never emits `%output` at all; on older servers where
+        // `-f` does not exist, dropping any bytes here stops them accumulating.
         //
         // Left in place rather than deleted because it is the one seam a pane
         // renderer would reattach at, and because `TmuxRenameString` and
@@ -154,10 +155,9 @@ final class TmuxSessionConnection {
         // always replaced by a *new* connection whose guard is already false.
         //
         // The moment somebody adds an in-place reconnect, leaving this set
-        // silently skips every command in `subscribeToActivity`: not only the
-        // `no-output` flag, but all three `-B` subscriptions. Activity dots,
-        // pane paths and agent state would go dark at once, with no error
-        // anywhere, on a connection that otherwise looks healthy.
+        // silently skips all three `-B` subscriptions in `subscribeToActivity`:
+        // activity dots, pane paths and agent state would go dark at once, with
+        // no error anywhere, on a connection that otherwise looks healthy.
         subscribedToActivity = false
 
         client.stop()
@@ -587,31 +587,32 @@ final class TmuxSessionConnection {
         guard !subscribedToActivity else { return }
         subscribedToActivity = true
 
-        // First, and it is the cheapest line in the file. tmux sends a control
-        // client every byte every pane in the session produces, and this app has
-        // not drawn a pane from that stream since the renderer was removed —
-        // tmux draws them, on a pty of its own. So every one of those bytes was
-        // being unescaped, scanned for `ESC k`, counted under a lock, and then
-        // appended to a per-pane backlog that nothing drains, up to 256 KB each.
-        // `no-output` stops tmux sending them at all, which is the only fix that
-        // costs nothing rather than throwing the bytes away more cheaply.
+        // Note: `no-output` is set on the `attach` itself (`tmux -C attach -f
+        // no-output -t $N` in `TmuxTransport.controlAttachArgv`), **never**
+        // sent here as `refresh-client -f no-output`.
         //
-        // Measured on tmux 3.6a against an isolated `-L` server, because the
-        // flag's blast radius is the whole question and the name does not settle
-        // it. It is **per client**: a second control client attached to the same
-        // session still received all 35 `%output` lines and the marker while
-        // this one received none — so the `tmux attach` that actually draws the
-        // panes is untouched. And it suppresses only pane output: commands still
-        // run, `%begin` reply blocks still come back with real data, and
-        // `%subscription-changed` still arrives, which is what the rail's
-        // activity, path and agent state are all read from.
+        // Measured and disassembled on tmux 3.6a (2026-11-01) after a busy
+        // 17-window session (`Dev`, `$2`) attached silent with an empty window
+        // list: during the handshake gap before `@MainActor` ran this method,
+        // active panes emitted >8 KB (`evbuffer >= 8192`), leaving pane-output
+        // `control_block`s (`cb->size > 0`) on `cs->all_blocks` with
+        // `cs->pending_count > 0`. When `refresh-client -f no-output` then ran
+        // `server_client_set_flags -> control_reset_offsets`, tmux freed every
+        // `control_pane` and zeroed `cs->pending_count` without calling
+        // `control_discard_pane` to unlink those blocks from `cs->all_blocks`.
+        // From that moment every `control_write` (`list-windows`, subscriptions)
+        // queued behind the orphaned head block (`cb->size > 0`),
+        // `control_flush_all_blocks` returned immediately on `cb->size != 0`,
+        // and `control_write_callback` saw `pending_count == 0` and disabled
+        // `EV_WRITE` — permanently deadlocking the client's stdout (reproduced
+        // 4/5 runs on an isolated `-L` server; 0/5 with `attach -f no-output`
+        // and zero `%output` lines).
         //
-        // What it cost was `TmuxMetrics`, whose only input was `onPaneOutput`.
-        // With nothing feeding it and nothing reading it, the type and the
-        // sidebar footer's byte rate were both removed rather than left to read
-        // "idle" for ever — a meter that cannot tell a live idle connection from
-        // a dead one is worse than no meter.
-        client.send("refresh-client -f no-output")
+        // `no-output` itself is **per client** (measured on 3.6a: a second
+        // client on the same session still receives every byte, so the plain
+        // `tmux attach` drawing the panes is untouched) and suppresses only
+        // `%output` while `%begin`/`%end` replies and `%subscription-changed`
+        // keep arriving.
 
         client.send(
             "refresh-client -B '\(Self.activitySubscription):@*:#{window_activity_flag}'"
@@ -816,29 +817,43 @@ final class TmuxSessionConnection {
 
     /// Diagnostics found the channel answering nothing for five seconds.
     ///
-    /// Locally that stays a report: the measured causes are tmux-side stalls
-    /// (a slow hook) that recover on their own, and killing the client for
-    /// one would turn a hiccup into a teardown. Over ssh the usual cause is
-    /// a mux channel whose network died under it — a state that never heals —
-    /// so the client is restarted: stop() ends the child, the exit schedules
-    /// a session refresh, and `TmuxServer` recreates the connection because
-    /// the client is no longer running. Once per half minute, so a link that
-    /// is merely slow does not get torn down in a loop.
-    private var lastDeafRestart: Date?
+    /// Locally on an established session (`!windows.isEmpty`) that stays a
+    /// report: the measured causes are tmux-side stalls (a slow hook) that
+    /// recover on their own, and killing the client for one would turn a
+    /// hiccup into a teardown. Over ssh — where a mux channel whose network
+    /// died under it never heals — or on a startup attach that never even
+    /// received its first `list-windows` (`windows.isEmpty`, so remaking the
+    /// client disrupts no loaded state), the client is restarted: `stop()`
+    /// ends the child, the exit schedules a session refresh, and `TmuxServer`
+    /// recreates the connection. Static cooldown (once per half minute per
+    /// host+session) so the throttle holds across the recreated instance.
+    private static var lastDeafRestartBySession = [String: Date]()
 
     func channelWentDeaf() {
-        guard transport.ssh != nil else { return }
-        if let last = lastDeafRestart, Date().timeIntervalSince(last) < 30 { return }
-        lastDeafRestart = Date()
+        let isRemote = transport.ssh != nil
+        guard isRemote || windows.isEmpty else { return }
+        let cooldownKey = "\(transport.hostLabel)\0\(sessionID)"
+        if let last = Self.lastDeafRestartBySession[cooldownKey],
+           Date().timeIntervalSince(last) < 30
+        {
+            return
+        }
+        Self.lastDeafRestartBySession[cooldownKey] = Date()
+        let reason = isRemote
+            ? "deaf channel on an ssh transport"
+            : "deaf channel before initial window list loaded"
         TmuxLog.lifecycle(
-            "deaf channel on an ssh transport — restarting the control client",
+            "\(reason) — restarting the control client",
             session: sessionName
         )
         DiagnosticsCenter.shared.notice(AppNotice(
             severity: .warning,
             title: "Reconnecting to \(sessionName)",
-            body: "The control channel stopped answering; the connection is being"
-                + " remade over ssh.",
+            body: isRemote
+                ? "The control channel stopped answering; the connection is being"
+                    + " remade over ssh."
+                : "The control channel stopped answering before loading windows;"
+                    + " the connection is being remade.",
             session: sessionName
         ))
         stop()

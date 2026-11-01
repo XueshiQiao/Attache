@@ -106,12 +106,25 @@ nonisolated struct TmuxTransport: Equatable {
 
     // MARK: - Argv builders (for Process)
 
-    /// The control-mode attach: `tmux -C attach -t <id>`, over plain pipes.
+    /// The control-mode attach: `tmux -C attach -f no-output -t <id>` (or
+    /// without `-f no-output` on servers older than 3.2), over plain pipes.
     /// `-T` on the ssh form because the control stream is a protocol, and an
     /// alias with `RequestTTY yes` in the user's config would otherwise get
     /// echo and CR mangling stirred into it.
-    func controlAttachArgv(sessionID: String) -> [String] {
-        tmuxArgv(["-C", "attach", "-t", sessionID], pty: false)
+    ///
+    /// `-f no-output` must ride on `attach` itself rather than arriving later
+    /// as `refresh-client -f no-output`: in tmux 3.6a, `control_reset_offsets`
+    /// frees every `control_pane` and zeroes `cs->pending_count` without
+    /// unlinking queued pane-output blocks from `cs->all_blocks`, permanently
+    /// wedging all subsequent reply blocks behind an orphaned head whenever a
+    /// busy session emits >8 KB during the attach handshake. `attach-session`
+    /// gained `-f` in tmux 3.2 (the same release as `refresh-client -B`), so
+    /// callers pass `noOutput: false` only for servers older than 3.2.
+    func controlAttachArgv(sessionID: String, noOutput: Bool = true) -> [String] {
+        let words = noOutput
+            ? ["-C", "attach", "-f", "no-output", "-t", sessionID]
+            : ["-C", "attach", "-t", sessionID]
+        return tmuxArgv(words, pty: false)
     }
 
     /// A one-shot tmux command: `list-sessions`, `new-session -d`,

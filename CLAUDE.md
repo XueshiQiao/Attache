@@ -935,6 +935,22 @@ one of them presents as "the code is obviously correct and yet".
 - **`capture-pane` returns one line per row including blanks.** Painting all of
   them parks the cursor on the bottom row, so a prompt redrawn after SIGWINCH
   lands at the bottom of an empty screen. Trim trailing blanks.
+- **Sending `refresh-client -f no-output` *after* `tmux -C attach` permanently
+  deadlocks the control client's stdout whenever >8 KB of pane output arrived
+  during the handshake.** Disassembled and reproduced on tmux 3.6a (2026-11-01)
+  after a busy 17-window session (`Dev`, `$2`) came up with an empty window
+  list: `control_write_output` queues pane-output `control_block`s (`cb->size >
+  0`) onto `cs->all_blocks` once `evbuffer_get_length >= 8192`. When
+  `refresh-client -f no-output` then calls `control_reset_offsets`, tmux frees
+  every `control_pane` and zeroes `cs->pending_count` **without calling
+  `control_discard_pane` to unlink those blocks from `cs->all_blocks`**. Every
+  later reply (`list-windows`, subscriptions) queues behind the orphaned head,
+  `control_flush_all_blocks` returns early on `cb->size != 0`, and
+  `control_write_callback` sees `pending_count == 0` and disables `EV_WRITE`.
+  Reproduced 4/5 runs on an isolated `-L` server under 4 KB/ms output; 0/5 with
+  **`tmux -C attach -f no-output -t $N`**, which arms `CLIENT_CONTROL_NOOUTPUT`
+  before byte 0 (`attach-session -f` is tmux ≥ 3.2, gated on
+  `supportsSubscriptions`).
 
 ## Conventions
 

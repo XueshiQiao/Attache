@@ -107,15 +107,20 @@ final class TmuxControlClient {
     /// True for servers old enough to `\ooo`-escape reply lines (< 3.6);
     /// see `TmuxVersion.escapesControlModeReplies` for the measurement.
     private let decodesOctalReplies: Bool
+    /// True for servers that accept `attach -f no-output` (≥ 3.2); see
+    /// `TmuxTransport.controlAttachArgv` for why `no-output` is set at attach.
+    private let suppressesPaneOutput: Bool
 
     init(transport: TmuxTransport, sessionID: String, sessionName: String,
          decodesOctalReplies: Bool = false,
+         suppressesPaneOutput: Bool = true,
          callbackQueue: DispatchQueue = .main)
     {
         self.transport = transport
         self.sessionID = sessionID
         storedLabel = sessionName
         self.decodesOctalReplies = decodesOctalReplies
+        self.suppressesPaneOutput = suppressesPaneOutput
         self.callbackQueue = callbackQueue
     }
 
@@ -128,7 +133,10 @@ final class TmuxControlClient {
         // sessions and attaching to one of them, in which any terminal on the
         // machine is free to rename it — verified on tmux 3.6a that a session
         // id is accepted wherever a session target is.
-        let argv = transport.controlAttachArgv(sessionID: sessionID)
+        let argv = transport.controlAttachArgv(
+            sessionID: sessionID,
+            noOutput: suppressesPaneOutput
+        )
         process.executableURL = URL(fileURLWithPath: argv[0])
         process.arguments = Array(argv.dropFirst())
         process.standardInput = stdinPipe
