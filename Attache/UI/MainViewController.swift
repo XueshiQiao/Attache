@@ -1545,18 +1545,12 @@ final class MainViewController: NSSplitViewController {
             hosts: hostDescriptors(), entries: entries, selected: currentSessionID
         )
 
-        // Across every session, not the one on screen. Rate limits belong to
-        // the account, so the answer must not change when the rail is pointed
-        // at a different session — and the session being looked at is often
-        // the one with no agent in it. Merged with `AIQuotaService` so the
-        // deck still paints when no Claude session is running at all.
-        let paneClaudeUsage = hosts.flatMap { host in
-            host.server.sessionIDs.compactMap { host.server.connection(id: $0)?.accountUsage }
-        }
-        .reduce(nil) { AccountUsage.fresher($0, $1) }
-        sidebar.showUsage(
-            AccountUsage.merged(aiQuotaService.claudeUsage, paneClaudeUsage)
-        )
+        // Claude's limits belong to the account, so they come only from the
+        // shared AIUsageKit cache (the same file DockSidecar reads). Panes'
+        // status-line snapshots are not mixed in: an idle pane keeps the
+        // snapshot of whichever account it last ran under, and a merge that
+        // prefers the later reset lets that old account outvote the real one.
+        sidebar.showUsage(aiQuotaService.claudeUsage)
 
         let paneGeminiUsage = hosts.flatMap { host in
             host.server.sessionIDs.compactMap { host.server.connection(id: $0)?.geminiAccountUsage }

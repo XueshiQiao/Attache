@@ -125,17 +125,22 @@ final class AIQuotaService {
         }
     }
 
-    /// Maps a `ProviderUsage` from `AIUsageKit` into Attaché's `AccountUsage` and merges it.
+    /// Maps a `ProviderUsage` from `AIUsageKit` into Attaché's `AccountUsage`. Claude's replaces the stored value; the others merge into it.
     /// - Returns: `true` if the stored `AccountUsage` for that provider changed.
     @discardableResult
     private func apply(_ providerUsage: ProviderUsage, for provider: AIProvider) -> Bool {
-        guard let converted = Self.toAccountUsage(providerUsage) else { return false }
+        let converted0 = Self.toAccountUsage(providerUsage)
+        if provider == .claude {
+            // The shared cache is the whole truth for Claude, so a snapshot
+            // with no live window clears the gauge instead of leaving the last one.
+            guard converted0 != claudeUsage else { return false }
+            claudeUsage = converted0
+            return true
+        }
+        guard let converted = converted0 else { return false }
         switch provider {
         case .claude:
-            let merged = AccountUsage.merged(claudeUsage, converted) ?? converted
-            guard merged != claudeUsage else { return false }
-            claudeUsage = merged
-            return true
+            return false // handled above
         case .antigravity:
             let merged = AccountUsage.merged(geminiUsage, converted) ?? converted
             guard merged != geminiUsage else { return false }
