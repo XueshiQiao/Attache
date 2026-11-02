@@ -10,8 +10,8 @@ When building and sending the Android APK from `/Users/joey/Code/AttacheAndroid`
    - This updates Android `versionCode = 12_000_000 + BUILD_NUMBER` and `versionName = "<VERSION_NAME> (Build <BUILD_NUMBER>)"`, ensuring the Android system installer always recognizes it as an upgrade.
 3. **Fixed APK Filename Format**:
    - Always name the APK file:
-     `Attache-v<VERSION_NAME>-b<BUILD_NUMBER>.apk`
-     (e.g., `Attache-v1.0.0-b1.apk`, `Attache-v1.0.0-b2.apk`, `Attache-v1.0.0-b3.apk`).
+     `Attache-v<VERSION_NAME>-b<BUILD_NUMBER>-arm64-v8a.apk`
+     (e.g., `Attache-v1.0.0-b1-arm64-v8a.apk`, `Attache-v1.0.0-b10-arm64-v8a.apk`).
    - Never use unversioned or arbitrary filenames.
 4. **Push to Device Inbox**:
-   - Send via `~/.local/bin/attache-send "/tmp/Attache-v<VERSION_NAME>-b<BUILD_NUMBER>.apk"`.
+   - Send via `~/.local/bin/attache-send "/tmp/Attache-v<VERSION_NAME>-b<BUILD_NUMBER>-arm64-v8a.apk"`.
