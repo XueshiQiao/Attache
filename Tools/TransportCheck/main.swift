@@ -178,13 +178,13 @@ let local = TmuxTransport.local(tmuxPath: "/opt/homebrew/bin/tmux", socket: labe
 check("local pathsAreLocal", local.pathsAreLocal)
 check("local control attach argv carries -f no-output by default",
       local.controlAttachArgv(sessionID: "$7")
-          == ["/opt/homebrew/bin/tmux", "-L", "work", "-C", "attach", "-f", "no-output", "-t", "$7"])
+          == ["/opt/homebrew/bin/tmux", "-L", "work", "-u", "-C", "attach", "-f", "no-output", "-t", "$7"])
 check("local control attach argv omits -f no-output for pre-3.2 servers",
       local.controlAttachArgv(sessionID: "$7", noOutput: false)
-          == ["/opt/homebrew/bin/tmux", "-L", "work", "-C", "attach", "-t", "$7"])
+          == ["/opt/homebrew/bin/tmux", "-L", "work", "-u", "-C", "attach", "-t", "$7"])
 check("local one-shot argv",
       local.oneShotArgv(["list-sessions", "-F", "#{session_id} #{session_name}"])
-          == ["/opt/homebrew/bin/tmux", "-L", "work",
+          == ["/opt/homebrew/bin/tmux", "-L", "work", "-u",
               "list-sessions", "-F", "#{session_id} #{session_name}"])
 check("local exec argv is the words themselves",
       local.execArgv(["/usr/bin/git", "-C", "/tmp/a b", "status"])
@@ -209,7 +209,7 @@ check("ssh control attach argv shape carries -f no-output",
               "-o", "ControlPath=/tmp/cp %C",
               "-o", "ConnectTimeout=5",
               "--", "devbox",
-              "'tmux'", "'-C'", "'attach'", "'-f'", "'no-output'", "'-t'", "'$7'"])
+              "'tmux'", "'-u'", "'-C'", "'attach'", "'-f'", "'no-output'", "'-t'", "'$7'"])
 check("ssh control attach argv shape without no-output",
       ssh.controlAttachArgv(sessionID: "$7", noOutput: false)
           == [fakeSSHPath, "-T",
@@ -218,7 +218,7 @@ check("ssh control attach argv shape without no-output",
               "-o", "ControlPath=/tmp/cp %C",
               "-o", "ConnectTimeout=5",
               "--", "devbox",
-              "'tmux'", "'-C'", "'attach'", "'-t'", "'$7'"])
+              "'tmux'", "'-u'", "'-C'", "'attach'", "'-t'", "'$7'"])
 check("master argv carries keepalives and no command",
       target.masterArgv
           == [fakeSSHPath, "-N", "-T",
@@ -239,14 +239,14 @@ let sshSpaced = TmuxTransport(kind: .ssh(target), tmuxPath: spacedDumpPath, sock
 do {
     let out = run(sshSpaced.controlAttachArgv(sessionID: "$7"))
     check("ssh control attach delivers exact words remotely",
-          out.words == ["SSH-DEST=devbox", "-S", "/tmp/my sock/s",
+          out.words == ["SSH-DEST=devbox", "-S", "/tmp/my sock/s", "-u",
                         "-C", "attach", "-f", "no-output", "-t", "$7"],
           "got \(out.words.map(\.debugDescription))")
 }
 do {
     let out = run(sshSpaced.oneShotArgv(["load-buffer", "-b", "attache-paste-3", "-"]))
     check("ssh one-shot delivers exact words remotely",
-          out.words == ["SSH-DEST=devbox", "-S", "/tmp/my sock/s",
+          out.words == ["SSH-DEST=devbox", "-S", "/tmp/my sock/s", "-u",
                         "load-buffer", "-b", "attache-paste-3", "-"],
           "got \(out.words.map(\.debugDescription))")
 }
@@ -270,14 +270,14 @@ do {
     // answered "missing or unsuitable terminal" and exited.
     check("ssh attach delivers TERM=xterm-256color to the far side, via exec -l",
           out.words == ["SSH-DEST=devbox", "TERM=xterm-256color",
-                        "-S", "/tmp/my sock/s", "attach", "-t", "$41"],
+                        "-S", "/tmp/my sock/s", "-u", "attach", "-t", "$41"],
           "got \(out.words.map(\.debugDescription))")
 }
 do {
     let localSpaced = TmuxTransport.local(tmuxPath: spacedDumpPath, socket: labelSocket)
     let out = runGhosttyCommand(localSpaced.attachShellCommand(sessionID: "$41"))
     check("local attach shell command survives ghostty's wrapper",
-          out.words == ["-L", "work", "attach", "-t", "$41"],
+          out.words == ["-L", "work", "-u", "attach", "-t", "$41"],
           "got \(out.words.map(\.debugDescription))")
 }
 do {

@@ -258,11 +258,12 @@ final class TmuxControlClient {
     ///
     /// Lossy, and only safe because of what the callers ask for. `String
     /// (decoding:as:)` substitutes U+FFFD for anything that is not valid
-    /// UTF-8, which is fine for tmux's own format output: verified on 3.6a
-    /// that `list-windows -F` renders a byte above 0x7f in a window name as
-    /// the four ASCII characters `\351`, so that reply is ASCII whatever the
-    /// user called the window. Anything carrying a pane's own bytes wants
-    /// `runBytes` instead.
+    /// UTF-8, which is fine for tmux's own format output: every control client
+    /// is started with `-u` (see `tmuxArgv`), and measured on 3.6a that way a
+    /// valid UTF-8 window name arrives verbatim while a stray byte such as a
+    /// Latin-1 `\351` arrives raw — so it costs that one name a U+FFFD and
+    /// leaves the field separators and every other line intact. Anything
+    /// carrying a pane's own bytes wants `runBytes` instead.
     func run(
         _ command: String,
         caller: StaticString = #function,

@@ -228,7 +228,17 @@ nonisolated struct TmuxTransport: Equatable {
     // MARK: - Composition
 
     private func tmuxArgv(_ words: [String], pty: Bool) -> [String] {
-        let tmux = [tmuxPath] + socket.arguments + words
+        // `-u` on every tmux this app starts. Without it tmux decides whether a
+        // client speaks UTF-8 from LC_ALL / LC_CTYPE / LANG, and an app started
+        // by launchd (Finder, a login item) has none of them. A client that is
+        // not UTF-8 gets every control byte and every non-ASCII character
+        // replaced by `_` — measured on tmux 3.6a, so the `\u{01}` separators in
+        // a `list-windows` reply arrive as underscores and the whole reply
+        // parses as no windows. It is a property of the client alone: the
+        // server's own locale and other attached clients are unaffected.
+        // The pty attach gets it too rather than trusting ghostty or a remote
+        // login shell to have set a locale — it is a UTF-8 terminal by definition.
+        let tmux = [tmuxPath] + socket.arguments + ["-u"] + words
         switch kind {
         case .local:
             return tmux

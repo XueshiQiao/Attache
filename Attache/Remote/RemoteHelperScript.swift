@@ -138,7 +138,7 @@ enum RemoteHelperScript {
         say "BEGIN $tag"
         i=0
         while [ "$i" -lt "$a1" ] && IFS= read -r p; do
-          g=$(git -C "$p" rev-parse --git-dir 2>&1)
+          g=$(LC_ALL=C git -C "$p" rev-parse --git-dir 2>&1)
           gs=$?
           if [ "$gs" -ne 0 ] || [ -z "$g" ]; then
             # A confirmed non-repository and a git that could not run are
@@ -170,7 +170,7 @@ enum RemoteHelperScript {
         say "BEGIN $tag"
         roots=""; m=0; i=0
         while [ "$i" -lt "$a1" ] && IFS= read -r p; do
-          r=$(git -C "$p" rev-parse --show-toplevel 2>&1)
+          r=$(LC_ALL=C git -C "$p" rev-parse --show-toplevel 2>&1)
           rs=$?
           if [ "$rs" -ne 0 ] || [ -z "$r" ]; then
             # -1 is the *confirmed* non-repository; -2 is git failing to
