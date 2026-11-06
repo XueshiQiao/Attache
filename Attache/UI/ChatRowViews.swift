@@ -829,7 +829,7 @@ final class ChatQuestionDock: NSView {
         }
 
         // "Claude is asking", and where in the questions this is.
-        let asking = ChatRowViews.label("● Claude is asking", font: .systemFont(ofSize: 11, weight: .semibold),
+        let asking = ChatRowViews.label("● Claude is asking", font: .systemFont(ofSize: 13, weight: .semibold),
                                         colour: theme.accent, selectable: false)
         // Single words in a row: they keep their width, unlike paragraphs.
         asking.cell?.wraps = false
@@ -846,7 +846,7 @@ final class ChatQuestionDock: NSView {
         }
         let headRow = NSStackView(views: head)
         headRow.orientation = .horizontal
-        headRow.spacing = 6
+        headRow.spacing = 8
         headRow.setCustomSpacing(12, after: asking)
         add(headRow, false)
 
@@ -908,13 +908,14 @@ final class ChatQuestionDock: NSView {
     private static func step(_ text: String, current: Bool, done: Bool) -> NSView {
         let theme = ChromeTheme.current
         let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 11, weight: current ? .semibold : .regular)
+        // 13pt: at 11 the steps were too small to read (the owner's call).
+        label.font = .systemFont(ofSize: 13, weight: current ? .semibold : .regular)
         label.textColor = current ? theme.text : (done ? theme.mutedText : theme.faintText)
         let pill = NSView()
         pill.wantsLayer = true
-        pill.layer?.cornerRadius = 9
+        pill.layer?.cornerRadius = 11
         pill.layer?.backgroundColor = (current ? theme.accent.withAlphaComponent(0.25) : theme.hover).cgColor
-        ChatRowViews.pin(label, in: pill, insets: NSEdgeInsets(top: 2, left: 9, bottom: 2, right: 9))
+        ChatRowViews.pin(label, in: pill, insets: NSEdgeInsets(top: 3, left: 11, bottom: 3, right: 11))
         label.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         return pill
     }
