@@ -482,14 +482,15 @@ impl Agy {
         }
         ctx.agy_locks.as_ref().unwrap()
     }
+}
 
-    fn model() -> Option<String> {
-        let v: Value = serde_json::from_slice(
-            &fs::read(paths::home().join(".gemini/antigravity-cli/settings.json")).ok()?,
-        )
-        .ok()?;
-        v.get("model")?.as_str().map(str::to_owned)
-    }
+/// The model agy is set to, from its own settings.
+pub fn agy_model() -> Option<String> {
+    let v: Value = serde_json::from_slice(
+        &fs::read(paths::home().join(".gemini/antigravity-cli/settings.json")).ok()?,
+    )
+    .ok()?;
+    v.get("model")?.as_str().map(str::to_owned)
 }
 
 impl Provider for Agy {
@@ -512,7 +513,7 @@ impl Provider for Agy {
     fn describe(&self, pane: &Pane, pid: Option<u32>, ctx: &mut Context) -> Agent {
         let mut agent = Agent::new(pane, pid, self.kind());
         agent.state = agy_state(&ctx.screen(&pane.id));
-        agent.model = Agy::model();
+        agent.model = agy_model();
         if let Some(pid) = pid {
             let under = descendants(pid, &ctx.children);
             let locks = Agy::locks(ctx);

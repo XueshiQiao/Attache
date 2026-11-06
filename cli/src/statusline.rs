@@ -70,6 +70,49 @@ fn record_claude(input: &[u8]) {
         }
     }
     let _ = write_atomic(&path, &serde_json::to_vec(&snapshot).unwrap_or_default());
+    drop(_lock);
+    learn_window(&snapshot);
+}
+
+fn windows_path() -> std::path::PathBuf {
+    paths::state_dir()
+        .join("claude")
+        .join("context-windows.json")
+}
+
+/// A transcript says how many tokens are in the window, never how large the
+/// window is, and the size depends on the plan as well as the model. So the
+/// size is learned from the snapshots, per model, for sessions that have no
+/// snapshot of their own yet.
+fn learn_window(snapshot: &Value) {
+    let (Some(model), Some(size)) = (
+        snapshot.pointer("/model/id").and_then(Value::as_str),
+        snapshot
+            .pointer("/context_window/context_window_size")
+            .and_then(Value::as_u64),
+    ) else {
+        return;
+    };
+    if known_window(model) == Some(size) {
+        return;
+    }
+    let path = windows_path();
+    let Ok(Some(_lock)) = Lock::acquire(&path.with_extension("lock"), Duration::from_millis(200))
+    else {
+        return;
+    };
+    let mut all: serde_json::Map<String, Value> = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    all.insert(model.to_owned(), Value::from(size));
+    let _ = write_atomic(&path, &serde_json::to_vec(&all).unwrap_or_default());
+}
+
+/// The window size last seen for this model.
+pub fn known_window(model: &str) -> Option<u64> {
+    let all: Value = serde_json::from_slice(&std::fs::read(windows_path()).ok()?).ok()?;
+    all.get(model)?.as_u64()
 }
 
 fn duration(v: &Value) -> Option<u64> {
