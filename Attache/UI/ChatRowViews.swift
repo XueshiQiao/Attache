@@ -785,15 +785,33 @@ final class ChatQuestionDock: NSView {
     var onChoose: ((QuestionMenu.Option) -> Void)?
     var onSubmitChoices: (() -> Void)?
     var onShowTerminal: (() -> Void)?
+    private let card = SolidCard()
     private let stack = NSStackView()
     private var shown: QuestionMenu?
+
+    /// Wide enough for a sentence an answer; wider and the rows read as bars.
+    static let maxWidth: CGFloat = 760
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 6
-        ChatRowViews.pin(stack, in: self, insets: NSEdgeInsets(top: 0, left: 0, bottom: 2, right: 0))
+        stack.spacing = 8
+        ChatRowViews.pin(stack, in: card, insets: NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14))
+        card.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(card)
+        NSLayoutConstraint.activate([
+            card.topAnchor.constraint(equalTo: topAnchor),
+            card.leadingAnchor.constraint(equalTo: leadingAnchor),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+            card.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            card.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxWidth),
+            // Below the dock's own wish to fill the page (490): at the same
+            // priority the layout gave that one up instead, and the whole
+            // dock — the composer with it — shrank to the card's 760pt, even
+            // with the card hidden (screenshot, 2026-11-06).
+            card.widthAnchor.constraint(equalTo: widthAnchor).with(priority: .init(480)),
+        ])
     }
 
     @available(*, unavailable)
@@ -809,45 +827,96 @@ final class ChatQuestionDock: NSView {
             self.stack.addArrangedSubview(view)
             if fill { view.widthAnchor.constraint(equalTo: self.stack.widthAnchor).isActive = true }
         }
+
+        // "Claude is asking", and where in the questions this is.
+        let asking = ChatRowViews.label("● Claude is asking", font: .systemFont(ofSize: 11, weight: .semibold),
+                                        colour: theme.accent, selectable: false)
+        // Single words in a row: they keep their width, unlike paragraphs.
+        asking.cell?.wraps = false
+        asking.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        var head: [NSView] = [asking]
         if !q.tabs.isEmpty {
-            // ☒ answered, ☐ not yet; the review tab last.
-            let words = q.tabs.map { ($0.answered ? "☒ " : "☐ ") + $0.title } + ["✔ Submit"]
-            let row = NSStackView(views: words.map { word in
-                ChatHeaderView.chip(word, current: word.hasSuffix(" " + q.header) && !q.review
-                    || (q.review && word == "✔ Submit"))
-            })
-            row.orientation = .horizontal
-            row.spacing = 6
-            add(row, false)
+            let current = q.review ? q.tabs.count : (q.tabs.firstIndex { !$0.answered } ?? q.tabs.count)
+            for (k, tab) in q.tabs.enumerated() {
+                head.append(Self.step("\(k + 1) \(tab.title)\(tab.answered ? " ✓" : "")", current: k == current, done: tab.answered))
+            }
+            head.append(Self.step("Review", current: q.review, done: false))
         } else if !q.header.isEmpty {
-            add(ChatRowViews.label(q.header.uppercased(), font: .systemFont(ofSize: 10.5, weight: .semibold),
-                                   colour: theme.mutedText, selectable: false), false)
+            head.append(Self.step(q.header, current: true, done: false))
         }
-        add(ChatRowViews.label(q.question, font: .systemFont(ofSize: 13, weight: .semibold), colour: theme.text), true)
+        let headRow = NSStackView(views: head)
+        headRow.orientation = .horizontal
+        headRow.spacing = 6
+        headRow.setCustomSpacing(12, after: asking)
+        add(headRow, false)
+
+        add(ChatRowViews.label(q.question, font: .systemFont(ofSize: 14, weight: .semibold), colour: theme.text), true)
         if q.review {
             for (question, answer) in q.answers {
-                let line = ChatRowViews.label("\(question)\n→ \(answer)", font: .systemFont(ofSize: 12.5),
-                                              colour: theme.mutedText, selectable: true)
+                let qa = NSMutableAttributedString(string: question + "\n", attributes: [
+                    .font: NSFont.systemFont(ofSize: 12), .foregroundColor: theme.mutedText])
+                qa.append(NSAttributedString(string: "→ " + answer, attributes: [
+                    .font: NSFont.systemFont(ofSize: 12.5, weight: .medium), .foregroundColor: theme.text]))
+                let line = NSTextField(labelWithAttributedString: qa)
+                line.maximumNumberOfLines = 0
+                line.giveWayHorizontally()
                 add(line, true)
             }
         }
-        for option in q.options {
-            let label = q.multi && !option.typed ? (option.checked ? "☑ " : "☐ ") + option.label : option.label
-            let row = AnswerRow(number: option.number, label: label,
+        // The answers this card can give, as rows; the typed ones as one
+        // quiet line pointing to the terminal, not as answers that do
+        // nothing here.
+        for option in q.options where !option.typed {
+            let row = AnswerRow(number: option.number, label: option.label,
                                 detail: option.description.isEmpty ? nil : option.description,
-                                note: option.typed ? "in the terminal" : nil) { [weak self] in
-                if option.typed { self?.onShowTerminal?() } else { self?.onChoose?(option) }
+                                note: nil, checkbox: q.multi ? option.checked : nil) { [weak self] in
+                self?.onChoose?(option)
             }
             add(row, true)
         }
+        let typed = q.options.filter(\.typed).map(\.label)
+        var foot: [NSView] = []
+        if !typed.isEmpty {
+            let words = "Other answers: " + typed.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
+                .joined(separator: " · ") + " — in the terminal"
+            let link = ClosureButton(title: words) { [weak self] in self?.onShowTerminal?() }
+            link.isBordered = false
+            link.attributedTitle = NSAttributedString(string: words, attributes: [
+                .font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: theme.mutedText,
+                .underlineStyle: NSUnderlineStyle.single.rawValue])
+            foot.append(link)
+        }
         if q.multi, q.submitRow {
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+            foot.append(spacer)
             let done = ChatRowViews.button(q.tabs.isEmpty ? "Done" : "Next question") { [weak self] in
                 self?.onSubmitChoices?()
             }
-            done.keyEquivalent = ""
             done.bezelColor = theme.accent
-            add(done, false)
+            foot.append(done)
         }
+        if !foot.isEmpty {
+            let row = NSStackView(views: foot)
+            row.orientation = .horizontal
+            row.spacing = 8
+            add(row, true)
+        }
+    }
+
+    /// A step: "1 Card position ✓", the current one in the accent.
+    private static func step(_ text: String, current: Bool, done: Bool) -> NSView {
+        let theme = ChromeTheme.current
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 11, weight: current ? .semibold : .regular)
+        label.textColor = current ? theme.text : (done ? theme.mutedText : theme.faintText)
+        let pill = NSView()
+        pill.wantsLayer = true
+        pill.layer?.cornerRadius = 9
+        pill.layer?.backgroundColor = (current ? theme.accent.withAlphaComponent(0.25) : theme.hover).cgColor
+        ChatRowViews.pin(label, in: pill, insets: NSEdgeInsets(top: 2, left: 9, bottom: 2, right: 9))
+        label.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        return pill
     }
 }
 
@@ -863,7 +932,7 @@ private final class AnswerRow: NSView {
     }
 
     init(number: Int, label: String, detail: String?, note: String?, enabled: Bool = true,
-         action: @escaping () -> Void) {
+         checkbox: Bool? = nil, action: @escaping () -> Void) {
         self.action = enabled ? action : {}
         super.init(frame: .zero)
         let theme = ChromeTheme.current
@@ -895,7 +964,9 @@ private final class AnswerRow: NSView {
         } else {
             text = title
         }
-        var views: [NSView] = [badge, text]
+        var views: [NSView] = [badge]
+        if let checkbox { views.append(CheckBox(on: checkbox)) }
+        views.append(text)
         if let note {
             let warn = NSTextField(labelWithString: note)
             warn.font = .systemFont(ofSize: 11)
@@ -917,18 +988,79 @@ private final class AnswerRow: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 
+    // Lit under the pointer, so a row reads as a button before it is one.
+    private var tracking: NSTrackingArea?
+    private var hovered = false { didSet { paint() } }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovered = true }
+    override func mouseExited(with event: NSEvent) { hovered = false }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+    private func paint() {
+        let theme = ChromeTheme.current
+        layer?.borderColor = (hovered ? theme.accent : theme.separator).cgColor
+        layer?.backgroundColor = (pressed ? theme.separator : hovered ? theme.accent.withAlphaComponent(0.1) : theme.hover).cgColor
+    }
+
     // Pressed on mouse down, answered on mouse up inside: the CLAUDE.md
     // rule for anything a click commits.
     override func mouseDown(with event: NSEvent) {
         pressed = true
-        layer?.backgroundColor = ChromeTheme.current.separator.cgColor
+        paint()
     }
 
     override func mouseUp(with event: NSEvent) {
-        layer?.backgroundColor = ChromeTheme.current.hover.cgColor
-        defer { pressed = false }
+        defer { pressed = false; paint() }
         guard pressed, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
         action()
+    }
+}
+
+/// A multiple choice's box: a rounded square, ticked in the accent.
+private final class CheckBox: NSView {
+    private let on: Bool
+
+    init(on: Bool) {
+        self.on = on
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([widthAnchor.constraint(equalToConstant: 15), heightAnchor.constraint(equalToConstant: 15)])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let theme = ChromeTheme.current
+        let box = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 3.5, yRadius: 3.5)
+        if on {
+            theme.accent.setFill()
+            box.fill()
+            let tick = NSBezierPath()
+            tick.move(to: NSPoint(x: 4, y: 7.5))
+            tick.line(to: NSPoint(x: 6.5, y: 4.5))
+            tick.line(to: NSPoint(x: 11, y: 10.5))
+            tick.lineWidth = 1.8
+            tick.lineCapStyle = .round
+            tick.lineJoinStyle = .round
+            theme.onAccent.setStroke()
+            tick.stroke()
+        } else {
+            theme.mutedText.withAlphaComponent(0.7).setStroke()
+            box.lineWidth = 1.2
+            box.stroke()
+        }
     }
 }
 

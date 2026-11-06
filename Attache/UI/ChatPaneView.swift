@@ -420,6 +420,8 @@ final class ChatPaneView: NSView {
             ? "This pane has closed."
             : model.agentExited
             ? "The agent is no longer running in this pane."
+            : model.approval != nil || model.question != nil
+            ? "Answer the question above"
             : "Message \(Self.kindName(agent?.kind))"
 
         // The docks above are settled before the rows go in, so the height
