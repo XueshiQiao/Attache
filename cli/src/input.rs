@@ -60,8 +60,18 @@ pub fn run(args: &[String]) -> i32 {
     enum Ask {
         Key(String, Condition),
         Text(String, bool),
+        Choose(u32, String),
     }
     let ask = match rest {
+        [flag, n, when, cond] if flag == "--choose" && when == "--if" => {
+            let (Ok(n), Some(fp)) = (n.parse::<u32>(), cond.strip_prefix("question:")) else {
+                return usage();
+            };
+            if n == 0 || fp.len() != 16 || !fp.chars().all(|c| c.is_ascii_hexdigit()) {
+                return usage();
+            }
+            Ask::Choose(n, fp.to_owned())
+        }
         [flag, key, when, cond] if flag == "--key" && when == "--if" => {
             let Some(c) = condition(cond) else {
                 return usage();
@@ -121,6 +131,13 @@ pub fn run(args: &[String]) -> i32 {
                     .map(|_| ())
                     .ok_or("tmux"),
             )
+        }
+        Ask::Choose(n, fp) => {
+            if kind != Some("claude") {
+                return answer(Err("not_claude"));
+            }
+            leave_copy_mode(pane);
+            answer(choose(pane, n, &fp))
         }
         Ask::Text(text, enter) => {
             let ready = match kind {
@@ -233,9 +250,37 @@ fn answer(r: Result<(), &'static str>) -> i32 {
 
 fn usage() -> i32 {
     eprintln!(
-        "Usage: attache-cli input <%pane> --text <base64> [--enter]\n       attache-cli input <%pane> --key <name> --if approval:<fingerprint>|panel[:<fingerprint>]|working"
+        "Usage: attache-cli input <%pane> --text <base64> [--enter]\n       attache-cli input <%pane> --key <name> --if approval:<fingerprint>|panel[:<fingerprint>]|working\n       attache-cli input <%pane> --choose <n> --if question:<fingerprint>"
     );
     2
+}
+
+/// Picks answer `n` of the question on screen: the cursor is moved there
+/// with arrows, the screen read again to see it arrived on that very
+/// question, and only then Enter. Arrows move nothing but the cursor inside
+/// the form; the Enter, the key that commits, waits for the second look.
+fn choose(pane: &str, n: u32, fp: &str) -> Result<(), &'static str> {
+    let read = |pane: &str| screen::question(&screen::capture(pane));
+    let q = read(pane).ok_or("question_gone")?;
+    if q.fingerprint != fp {
+        return Err("question_changed");
+    }
+    let option = q.options.iter().find(|o| o.number == n).ok_or("no_such_option")?;
+    if option.typed {
+        return Err("typed_answer");
+    }
+    let (key, steps) = if n >= q.cursor { ("Down", n - q.cursor) } else { ("Up", q.cursor - n) };
+    if steps > 0 {
+        let mut args = vec!["send-keys", "-t", pane];
+        args.extend(std::iter::repeat_n(key, steps as usize));
+        tmux::run(&args).ok_or("tmux")?;
+        thread::sleep(Duration::from_millis(150));
+    }
+    let now = read(pane).ok_or("question_gone")?;
+    if now.fingerprint != fp || now.cursor != n {
+        return Err("question_changed");
+    }
+    tmux::run(&["send-keys", "-t", pane, "Enter"]).map(|_| ()).ok_or("tmux")
 }
 
 fn leave_copy_mode(pane: &str) {

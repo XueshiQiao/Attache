@@ -66,6 +66,8 @@ pub struct Reading {
     /// A hash of `panel`: an Enter, the key that chooses, is pressed only
     /// on the very panel the person was shown.
     pub panel_fingerprint: Option<String>,
+    /// A question Claude asked with `AskUserQuestion`, as a menu to pick from.
+    pub question: Option<Question>,
     pub activity: Option<Activity>,
 }
 
@@ -83,18 +85,21 @@ impl Reading {
             approval: None,
             panel: None,
             panel_fingerprint: None,
+            question: None,
             activity: None,
         }
     }
 
     pub fn from_lines(rows: &[String]) -> Reading {
         let approval = approval(rows);
-        // An approval menu has no input box either; it is the approval.
-        let panel = if approval.is_some() { None } else { panel(rows) };
+        let question = if approval.is_some() { None } else { question(rows) };
+        // A menu has no input box either; it is the menu, not a panel.
+        let panel = if approval.is_some() || question.is_some() { None } else { panel(rows) };
         Reading {
             prompt: input_box(&trimmed(rows)).is_some(),
             panel_fingerprint: panel.as_ref().map(|p| fnv(&p.join("\n"))),
             panel,
+            question,
             activity: activity(rows),
             approval,
         }
@@ -108,6 +113,7 @@ impl Reading {
             "approval": self.approval.as_ref().map(Approval::to_json),
             "panel": self.panel,
             "panel_fingerprint": self.panel_fingerprint,
+            "question": self.question.as_ref().map(Question::to_json),
             "activity": self.activity.as_ref().map(|a| json!({ "verb": a.verb, "detail": a.detail })),
         })
     }
@@ -258,6 +264,141 @@ fn activity_line(line: &str) -> Option<Activity> {
     Some(Activity {
         verb: verb.to_owned(),
         detail,
+    })
+}
+
+// ---------------------------------------------------------------- question
+
+/// A question Claude asked with `AskUserQuestion`: one question, one answer
+/// picked from a list. Read from a real capture of Claude Code 2.1
+/// (2026-11-06):
+///
+/// ```text
+/// ────────────────────────────────
+///  ☐ 提交钩子
+///
+/// │ 提交 release.yml 时，pre-commit 钩子……你想怎么处理？
+///
+/// ❯ 1. 这次跳过钩子 (Recommended)
+///      用 git commit --no-verify 提交并推送 release.yml……
+///   2. 允许 esbuild 运行安装脚本
+///      在仓库根目录新建 pnpm-workspace.yaml……
+///   3. 先不提交
+///      release.yml 的改动先留在暂存区……
+///   4. Type something.
+/// ────────────────────────────────
+///   5. Chat about this
+///
+/// Enter to select · ↑/↓ to navigate · Esc to cancel
+/// ```
+///
+/// Narrow on purpose, as the permission menu is: several questions at once
+/// (a row of tabs with Submit) and multiple choice (checkboxes) are left to
+/// the terminal, and so are the two answers that need typing.
+#[derive(Debug)]
+pub struct Question {
+    pub header: String,
+    pub text: String,
+    pub options: Vec<QuestionOption>,
+    /// The option the cursor is on.
+    pub cursor: u32,
+    /// A hash of the question and its answers, leaving out where the cursor
+    /// is: moving it does not make it another question.
+    pub fingerprint: String,
+}
+
+#[derive(Debug)]
+pub struct QuestionOption {
+    pub number: u32,
+    pub label: String,
+    pub description: String,
+    /// `Type something.` and `Chat about this`: answered by typing, in the
+    /// terminal.
+    pub typed: bool,
+}
+
+impl Question {
+    fn to_json(&self) -> Value {
+        json!({
+            "header": self.header,
+            "question": self.text,
+            "cursor": self.cursor,
+            "fingerprint": self.fingerprint,
+            "options": self.options.iter().map(|o| json!({
+                "number": o.number, "label": o.label, "description": o.description, "typed": o.typed,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
+pub fn question(rows: &[String]) -> Option<Question> {
+    let lines = trimmed(rows);
+    let footer = lines.last()?.to_lowercase();
+    if !(footer.contains("enter to select") && footer.contains("navigate")) {
+        return None;
+    }
+    // The header, `☐ <title>`, opens the form; a row of tabs there (several
+    // questions, `✔ Submit`) is not this form.
+    let top = (0..lines.len()).rev().find(|&i| lines[i].trim_start().starts_with('☐'))?;
+    let header_line = lines[top].trim();
+    if header_line.contains("Submit") || header_line.contains('←') || header_line.matches('☐').count() > 1 {
+        return None;
+    }
+    let header = header_line.trim_start_matches('☐').trim().to_owned();
+    let mut text: Vec<String> = Vec::new();
+    let mut options: Vec<QuestionOption> = Vec::new();
+    let mut cursor = None;
+    for line in &lines[top + 1..lines.len() - 1] {
+        let t = line.trim();
+        if t.is_empty() || is_dialog_rule(line) {
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix('│') {
+            if !options.is_empty() {
+                return None;
+            }
+            text.push(rest.trim().to_owned());
+            continue;
+        }
+        if let Some((n, label)) = option_line(line) {
+            // Multiple choice draws a box per answer.
+            if label.starts_with('[') || label.starts_with('☐') || label.starts_with('☒') {
+                return None;
+            }
+            if line.trim_start().starts_with('❯') {
+                cursor = Some(n);
+            }
+            let typed = label.starts_with("Type something") || label.starts_with("Chat about this");
+            options.push(QuestionOption { number: n, label, description: String::new(), typed });
+            continue;
+        }
+        // An answer's description, indented under it.
+        if line.starts_with("     ") {
+            let last = options.last_mut()?;
+            if !last.description.is_empty() {
+                last.description.push(' ');
+            }
+            last.description.push_str(t);
+            continue;
+        }
+        return None;
+    }
+    if text.is_empty() || options.len() < 2 {
+        return None;
+    }
+    if options.iter().enumerate().any(|(k, o)| o.number as usize != k + 1) {
+        return None;
+    }
+    let canonical: Vec<String> = lines[top..]
+        .iter()
+        .map(|l| l.replacen('❯', " ", 1))
+        .collect();
+    Some(Question {
+        header,
+        text: text.join("\n"),
+        cursor: cursor?,
+        fingerprint: fnv(&canonical.join("\n")),
+        options,
     })
 }
 
@@ -790,5 +931,72 @@ mod tests {
         rows.extend((0..10).map(|i| format!("  output line {i}")));
         rows.extend(v(&["", &rule, "❯ ", &rule, "  status line"]));
         assert_eq!(activity(&rows), None);
+    }
+
+    fn asked() -> Vec<String> {
+        let rule = "─".repeat(80);
+        v(&[
+            "⏺ Bash(cd /Users/joey/Code/PastePaw; rm pnpm-workspace.yaml && git status --short)",
+            "  ⎿  M  .github/workflows/release.yml",
+            &rule,
+            " ☐ 提交钩子 ",
+            "",
+            "│ 提交 release.yml 时，pre-commit 钩子失败了。原因是你本机的 pnpm 是 11.7.0，它要求先决定「允不允许 esbuild ",
+            "│ 在安装时运行自己的安装脚本」，没决定就直接报错退出。你想怎么处理？",
+            "",
+            "❯ 1. 这次跳过钩子 (Recommended)",
+            "     用 git commit --no-verify 提交并推送 release.yml。钩子只负责格式化 src-tauri 和 frontend/src 里的文件，这次提交没有改这些文件。",
+            "  2. 允许 esbuild 运行安装脚本",
+            "     在仓库根目录新建 pnpm-workspace.yaml，写上 allowBuilds: esbuild: true，和 release.yml 一起提交。",
+            "  3. 先不提交",
+            "     release.yml 的改动先留在暂存区，你自己处理 pnpm 的问题后再提交。",
+            "  4. Type something.",
+            &rule,
+            "  5. Chat about this",
+            "",
+            "Enter to select · ↑/↓ to navigate · Esc to cancel",
+            "",
+        ])
+    }
+
+    #[test]
+    fn a_question_claude_asked_is_read_whole() {
+        let q = question(&asked()).unwrap();
+        assert_eq!(q.header, "提交钩子");
+        assert!(q.text.ends_with("你想怎么处理？"));
+        assert_eq!(q.options.len(), 5);
+        assert_eq!(q.cursor, 1);
+        assert_eq!(q.options[0].label, "这次跳过钩子 (Recommended)");
+        assert!(q.options[1].description.starts_with("在仓库根目录新建"));
+        assert!(!q.options[2].typed && q.options[3].typed && q.options[4].typed);
+        let r = Reading::from_lines(&asked());
+        assert!(r.question.is_some() && r.panel.is_none() && r.approval.is_none());
+    }
+
+    #[test]
+    fn moving_the_cursor_keeps_the_question_and_changing_it_does_not() {
+        let a = question(&asked()).unwrap();
+        let moved: Vec<String> = asked()
+            .into_iter()
+            .map(|l| match l.as_str() {
+                "❯ 1. 这次跳过钩子 (Recommended)" => "  1. 这次跳过钩子 (Recommended)".to_owned(),
+                "  3. 先不提交" => "❯ 3. 先不提交".to_owned(),
+                _ => l,
+            })
+            .collect();
+        let b = question(&moved).unwrap();
+        assert_eq!(b.cursor, 3);
+        assert_eq!(a.fingerprint, b.fingerprint);
+        let other: Vec<String> = asked().into_iter().map(|l| l.replace("先不提交", "现在就提交")).collect();
+        assert_ne!(a.fingerprint, question(&other).unwrap().fingerprint);
+    }
+
+    #[test]
+    fn several_questions_or_boxes_are_left_to_the_terminal() {
+        let tabs: Vec<String> = asked().into_iter().map(|l| if l.contains("☐ 提交钩子") { "←  ☐ 提交钩子  ☐ 发布  ✔ Submit  →".to_owned() } else { l }).collect();
+        assert!(question(&tabs).is_none());
+        let boxes: Vec<String> = asked().into_iter().map(|l| l.replace("1. 这次", "1. [ ] 这次")).collect();
+        assert!(question(&boxes).is_none());
+        assert!(question(&rows(MENU)).is_none());
     }
 }

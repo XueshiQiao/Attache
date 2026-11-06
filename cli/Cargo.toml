@@ -1,6 +1,6 @@
 [package]
 name = "attache-cli"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "The host side of Attaché: what the phone and the desktop read agents through"
 publish = false

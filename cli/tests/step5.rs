@@ -33,6 +33,36 @@ fn screens(dir: &Path) {
                          ("panel", panel), ("panel2", panel2), ("blank", String::new()), ("agy_menu", agy_menu)] {
         fs::write(dir.join(format!("{name}.txt")), text).unwrap();
     }
+    // A question Claude asked: `@k` is where the cursor mark goes.
+    fs::write(
+        dir.join("ask.txt"),
+        format!("{RULE}\n ☐ Hook\n\n│ The commit hook failed. What should I do?\n\n@1 1. Skip the hook (Recommended)\n     Commit with --no-verify.\n@2 2. Allow esbuild\n     Write pnpm-workspace.yaml.\n@3 3. Do not commit\n@4 4. Type something.\n{RULE}\n@5 5. Chat about this\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n"),
+    )
+    .unwrap();
+    // The same question on an agent that ignores arrows: drawn once, cursor
+    // on the first answer for good.
+    let stuck = fs::read_to_string(dir.join("ask.txt")).unwrap().replacen("@1 ", "❯ ", 1);
+    fs::write(dir.join("askstuck.txt"), stuck.replace("@2 ", "  ").replace("@3 ", "  ").replace("@4 ", "  ").replace("@5 ", "  ")).unwrap();
+    // An agent whose cursor moves on the arrows, as Claude's does, and
+    // which writes down the answer an Enter picked.
+    fs::write(
+        dir.join("ask.sh"),
+        r#"D=$(dirname "$0")
+: > "$D/keys"; : > "$D/got"
+stty -echo
+c=1
+draw() { printf '\033[H\033[2J'; sed -e "s/^@$c /❯ /" -e 's/^@[0-9] /  /' "$D/ask.txt"; }
+draw
+buf=
+while IFS= read -rsn1 k; do
+  if [ -z "$k" ]; then printf 'chose %s\n' "$c" >> "$D/got"; buf=
+  else buf="$buf$k"; printf '%s' "$k" >> "$D/keys"
+    case "$buf" in *'[B') c=$((c+1)); buf=; draw ;; *'[A') c=$((c-1)); buf=; draw ;; esac
+  fi
+done
+"#,
+    )
+    .unwrap();
     fs::write(
         dir.join("fake.sh"),
         r#"D=$(dirname "$0")
@@ -109,10 +139,11 @@ impl Server {
 
     fn show_as(&self, agent: &str, screen: &str) {
         let dir = self.home.path();
-        let cmd = format!("'{}' '{}' {screen}", dir.join("bin").join(agent).display(), dir.join("fake.sh").display());
+        let script = if screen == "ask" { "ask.sh" } else { "fake.sh" };
+        let cmd = format!("'{}' '{}' {screen}", dir.join("bin").join(agent).display(), dir.join(script).display());
         self.tmux(&["respawn-pane", "-k", "-t", "probe", &cmd]);
         self.tmux(&["clear-history", "-t", "probe"]);
-        let want = fs::read_to_string(dir.join(format!("{screen}.txt"))).unwrap();
+        let want = fs::read_to_string(dir.join(format!("{screen}.txt"))).unwrap().replace("@1 ", "❯ ");
         let deadline = Instant::now() + Duration::from_secs(3);
         if let Some(first) = want.lines().find(|l| !l.trim().is_empty()).map(|l| l.trim().to_owned()) {
             while !self.tmux(&["capture-pane", "-p", "-t", "probe"]).contains(&first) {
@@ -376,4 +407,45 @@ fn watch_pushes_the_pane_when_its_screen_changes_and_ends_with_stdin() {
         assert!(Instant::now() < deadline, "still running after stdin ended");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn a_question_is_answered_by_moving_to_the_answer_and_looking_again() {
+    let Some(tmux) = tmux_bin() else { return };
+    let s = Server::start(tmux, "ask");
+    let pane = s.pane();
+    s.show("ask");
+    let v = s.json(&["screen", &pane]);
+    let q = &v["question"];
+    assert_eq!(q["cursor"], 1, "{v}");
+    assert_eq!(q["options"].as_array().unwrap().len(), 5);
+    let cond = format!("question:{}", q["fingerprint"].as_str().unwrap());
+    // Answers that need typing are the terminal's.
+    refused(&s.json(&["input", &pane, "--choose", "4", "--if", &cond]), "typed_answer");
+    refused(&s.json(&["input", &pane, "--choose", "2", "--if", "question:0123456789abcdef"]), "question_changed");
+    refused(&s.json(&["input", &pane, "--choose", "9", "--if", &cond]), "no_such_option");
+    assert_eq!(s.keys(), "");
+    assert_eq!(s.json(&["input", &pane, "--choose", "3", "--if", &cond])["sent"], true);
+    assert_eq!(s.got(), "chose 3\n");
+    // Two Downs, then the Enter.
+    assert_eq!(s.keys(), "\x1b[B\x1b[B");
+}
+
+#[test]
+fn a_question_whose_cursor_did_not_arrive_gets_no_enter() {
+    let Some(tmux) = tmux_bin() else { return };
+    let s = Server::start(tmux, "askstuck");
+    let pane = s.pane();
+    s.show("askstuck");
+    let fp = s.json(&["screen", &pane])["question"]["fingerprint"].as_str().unwrap().to_owned();
+    let cond = format!("question:{fp}");
+    // The arrows go; the cursor stays; the second look sees it and the
+    // Enter is held back.
+    refused(&s.json(&["input", &pane, "--choose", "3", "--if", &cond]), "question_changed");
+    assert_eq!(s.keys(), "\x1b[B\x1b[B");
+    assert_eq!(s.got(), "");
+    // And a question gone by the time the answer arrives gets no key at all.
+    s.show("menu");
+    refused(&s.json(&["input", &pane, "--choose", "2", "--if", &cond]), "question_gone");
+    assert_eq!(s.keys(), "");
 }
