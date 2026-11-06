@@ -21,20 +21,31 @@ enum MarkdownBlocks {
         var fenced = false
         var i = 0
         func flush() {
-            if !text.isEmpty { blocks.append(.text(text.joined(separator: "\n"))) }
+            let joined = text.joined(separator: "\n").trimmingCharacters(in: .newlines)
+            if !joined.isEmpty { blocks.append(.text(joined)) }
             text = []
         }
         while i < lines.count {
             let line = lines[i]
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") { fenced.toggle() }
-            if !fenced, i + 1 < lines.count, isRow(line), let align = separator(lines[i + 1]) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { fenced.toggle() }
+            // GFM: the separator has exactly the header's columns, or the
+            // two lines are not a table.
+            if !fenced, i + 1 < lines.count, isRow(line), let align = separator(lines[i + 1]),
+               align.count == cells(line).count {
                 let header = cells(line)
                 var rows: [[String]] = []
                 i += 2
                 while i < lines.count, isRow(lines[i]) {
                     var row = cells(lines[i])
                     row += Array(repeating: "", count: max(0, header.count - row.count))
-                    rows.append(Array(row.prefix(header.count)))
+                    // More cells than the header (an unescaped `|` in a
+                    // cell): kept, in the last column, rather than dropped.
+                    if row.count > header.count {
+                        let extra = row[(header.count - 1)...].joined(separator: " | ")
+                        row = Array(row.prefix(header.count - 1)) + [extra]
+                    }
+                    rows.append(row)
                     i += 1
                 }
                 flush()
@@ -71,7 +82,12 @@ enum MarkdownBlocks {
     static func cells(_ line: String) -> [String] {
         var t = line.trimmingCharacters(in: .whitespaces)
         if t.hasPrefix("|") { t.removeFirst() }
-        if t.hasSuffix("|"), !t.hasSuffix("\\|") { t.removeLast() }
+        // The closing border, unless the `|` is escaped: an odd run of
+        // backslashes before it. `\\|` is an escaped backslash, then the border.
+        if t.hasSuffix("|") {
+            let slashes = t.dropLast().reversed().prefix { $0 == "\\" }.count
+            if slashes % 2 == 0 { t.removeLast() }
+        }
         var out: [String] = []
         var cur = ""
         var escaped = false
@@ -143,7 +159,10 @@ final class MarkdownTableView: NSView {
 /// Scrolls sideways only; a vertical turn of the wheel goes on to the page.
 private final class TableScrollView: NSScrollView {
     override func scrollWheel(with event: NSEvent) {
-        if abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX) {
+        // A table that fits has nothing to scroll sideways: every turn of
+        // the wheel is the page's, or a diagonal swipe would stop the page.
+        let fits = (documentView?.frame.width ?? 0) <= contentView.bounds.width + 1
+        if fits || abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX) {
             nextResponder?.scrollWheel(with: event)
         } else {
             super.scrollWheel(with: event)

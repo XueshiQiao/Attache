@@ -181,7 +181,13 @@ private final class AgentReply: NSView {
                 column.addArrangedSubview(view)
                 view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
             }
-            ChatRowViews.pin(column, in: self, insets: NSEdgeInsets(top: 0, left: leading, bottom: 0, right: 24))
+            if ChatStyle.current.repliesOnCards {
+                let card = SolidCard()
+                ChatRowViews.pin(column, in: card, insets: NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14))
+                ChatRowViews.pin(card, in: self, insets: NSEdgeInsets(top: 0, left: leading, bottom: 0, right: 24))
+            } else {
+                ChatRowViews.pin(column, in: self, insets: NSEdgeInsets(top: 0, left: leading, bottom: 0, right: 24))
+            }
             return
         }
         let body = Self.textField(markdown, style: style)

@@ -52,6 +52,11 @@ final class ChatPaneView: NSView {
     /// and everything was drawn; and a new transcript shorter than the index
     /// drew nothing at all.
     private var firstShownKey: String?
+    /// Earlier rows were asked for: once they arrive in front of the first
+    /// drawn row, a page of them is drawn. Found again by key alone, the
+    /// page kept starting at the old first row and what was read stayed out
+    /// of sight (found by review, 2026-11-06).
+    private var revealEarlier = false
     private static let page = 150
     private var followsBottom = true
     /// Set while this view moves the scroll position itself, so that move
@@ -161,6 +166,7 @@ final class ChatPaneView: NSView {
         }
         minimap.onScroll = { [weak self] top in self?.scroll(toDocumentTop: top) }
         minimap.onHover = { [weak self] hover in self?.showTip(hover) }
+        minimap.onDragEnded = { [weak self] in self?.scrolled() }
         // The wheel anywhere on the page scrolls the conversation: over the
         // minimap, the docks and a composer with nothing of its own to
         // scroll, as much as over the rows (asked for 2026-11-06).
@@ -273,6 +279,15 @@ final class ChatPaneView: NSView {
     @objc private func scrolled() {
         updateMinimapViewport()
         guard !movingScroll, let document = scroll.documentView else { return }
+        if minimap.isDragging {
+            // The person is scrolling with the thumb: whatever the content
+            // does meanwhile, this is not following the bottom, and nothing
+            // pages in until the thumb is let go.
+            judgedHeight = document.frame.height
+            judgedViewport = scroll.contentView.bounds.size
+            followsBottom = scroll.contentView.bounds.maxY >= document.frame.height - 40
+            return
+        }
         // Content that grew under the view — wrapped text settling at its
         // width after the first layout — is not the person scrolling away:
         // taken for that, a freshly opened chat stopped short of its newest
@@ -296,6 +311,7 @@ final class ChatPaneView: NSView {
             firstShownKey = nil
             refresh()
         } else if model?.earlierNotLoaded == true {
+            revealEarlier = true
             model?.loadEarlier()
         }
     }
@@ -330,7 +346,7 @@ final class ChatPaneView: NSView {
             tip.isHidden = true
             return
         }
-        tipY?.constant = y
+        tipY?.constant = min(max(y, 14), max(14, minimap.bounds.height - 14))
         tip.show(text)
     }
 
@@ -413,7 +429,12 @@ final class ChatPaneView: NSView {
         defer { updateMinimap() }
         let all = Self.elements(rows: model.rows, pending: model.pending)
         if let key = firstShownKey, let found = all.firstIndex(where: { $0.key == key }) {
-            firstShown = found
+            if revealEarlier, found > 0 {
+                revealEarlier = false
+                firstShown = max(0, found - Self.page)
+            } else {
+                firstShown = found
+            }
         } else if firstShownKey != nil || firstShown == nil || (firstShown ?? 0) > all.count {
             // Never chosen, or the row it was is gone (another transcript).
             firstShown = all.isEmpty ? nil : max(0, all.count - Self.page)
@@ -428,6 +449,7 @@ final class ChatPaneView: NSView {
         // fetch what came before until there is something to scroll.
         if let document = scroll.documentView, first == 0, model.earlierNotLoaded, !model.loadingEarlier,
            document.frame.height <= scroll.contentView.bounds.height {
+            revealEarlier = true
             model.loadEarlier()
         }
 
@@ -470,6 +492,8 @@ final class ChatPaneView: NSView {
             layoutSubtreeIfNeeded()
             movingScroll = true
             document.scroll(NSPoint(x: 0, y: max(0, document.frame.height - fromBottom)))
+            judgedHeight = document.frame.height
+            judgedViewport = scroll.contentView.bounds.size
             movingScroll = false
         }
     }
@@ -704,6 +728,9 @@ final class ChatMinimapView: NSView {
     private static let pad: CGFloat = 8
     /// Where in the thumb it was grabbed, while dragging.
     private var grab: CGFloat?
+    /// The pointer is over the thumb: it lights up as it does while held,
+    /// so it reads as something to grab before it is grabbed.
+    private var overThumb = false { didSet { if overThumb != oldValue { needsDisplay = true } } }
     private var tracking: NSTrackingArea?
 
     override var isFlipped: Bool { true }
@@ -721,8 +748,15 @@ final class ChatMinimapView: NSView {
 
     private func stripY(_ y: CGFloat) -> CGFloat { Self.pad + y * scale }
 
+    /// Whether the thumb is held: the page does not page or follow the
+    /// bottom meanwhile, or the drag fights it (found by review, 2026-11-06).
+    var isDragging: Bool { grab != nil }
+
     private var thumb: NSRect {
-        NSRect(x: 3, y: stripY(viewport.minY), width: bounds.width - 6, height: max(14, viewport.height * scale))
+        let height = max(14, viewport.height * scale)
+        // Kept inside the strip when stretched to its minimum height.
+        let y = min(stripY(viewport.minY), bounds.height - Self.pad - height)
+        return NSRect(x: 3, y: max(Self.pad, y), width: bounds.width - 6, height: height)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -754,11 +788,14 @@ final class ChatMinimapView: NSView {
                 break
             }
         }
-        let path = NSBezierPath(roundedRect: thumb, xRadius: 4, yRadius: 4)
-        theme.text.withAlphaComponent(grab == nil ? 0.07 : 0.13).setFill()
+        // Hovered or held, the thumb takes the accent: a deeper grey was too
+        // slight to notice (the owner's call, 2026-11-06).
+        let lit = grab != nil || overThumb
+        let path = NSBezierPath(roundedRect: thumb.insetBy(dx: 0.75, dy: 0.75), xRadius: 4, yRadius: 4)
+        (lit ? theme.accent.withAlphaComponent(0.2) : theme.text.withAlphaComponent(0.07)).setFill()
         path.fill()
-        theme.separator.setStroke()
-        path.lineWidth = 1
+        (lit ? theme.accent : theme.separator).setStroke()
+        path.lineWidth = lit ? 1.5 : 1
         path.stroke()
     }
 
@@ -767,7 +804,8 @@ final class ChatMinimapView: NSView {
         let frame = thumb
         // On the thumb: held where it was grabbed. Elsewhere: centred under
         // the pointer, then held there.
-        grab = frame.contains(p) ? p.y - frame.minY : frame.height / 2
+        grab = frame.contains(p) ? p.y - frame.minY : max(1, viewport.height * scale) / 2
+        onHover(nil)
         drag(to: p.y)
     }
 
@@ -775,8 +813,12 @@ final class ChatMinimapView: NSView {
         drag(to: convert(event.locationInWindow, from: nil).y)
     }
 
+    var onDragEnded: (() -> Void)?
+
     override func mouseUp(with event: NSEvent) {
         grab = nil
+        onDragEnded?()
+        overThumb = thumb.contains(convert(event.locationInWindow, from: nil))
         needsDisplay = true
     }
 
@@ -798,7 +840,9 @@ final class ChatMinimapView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        let y = convert(event.locationInWindow, from: nil).y
+        let point = convert(event.locationInWindow, from: nil)
+        overThumb = thumb.contains(point)
+        let y = point.y
         // The nearest prompt within a few points: ticks are thin.
         let near = marks.compactMap { mark -> (String, CGFloat)? in
             guard case .prompt(let text) = mark.kind else { return nil }
@@ -807,7 +851,10 @@ final class ChatMinimapView: NSView {
         if let near, abs(near.1 - y) <= 6 { onHover(near) } else { onHover(nil) }
     }
 
-    override func mouseExited(with event: NSEvent) { onHover(nil) }
+    override func mouseExited(with event: NSEvent) {
+        overThumb = false
+        onHover(nil)
+    }
 
     /// The wheel over the strip scrolls the page, as it does over the page.
     var onWheel: ((NSEvent) -> Void)?
