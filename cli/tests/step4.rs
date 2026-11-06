@@ -36,6 +36,10 @@ impl Server {
         // macOS kills a copied system binary on launch until it carries a
         // signature of its own.
         if cfg!(target_os = "macos") {
+            // One at a time: `codesign` run by several tests at once fails
+            // some of them, with nothing wrong with the file.
+            static SIGNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _one = SIGNING.lock().unwrap_or_else(|e| e.into_inner());
             assert!(Command::new("codesign").args(["-s", "-", "-f"]).arg(&agent)
                 .output().unwrap().status.success());
         }

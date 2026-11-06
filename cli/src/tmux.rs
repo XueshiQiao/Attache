@@ -13,7 +13,7 @@ pub fn command() -> Command {
     let bin = env::var("ATTACHE_TMUX")
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "tmux".into());
+        .unwrap_or_else(binary);
     let mut c = Command::new(bin);
     // Without a UTF-8 locale tmux rewrites every byte it thinks unprintable
     // as `_`: the `\x01` field separators and every Chinese character in a
@@ -47,4 +47,31 @@ pub fn lines(args: &[&str]) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Where tmux is. An SSH command runs with the system's bare PATH
+/// (`/usr/bin:/bin:/usr/sbin:/sbin` on macOS), which holds no Homebrew, so
+/// `tmux` alone was not found and every list came back empty: the phone's
+/// agent list, read over an exec channel since protocol 2, showed nothing
+/// (seen 2026-11-06). Reached through tmux's own `run-shell` it had worked,
+/// because that runs with the server's PATH. The usual places are tried
+/// after PATH.
+fn binary() -> String {
+    let on_path = env::var_os("PATH")
+        .map(|p| env::split_paths(&p).any(|d| d.join("tmux").is_file()))
+        .unwrap_or(false);
+    if on_path {
+        return "tmux".into();
+    }
+    [
+        "/opt/homebrew/bin/tmux",
+        "/usr/local/bin/tmux",
+        "/home/linuxbrew/.linuxbrew/bin/tmux",
+        "/usr/bin/tmux",
+        "/bin/tmux",
+    ]
+    .iter()
+    .find(|p| std::path::Path::new(p).is_file())
+    .map(|p| p.to_string())
+    .unwrap_or_else(|| "tmux".into())
 }
