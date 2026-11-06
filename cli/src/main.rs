@@ -5,7 +5,9 @@
 //! to each other). Called as `attache-send`, it is `send`, so the name the
 //! agents' instructions already use keeps working.
 
+mod agents;
 mod fsutil;
+mod host;
 mod paths;
 mod send;
 mod setup;
@@ -54,12 +56,14 @@ fn dispatch(args: &[String]) -> i32 {
             0
         }
         "send" => send::run(rest),
+        "agents" => agents::run(rest, &host::RealHost),
+        "seen" => agents::run_seen(rest),
         "statusline" => statusline::run(rest),
         "setup" => setup::run_setup(),
         "uninstall" => setup::run_uninstall(),
         _ => {
             eprintln!(
-                "attache-cli {}\n\nUsage:\n  attache-cli version\n  attache-cli send <file>...\n  attache-cli setup | uninstall\n  attache-cli statusline claude   (run by Claude Code)",
+                "attache-cli {}\n\nUsage:\n  attache-cli version\n  attache-cli send <file>...\n  attache-cli agents [--pane %N]\n  attache-cli seen <kind> <conversation>\n  attache-cli setup | uninstall\n  attache-cli statusline claude   (run by Claude Code)",
                 env!("CARGO_PKG_VERSION")
             );
             if cmd == "help" || cmd == "--help" {

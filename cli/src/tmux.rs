@@ -15,6 +15,12 @@ pub fn command() -> Command {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "tmux".into());
     let mut c = Command::new(bin);
+    // Without a UTF-8 locale tmux rewrites every byte it thinks unprintable
+    // as `_`: the `\x01` field separators and every Chinese character in a
+    // screen. An SSH command often has no locale at all; `-u` makes tmux
+    // assume UTF-8 whatever the environment says (measured on 3.6a under
+    // `env -i`: `%0_18852` without, `%0\x0118852` with).
+    c.arg("-u");
     if let Some(socket) = env::var("ATTACHE_TMUX_SOCKET")
         .ok()
         .filter(|s| !s.is_empty())

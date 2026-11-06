@@ -23,7 +23,7 @@ impl Host {
         fs::write(
             &fake,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  list-sessions) printf '$1\\n$2\\n' ;;\n  display-message) printf 'win\\n' ;;\nesac\n",
+                "#!/bin/sh\n[ \"$1\" = -u ] && shift\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  list-sessions) printf '$1\\n$2\\n' ;;\n  display-message) printf 'win\\n' ;;\nesac\n",
                 host.path("tmux.log").display()
             ),
         )
