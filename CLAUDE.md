@@ -70,9 +70,11 @@ controller if there is not one yet, because the rail lists the windows of every
 session it has open and acting on one of them is not conditional on having
 looked at it.
 
-Three things in the UI are authored locally and nothing else is: the hidden
+Four things in the UI are authored locally and nothing else is: the hidden
 window ids in `SessionViewController`, `expandedSessions` in
-`SessionSidebarView`, and which rail tool is up in `ToolRailView`. tmux has no
+`SessionSidebarView`, which rail tool is up in `ToolRailView`, and the windows
+switched back to their terminal (`terminalWindows` in
+`EmbeddedSessionViewController`). tmux has no
 opinion about any of them. The Git tool's lazygit child is the app's own
 process on purpose — inside tmux it would appear in every attached client and
 outlive the app in their session lists.
@@ -106,8 +108,32 @@ changing any value. Not `set-option -gwa window-style ''`, which looks like the
 same thing without the read and appends a comma each time. `TmuxPaneColours`
 has the measurements.
 
-`Attache/Tmux/` has no AppKit imports and should stay that way.
-`Attache/UI/` is the only place that touches views.
+**The content half is a chat by default, and attache-cli is its only source.**
+A window with an agent in it shows `ChatPaneView` over its terminal (⇧⌘\ or
+the page's Terminal button switches; the terminal keeps running under it).
+Everything about agents comes from attache-cli (`cli/`, protocol in
+`cli/README.md`), the same binary the Android app reads through: which pane
+runs which agent and what it is doing (`agents --watch`, one per host, in
+`HostAgents`), the conversation (`follow`), and what is on the screen
+(`agents --watch --pane`). `Attache/Agents/` renders none of that knowledge
+itself — when it seems to need some, the knowledge belongs in the CLI, where
+the phone gets it too. The app installs the CLI on each host it reads agents
+on (`AttacheCliInstaller`, `~/.local/bin/attache-cli`, never over a newer
+one), from the builds `cli/build-all.sh` puts in `cli/dist/`, which the
+bundle carries as `dist/` — so run that script before building the app.
+
+**No key reaches an agent on the strength of what this app was shown.** Every
+key and message goes through `attache-cli input`, which names the screen it is
+for (`--if approval:<fp>`, `--if panel[:<fp>]`, `--if working`) and reads the
+screen again holding the pane before pressing anything. A key in the wrong
+place can cost the session its prompt cache — an Esc on the idle prompt is
+half of the two that open Claude's rewind menu, a Tab turns thinking on or
+off, a message pasted into a picker ends with an Enter that chooses — and the
+owner ruled every path to that a severe bug. Do not add a `send-keys` to an
+agent pane anywhere else.
+
+`Attache/Tmux/` and `Attache/Agents/` have no AppKit imports and should stay
+that way. `Attache/UI/` is the only place that touches views.
 
 ## Rules that are not style preferences
 
@@ -457,6 +483,22 @@ repository root** (or given the root as `argv[1]`):
 swiftc -O -o /tmp/terminfocheck Attache/UI/GhosttyTerminfo.swift \
   Tools/TerminfoCheck/main.swift
 /tmp/terminfocheck
+```
+
+**What attache-cli prints has a check on the app's side too.** The CLI's own
+`cargo test` runs the screen readers and the guarded `input` against a real
+`-L` server (`cli/tests/step5.rs`); this one reads its lines the way the app
+does and holds the rules the app applies before asking — Enter on a panel
+only with the panel's fingerprint, Esc only to stop a turn, a sent message
+confirmed only by a prompt after the row it was sent after. Run it after
+touching `Attache/Agents/`:
+
+```sh
+swiftc -O -o /tmp/attachecliccheck Attache/Agents/AttacheCliProtocol.swift \
+  Attache/Agents/AgentChatModel.swift Attache/Agents/AttacheCliLink.swift \
+  Attache/Tmux/TmuxTransport.swift Attache/Tmux/TmuxSocket.swift \
+  Attache/Tmux/PipeRead.swift Tools/AttacheCliCheck/main.swift
+/tmp/attachecliccheck
 ```
 
 **`PipeRead` has one, and what it protects is a single line whose absence

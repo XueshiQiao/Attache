@@ -41,8 +41,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     private func defaultContentSize(for window: NSWindow) -> NSSize {
         guard let screen = window.screen ?? NSScreen.main else { return fallbackContentSize }
         let visible = screen.visibleFrame
+        // The rail keeps its width; the content half opens at two thirds of
+        // the share it used to get — 1920pt on a 2560pt screen was more
+        // conversation width than anyone reads (the owner's call, 2026-11-06).
+        let rail = AppSettings.sidebarWidth
+        let content = (visible.width * Self.defaultScreenFraction.width - rail) * 2 / 3
         return NSSize(
-            width: max(visible.width * Self.defaultScreenFraction.width, minimumContentSize.width),
+            width: max(rail + content, minimumContentSize.width),
             height: max(visible.height * Self.defaultScreenFraction.height, minimumContentSize.height)
         )
     }
@@ -442,6 +447,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             viewMenu, "Show Conversation", "\\", [.command],
             #selector(toggleConversationSidebar)
         )
+        // Chat or terminal, for the window on screen. Checked while the chat
+        // is up; off for a window with no agent, which has only a terminal.
+        entry(viewMenu, "Show Chat", "\\", [.command, .shift], #selector(toggleChat))
         viewItem.submenu = viewMenu
         mainMenu.addItem(viewItem)
 
@@ -564,6 +572,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     /// nothing to do with tmux; so is every field in the settings window.
     @objc private func pasteIntoPaneOrResponder(_ sender: Any?) {
         if main?.currentEmbedded?.pasteIntoFocusedPane() == true { return }
+        if main?.currentEmbedded?.pasteIntoChat() == true { return }
+        // Which window and view a ⌘V reached, for the paste that sometimes
+        // went nowhere (2026-11-06).
+        let key = NSApp.keyWindow
+        NSLog("%@", "paste: key window \(key.map { String(describing: type(of: $0)) } ?? "none"), "
+              + "first responder \(key?.firstResponder.map { String(describing: type(of: $0)) } ?? "none")")
         NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: sender)
     }
 
@@ -620,6 +634,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         main?.toggleConversationRail()
     }
 
+    @objc private func toggleChat(_ sender: NSMenuItem) {
+        main?.currentEmbedded?.toggleChat()
+    }
+
     /// The checkmark on "Show Conversation" reads the rail's actual state each
     /// time the menu opens. Setting it inside the action was wrong twice over:
     /// the item started unchecked no matter what the TOML said, and went stale
@@ -633,6 +651,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         if menuItem.action == #selector(toggleConversationSidebar) {
             menuItem.state =
                 (main?.isConversationRailVisible ?? AppSettings.showsConversation) ? .on : .off
+        }
+        if menuItem.action == #selector(toggleChat) {
+            let embedded = main?.currentEmbedded
+            menuItem.state = embedded?.showsChat == true ? .on : .off
+            return embedded?.canShowChat == true
         }
         // Off while a check is already in flight, so a second click cannot stack
         // one. `canCheck` mirrors Sparkle's own `canCheckForUpdates`.

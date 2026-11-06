@@ -89,6 +89,13 @@ targets:
       - path: Resources/ghostty
         type: folder
         buildPhase: resources
+      # attache-cli, every build `cli/build-all.sh` makes plus its
+      # `version.txt`, as `dist/` in the bundle: the app installs it on each
+      # host it reads agents on (`AttacheCliInstaller`). Built, not committed,
+      # so run `cli/build-all.sh` before building the app.
+      - path: cli/dist
+        type: folder
+        buildPhase: resources
     dependencies:
       # The package vends four libraries and the app links all four. `product:`
       # (singular) takes one name; a bare `- package: libghostty-spm` would look

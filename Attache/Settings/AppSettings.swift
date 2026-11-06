@@ -51,6 +51,7 @@ enum AppSettings {
         static let sidebarShowsAgentStats = "sidebar_shows_agent_stats"
         static let sidebarShowsUsage      = "sidebar_shows_usage"
         static let agentStateSource       = "agent_state_source"
+        static let chatStyle              = "chat_style"
         static let logsAgentTransitions   = "logs_agent_transitions"
         static let gitAutoFetch           = "git_auto_fetch"
         static let gitAutoFetchMinutes    = "git_auto_fetch_minutes"
@@ -676,6 +677,13 @@ enum AppSettings {
                 .flatMap(AgentStateSource.init(rawValue:)) ?? .hook
         }
         set { store.set(newValue.rawValue, forKey: Key.agentStateSource) }
+    }
+
+    /// How the chat page looks (`ChatStyle`): `card` or `glass`. Only the
+    /// look — what the page shows and what a click does are the same in both.
+    static var chatStyle: ChatStyle {
+        get { store.string(forKey: Key.chatStyle).flatMap(ChatStyle.init(rawValue:)) ?? .card }
+        set { store.set(newValue.rawValue, forKey: Key.chatStyle) }
     }
 
     /// Whether to write a state-transition log per tmux window.

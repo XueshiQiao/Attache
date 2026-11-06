@@ -805,7 +805,11 @@ private final class ReplyView: NSView {
         // a reply. Reading their own conversation and not being able to copy
         // from it would be a strange thing to ship.
         body.isSelectable = true
-        body.allowsEditingTextAttributes = false
+        // True, though nothing here is editable: a selectable field that may
+        // not keep text attributes drops them the moment it is clicked, and
+        // the whole reply redraws in the field's own smaller font (reported
+        // 2026-11-06: "click a line and the text gets smaller").
+        body.allowsEditingTextAttributes = true
         body.translatesAutoresizingMaskIntoConstraints = false
         body.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(body)

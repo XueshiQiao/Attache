@@ -99,6 +99,28 @@ final class EmbeddedSessionViewController: NSViewController {
     /// Under the terminal, and only populated while `AppSettings.paneCards`
     /// is on. See `PaneCardsView`.
     private let paneCards = PaneCardsView(frame: .zero)
+
+    /// The active window's agent as a chat, over the terminal: the default
+    /// face of any window with an agent in it. The terminal under it keeps
+    /// running, so switching is instant and shows what the chat did.
+    private let chatView = ChatPaneView(frame: .zero)
+    /// The windows the person switched back to the terminal. Authored here
+    /// and nowhere else, like the hidden-window set: tmux has no opinion
+    /// about how this app shows a window. In memory only — a window id does
+    /// not outlive its server, and the default is the chat.
+    private var terminalWindows = Set<String>()
+    /// The conversations opened in this session, by pane, the most recent
+    /// last: going back to one is instant, as on the phone, and the oldest
+    /// stops following when there are more than eight.
+    private var chatModels: [(pane: String, model: AgentChatModel)] = []
+    /// The pane each window's chat is about, kept once chosen. Chosen afresh
+    /// every refresh, a second agent in the window that started waiting took
+    /// the chat over mid-sentence and got the draft; and an agent that
+    /// exited switched the half to the terminal with the keyboard in it, so
+    /// the next words typed ran in a shell (both found by review,
+    /// 2026-11-06). Dropped only when the pane leaves the window.
+    private var chatPaneByWindow: [String: String] = [:]
+    private var agentsToken: HostAgentsToken?
     private var terminalTop: NSLayoutConstraint?
     private var terminalLeading: NSLayoutConstraint?
     /// What `overhang` holds for the status row alone, before the cards take
@@ -219,6 +241,11 @@ final class EmbeddedSessionViewController: NSViewController {
         paneCards.autoresizingMask = [.width, .height]
         root.addSubview(paneCards)
         root.addSubview(terminalView)
+        // Over the terminal and under the band, for the same overdraw reason.
+        chatView.translatesAutoresizingMaskIntoConstraints = false
+        chatView.isHidden = true
+        chatView.onShowTerminal = { [weak self] in self?.toggleChat() }
+        root.addSubview(chatView)
         root.addSubview(titleBand)
 
         // When the status row IS hidden (see `hidesStatusRow`, currently off) it
@@ -259,6 +286,11 @@ final class EmbeddedSessionViewController: NSViewController {
             leading,
             trailing,
             overhang,
+
+            chatView.topAnchor.constraint(equalTo: titleBand.bottomAnchor),
+            chatView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            chatView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            chatView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
         let box = DelegateBox(owner: self)
@@ -298,6 +330,7 @@ final class EmbeddedSessionViewController: NSViewController {
         // app is the one painting, and the title band is this app's own — so a
         // window switched from another terminal has to reach it here.
         connection.addModelObserver { [weak self] in self?.syncWithModel() }
+        agentsToken = HostAgents.shared(for: host.transport).observe { [weak self] in self?.refreshChat() }
     }
 
     /// Give up the surface and let the `tmux attach` child exit.
@@ -311,6 +344,21 @@ final class EmbeddedSessionViewController: NSViewController {
         terminalView.setSurfaceVisible(false)
         terminalView.removeFromSuperview()
         if parent != nil { removeFromParent() }
+        for entry in chatModels { entry.model.stop() }
+        chatModels = []
+        agentsToken = nil
+    }
+
+    // Seen is what the person had in front of them: a session switched away
+    // from stops marking its agent's finished turns as seen.
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        refreshChat()
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        chatView.setOnScreen(false)
     }
 
     /// The rail and the title band are this app's; the picture is tmux's. So
@@ -319,6 +367,76 @@ final class EmbeddedSessionViewController: NSViewController {
     func syncWithModel() {
         titleBand.show(name: connection.windows.first { $0.isActive }?.name)
         refreshPaneCards()
+        refreshChat()
+    }
+
+    // MARK: - Chat
+
+    /// The pane the active window's chat is about: the one it already
+    /// showed while that pane is still in the window, otherwise the agent
+    /// attache-cli ranks first there.
+    private var activeChatPane: String? {
+        guard let window = connection.activeWindowID else { return nil }
+        let panes = connection.windows.first { $0.id == window }?.paneIDs ?? []
+        if let kept = chatPaneByWindow[window], panes.contains(kept) { return kept }
+        return HostAgents.shared(for: host.transport).agent(inWindow: window)?.pane
+    }
+
+    /// Whether the content half shows the chat: a window with an agent does,
+    /// unless the person asked for its terminal.
+    var showsChat: Bool {
+        guard let window = connection.activeWindowID, activeChatPane != nil else { return false }
+        return !terminalWindows.contains(window)
+    }
+
+    /// Whether there is a chat to switch to at all.
+    var canShowChat: Bool { activeChatPane != nil }
+
+    /// Between the chat and the terminal, for the active window only.
+    func toggleChat() {
+        guard let window = connection.activeWindowID else { return }
+        if terminalWindows.contains(window) {
+            terminalWindows.remove(window)
+        } else if activeChatPane != nil {
+            terminalWindows.insert(window)
+        }
+        refreshChat()
+        takeKeyboard(evenFromText: true)
+    }
+
+    private func refreshChat() {
+        guard isViewLoaded else { return }
+        let chat = showsChat
+        let wasChat = !chatView.isHidden
+        chatView.isHidden = !chat
+        terminalView.isHidden = chat
+        refreshPaneCards()
+        guard chat, let window = connection.activeWindowID, let pane = activeChatPane else {
+            chatView.setOnScreen(false)
+            if wasChat { takeKeyboard(evenFromText: true) }
+            return
+        }
+        chatPaneByWindow[window] = pane
+        let known = HostAgents.shared(for: host.transport).agents.first { $0.pane == pane }
+        let model = chatModel(pane: pane, known: known)
+        if chatView.model !== model {
+            chatView.show(model, placeholder: "")
+        }
+        chatView.setOnScreen(view.window != nil)
+        if !wasChat { takeKeyboard(evenFromText: true) }
+    }
+
+    private func chatModel(pane: String, known: AgentRow?) -> AgentChatModel {
+        if let i = chatModels.firstIndex(where: { $0.pane == pane }) {
+            let entry = chatModels.remove(at: i)
+            chatModels.append(entry)
+            return entry.model
+        }
+        let model = AgentChatModel(link: HostAgents.shared(for: host.transport).link, pane: pane, known: known)
+        model.start()
+        chatModels.append((pane, model))
+        while chatModels.count > 8 { chatModels.removeFirst().model.stop() }
+        return model
     }
 
     override func viewDidLayout() {
@@ -364,7 +482,7 @@ final class EmbeddedSessionViewController: NSViewController {
             overhang?.constant = bottom
         }
         syncBlankBorders(on)
-        paneCards.isHidden = !on
+        paneCards.isHidden = !on || showsChat
         guard on, cellWidth > 0, cellHeight > 0,
               let window = connection.windows.first(where: \.isActive),
               let layout = window.visibleLayout
@@ -426,7 +544,54 @@ final class EmbeddedSessionViewController: NSViewController {
         // editor is a field editor, which is an `NSText`; nothing this app does
         // should ever pull the keyboard out of one.
         guard !(window.firstResponder is NSText) else { return }
-        window.makeFirstResponder(terminalView)
+        window.makeFirstResponder(showsChat ? chatView.keyView : terminalView)
+    }
+
+    /// The same, after this half itself switched between chat and terminal:
+    /// then the text that has the keyboard is the chat's own composer, and
+    /// leaving it there would type into a view that just went away.
+    private func takeKeyboard(evenFromText: Bool) {
+        guard let window = view.window else { return }
+        // Only a keyboard that is this half's to begin with: the window
+        // itself, the terminal or the chat. Anything else — the Git tool's
+        // lazygit, the rail — keeps it (found by review, 2026-11-06).
+        guard evenFromText, ownsKeyboard(window.firstResponder),
+              !Self.isEditingText(window.firstResponder) || window.firstResponder === chatView.keyView
+        else { return takeKeyboard() }
+        window.makeFirstResponder(showsChat ? chatView.keyView : terminalView)
+    }
+
+    /// Whether the keyboard is somewhere this half answers for.
+    private func ownsKeyboard(_ responder: NSResponder?) -> Bool {
+        guard let responder, responder !== view.window else { return true }
+        guard let view = responder as? NSView else { return false }
+        return view.isDescendant(of: self.view)
+    }
+
+    /// Whether the keyboard is in something the person is typing into. A
+    /// selectable reply in the chat also makes an NSTextView first responder
+    /// when clicked — read-only, so neither typing nor ⌘V does anything
+    /// there, which is how a paste "sometimes" went nowhere (logged
+    /// 2026-11-06: first responder NSTextView, not the composer).
+    private static func isEditingText(_ responder: NSResponder?) -> Bool {
+        guard let text = responder as? NSTextView else { return false }
+        return text.isEditable
+    }
+
+    /// ⌘V while the chat is up: into the composer, unless the keyboard is in
+    /// another field the person is editing (the rail's rename).
+    func pasteIntoChat() -> Bool {
+        guard showsChat, let window = view.window, window.isKeyWindow else { return false }
+        let responder = window.firstResponder
+        guard ownsKeyboard(responder) else { return false }
+        if Self.isEditingText(responder), responder !== chatView.keyView { return false }
+        // A composer that cannot take text (Claude is asking something) takes
+        // no paste either: nothing would be inserted, and a file would still
+        // have been copied to the host for nothing.
+        guard let composer = chatView.keyView as? NSTextView, composer.isEditable else { return false }
+        window.makeFirstResponder(composer)
+        composer.paste(nil)
+        return true
     }
 
     /// The pane commands the menu bar drives, which have no pointer to take a
@@ -442,6 +607,12 @@ final class EmbeddedSessionViewController: NSViewController {
     /// was nothing to do" from "done" and fall through to the responder chain.
     private var addressablePane: String? {
         guard view.window?.isKeyWindow == true else { return nil }
+        // Not while the chat covers the terminal, and not out of a text
+        // field: ⌘V there belongs to the field. Without this the chat's own
+        // composer pasted into the agent's prompt hidden under it — and the
+        // next message sent was appended to that (found by review,
+        // 2026-11-06).
+        guard !showsChat, !(view.window?.firstResponder is NSText) else { return nil }
         return model.activePaneID
     }
 
@@ -548,12 +719,14 @@ final class EmbeddedSessionViewController: NSViewController {
         _ = terminalController.setTerminalConfiguration(AppSettings.terminalConfiguration())
         titleBand.applyChromeTheme()
         paneCards.applyChromeTheme()
+        chatView.applyChromeTheme()
         refreshPaneCards()
     }
 
     func applyChromeTheme() {
         titleBand.applyChromeTheme()
         paneCards.applyChromeTheme()
+        chatView.applyChromeTheme()
     }
 
     private func gridDidResize(_ metrics: TerminalGridMetrics) {

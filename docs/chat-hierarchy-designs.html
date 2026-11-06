@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>对话层次与 minimap 设计稿</title>
+<style>
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif; background: #1b1b1f; color: #eee; -webkit-font-smoothing: antialiased; }
+.bar { position: sticky; top: 0; z-index: 10; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; padding: 12px 20px; background: #111214ee; backdrop-filter: blur(12px); border-bottom: 1px solid #2a2b30; }
+.bar h1 { font-size: 14px; margin: 0 6px 0 0; font-weight: 600; }
+.seg { display: inline-flex; background: #26272c; border-radius: 8px; padding: 2px; }
+.seg button { border: 0; background: transparent; color: #bbb; font: inherit; padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+.seg button.on { background: #45464e; color: #fff; }
+.desc { max-width: 1240px; margin: 0 auto; padding: 16px 20px 0; color: #c9c9cf; }
+.desc b { color: #fff; } .desc ul { margin: 6px 0 0; padding-left: 18px; }
+.stage { padding: 18px 20px 40px; display: flex; justify-content: center; }
+.desk { width: 1240px; max-width: 100%; height: 860px; border-radius: 14px; padding: 30px;
+  background: radial-gradient(120% 90% at 15% 20%, #f2a35e 0%, #e0773f 30%, transparent 55%), radial-gradient(90% 80% at 80% 75%, #f5c46b 0%, #e8954a 35%, transparent 60%), linear-gradient(135deg, #f0b36a, #d9673a 60%, #c4503a); display: flex; }
+.light { --bg: #f8f7f5; --text: #1f2023; --mute: #6b6d73; --faint: #9a9ca2; --line: rgba(0,0,0,.09); --soft: rgba(0,0,0,.035); --code: rgba(0,0,0,.05); --accent: #2f6fde; --accentSoft: rgba(47,111,222,.13); --ok: #2f9e5b; --warn: #d97a17; --glass: rgba(250,247,243,.7); --card: #fff; }
+.dark { --bg: #1f2024; --text: #e8e8ea; --mute: #a2a3a9; --faint: #6f7178; --line: rgba(255,255,255,.08); --soft: rgba(255,255,255,.035); --code: rgba(255,255,255,.07); --accent: #f0b440; --accentSoft: rgba(240,180,64,.14); --ok: #4cc27c; --warn: #f0a24b; --glass: rgba(30,30,36,.72); --card: #2a2b30; }
+.win { flex: 1; display: flex; border-radius: 12px; overflow: hidden; background: var(--glass); backdrop-filter: blur(30px) saturate(1.4); box-shadow: 0 30px 70px rgba(0,0,0,.35), 0 0 0 .5px rgba(0,0,0,.35); position: relative; }
+.lights { position: absolute; top: 14px; left: 16px; display: flex; gap: 8px; } .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+.rail { width: 220px; flex: none; padding: 46px 12px; color: var(--text); font-size: 12px; }
+.rail div { padding: 7px 10px; border-radius: 8px; color: var(--mute); } .rail .sel { background: var(--accent); color: #fff; }
+.main { flex: 1; display: flex; padding: 8px 10px 10px 0; min-width: 0; }
+.sheet { flex: 1; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border-radius: 12px; overflow: hidden; box-shadow: 0 0 0 .5px var(--line); min-width: 0; }
+.head { padding: 11px 16px 9px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.head .t { font-weight: 600; } .chips { display: flex; gap: 6px; }
+.chip { font-size: 11px; color: var(--mute); background: var(--code); border-radius: 9px; padding: 1px 8px; }
+.body { flex: 1; display: flex; min-height: 0; position: relative; }
+.scroll { flex: 1; overflow: hidden; padding: 16px 28px 0 22px; display: flex; flex-direction: column; gap: 12px; }
+.composer { margin: 8px 16px 14px; border-radius: 20px; background: var(--code); padding: 9px 9px 9px 16px; display: flex; color: var(--faint); align-items: center; }
+.composer .s { margin-left: auto; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #111; display: grid; place-items: center; font-size: 13px; }
+.user { align-self: flex-end; max-width: 78%; background: var(--accentSoft); padding: 7px 12px; border-radius: 12px; }
+.text { font-size: 13.5px; line-height: 1.6; }
+.text code { font-family: "SF Mono", ui-monospace, monospace; font-size: 12px; background: var(--code); padding: 1px 4px; border-radius: 4px; }
+.mono { font-family: "SF Mono", ui-monospace, monospace; }
+
+/* ===== A 退后的工具：正文最亮，工具缩小、变灰、用等宽字，思考退成一条细线 ===== */
+.A .think { font-size: 12px; color: var(--faint); font-style: italic; border-left: 2px solid var(--line); padding: 1px 0 1px 10px; }
+.A .tools { display: flex; flex-direction: column; gap: 1px; padding-left: 2px; }
+.A .tool { font-size: 11.5px; color: var(--faint); display: flex; gap: 8px; align-items: baseline; }
+.A .tool .k { font-family: "SF Mono", ui-monospace, monospace; font-size: 10.5px; color: var(--faint); opacity: .8; width: 34px; flex: none; }
+.A .tool .ok { color: var(--ok); opacity: .7; font-size: 10px; }
+.A .tool .d { color: var(--mute); opacity: .85; }
+
+/* ===== B 收起的过程：思考和工具合成一块「过程」，默认收起成一行，正文单独亮出来 ===== */
+.B .work { border-radius: 10px; background: var(--soft); }
+.B .work .sum { display: flex; gap: 8px; align-items: center; padding: 7px 12px; font-size: 12px; color: var(--mute); cursor: pointer; }
+.B .work .sum .ch { font-size: 9px; color: var(--faint); }
+.B .work .sum .icons { margin-left: auto; display: flex; gap: 4px; }
+.B .work .sum .icons span { font-size: 10px; background: var(--code); border-radius: 5px; padding: 0 5px; color: var(--faint); }
+.B .work .in { padding: 0 12px 9px 26px; display: flex; flex-direction: column; gap: 3px; border-top: 1px solid var(--line); padding-top: 7px; }
+.B .work .in .th { font-size: 11.5px; color: var(--faint); font-style: italic; }
+.B .work .in .tl { font-size: 11.5px; color: var(--mute); } .B .work .in .tl b { font-weight: 500; color: var(--faint); margin-right: 6px; font-size: 10.5px; }
+.B .live { border: 1px solid var(--line); background: transparent; }
+.B .live .sum { color: var(--text); }
+.B .dotpulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accentSoft); }
+
+/* ===== C 时间线分两侧：正文在左栏宽处；工具和思考是右缩进的细时间线 ===== */
+.C .scroll { gap: 10px; }
+.C .lane { display: grid; grid-template-columns: 16px 1fr; gap: 0 10px; }
+.C .lane .rail2 { position: relative; } .C .lane .rail2::before { content: ""; position: absolute; left: 7px; top: 0; bottom: 0; width: 1.5px; background: var(--line); }
+.C .lane .rail2 i { position: absolute; left: 4px; top: 7px; width: 8px; height: 8px; border-radius: 50%; background: var(--bg); border: 1.5px solid var(--faint); }
+.C .lane.text .rail2 i { background: var(--text); border-color: var(--text); width: 9px; height: 9px; left: 3.5px; top: 8px; }
+.C .lane.tool .c { font-size: 11.5px; color: var(--faint); padding: 2px 0; }
+.C .lane.tool .c .ico { display: inline-block; width: 16px; text-align: center; margin-right: 4px; opacity: .8; }
+.C .lane.tool .rail2 i { width: 6px; height: 6px; left: 5px; top: 8px; border-color: var(--ok); background: var(--ok); opacity: .55; }
+.C .lane.think .c { font-size: 12px; color: var(--faint); font-style: italic; }
+.C .lane.think .rail2 i { border-style: dashed; }
+.C .user { margin-left: 26px; }
+
+/* ===== minimap ===== */
+.mm { width: 46px; flex: none; position: relative; border-left: 1px solid var(--line); padding: 10px 6px; }
+.mm .vp { position: absolute; left: 3px; right: 3px; border-radius: 5px; background: var(--code); border: 1px solid var(--line); }
+.mm .blk { position: absolute; left: 10px; right: 10px; border-radius: 2px; }
+.mm .u { background: var(--accent); left: 16px; right: 6px; height: 4px; border-radius: 3px; cursor: pointer; }
+.mm .a { background: var(--mute); opacity: .35; }
+.mm .tl2 { background: var(--faint); opacity: .25; height: 1.5px !important; left: 12px; right: 18px; }
+.mm .tip { position: absolute; right: 52px; white-space: nowrap; font-size: 11px; background: var(--card); color: var(--text); padding: 4px 9px; border-radius: 7px; box-shadow: 0 4px 14px rgba(0,0,0,.25), 0 0 0 .5px var(--line); pointer-events: none; }
+.mm .tip::after { content: ""; position: absolute; right: -4px; top: 9px; width: 8px; height: 8px; background: var(--card); transform: rotate(45deg); }
+/* minimap 2: 只有提问刻度的「目录」 */
+.mm2 { width: 30px; flex: none; position: relative; padding: 14px 0; display: flex; justify-content: center; }
+.mm2 .track { position: absolute; top: 14px; bottom: 14px; width: 2px; background: var(--line); border-radius: 1px; }
+.mm2 .tick { position: absolute; width: 12px; height: 3px; border-radius: 2px; background: var(--mute); opacity: .55; cursor: pointer; }
+.mm2 .tick.here { background: var(--accent); opacity: 1; width: 16px; }
+.mm2 .tip { position: absolute; right: 36px; white-space: nowrap; font-size: 11px; background: var(--card); color: var(--text); padding: 4px 9px; border-radius: 7px; box-shadow: 0 4px 14px rgba(0,0,0,.25), 0 0 0 .5px var(--line); }
+/* minimap 3: 带文字的提问列表，可展开 */
+.mm3 { width: 168px; flex: none; border-left: 1px solid var(--line); padding: 12px 10px; font-size: 11px; color: var(--mute); display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+.mm3 .h { font-size: 10px; letter-spacing: .06em; color: var(--faint); font-weight: 600; margin-bottom: 6px; }
+.mm3 .q { padding: 5px 8px; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; }
+.mm3 .q .tm { color: var(--faint); margin-right: 6px; font-variant-numeric: tabular-nums; }
+.mm3 .q.here { background: var(--accentSoft); color: var(--text); }
+.mm3 .q.here::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--accent); }
+</style>
+</head>
+<body>
+<div class="bar">
+  <h1>对话层次与 minimap</h1>
+  <div class="seg" id="ver"><button data-v="A" class="on">A 退后的工具</button><button data-v="B">B 收起的过程</button><button data-v="C">C 主次两条线</button></div>
+  <div class="seg" id="theme"><button data-v="dark" class="on">深色</button><button data-v="light">浅色</button></div>
+</div>
+<div class="desc" id="desc"></div>
+<div class="stage"><div class="desk" id="desk"><div class="win"><div class="lights"><i></i><i></i><i></i></div>
+  <div class="rail"><div>pastepaw-win</div><div class="sel">Attaché</div><div>CCSwitcher</div><div>AnyDrag</div><div>PastePawX</div></div>
+  <div class="main"><div class="sheet">
+    <div class="head"><div class="t">✳ Herdr 手机端通信与显示</div><div class="chips"><span class="chip">● Claude · working</span><span class="chip">Opus 5.5</span><span class="chip">effort high</span><span class="chip">ctx 66%</span><span class="chip">cache 59m</span></div></div>
+    <div class="body"><div class="scroll" id="scroll"></div><div id="mm"></div></div>
+    <div class="composer">Message Claude<span class="s">↑</span></div>
+  </div></div>
+</div></div></div>
+
+<script>
+const DESC = {
+  A: "<b>A 退后的工具：</b>只改字号、颜色和字体，不改结构。回复正文用最大最亮的字；思考退成左边一条细线加斜体小字；工具调用变成小一号的灰色行，Bash、Read 这类名字用等宽小字放在最前面，像一列标签，弱化到一眼就能跳过。<ul><li>改动最小，一眼就能看出正文和过程</li><li>minimap：右边一条缩略图，蓝色刻度是你的提问，灰块是回复，细线是工具；当前看到的范围有个框；鼠标停在刻度上会显示那条提问</li></ul>",
+  B: "<b>B 收起的过程：</b>一次回复之前，Claude 的思考和工具调用合成一块「过程」，默认收起成一行：「思考并运行了 6 个步骤 · 1m 20s」，右边是 Bash ×4、Read ×2 这样的小标记；点开才看细节。正在进行的那一块保持展开，带一个呼吸的小点。正文单独亮出来。<ul><li>页面最干净，长对话里几乎只剩你的提问和 Claude 的回复</li><li>minimap：只有一列提问刻度，像目录，当前位置的刻度是主题色；占地最少</li></ul>",
+  C: "<b>C 主次两条线：</b>左边一条细时间线贯穿整段回复：正文是实心大圆点，工具是绿色小点、前面有图标（⌘ 终端、▤ 读文件、✎ 改文件），思考是虚线空心点。主次靠点的大小和文字的深浅区分，顺序关系最清楚。<ul><li>能看清 Claude 先想了什么、再做了什么、最后说了什么</li><li>minimap：右边一列带时间的提问列表，当前所在的那条高亮；最像「对话历史」，但要多占 160pt 宽</li></ul>",
+};
+const U = (t) => `<div class="user">${t}</div>`;
+const T = (t) => `<div class="text">${t}</div>`;
+const TOOLS = [["Bash", "List agents waiting on the person (read-only)"], ["Bash", "Read the waiting pane's screen (read-only)"], ["Read", "screen.rs"], ["Bash", "Read AskUserQuestion forms in the CLI; tests from the real capture"], ["Edit", "input.rs"], ["Bash", "Integration tests for choosing an answer"]];
+const THINK = "The form isn't a permission menu: question lines start with │ and the typed answers sit across a rule, so the reader bails…";
+
+function A() {
+  const tools = (list) => `<div class="tools">${list.map(t => `<div class="tool"><span class="k">${t[0]}</span><span class="d">${t[1]}</span><span class="ok">✓</span></div>`).join("")}</div>`;
+  return U("就是它需要选择的时候，我没办法看到这个选择，这个怎么办？") +
+    T("我能读这张图。截图里是 Claude 在用 <code>AskUserQuestion</code> 问你一个带选项的问题，对话页认不出这种问题。") +
+    `<div class="think">${THINK}</div>` + tools(TOOLS.slice(0, 3)) +
+    T("识别结果和真实屏幕完全对得上：标题、光标在第 1 项、5 个选项，第 4、5 项被标成需要打字。") +
+    tools(TOOLS.slice(3)) +
+    T("变异测试抓住了：把「按 Enter 前再看一次」删掉，测试就失败。") +
+    U("我想问一下，现在在干什么？") +
+    T("现在在做的事：把「选择题」接进 macOS 对话页。attache-cli 那边已经做完，macOS 的选择卡片刚编译通过。");
+}
+function B() {
+  const work = (n, time, live) => `<div class="work ${live ? "live" : ""}"><div class="sum">${live ? '<span class="dotpulse"></span>' : '<span class="ch">▶</span>'}${live ? "正在运行" : "思考并运行了"} ${n} 个步骤 · ${time}<span class="icons"><span>Bash ×${n - 2}</span><span>Read ×1</span><span>Edit ×1</span></span></div>${live ? `<div class="in"><div class="th">${THINK}</div>${TOOLS.slice(3).map(t => `<div class="tl"><b>${t[0]}</b>${t[1]}</div>`).join("")}</div>` : ""}</div>`;
+  return U("就是它需要选择的时候，我没办法看到这个选择，这个怎么办？") +
+    work(4, "48s") +
+    T("我能读这张图。截图里是 Claude 在用 <code>AskUserQuestion</code> 问你一个带选项的问题，对话页认不出这种问题。") +
+    work(5, "1m 20s") +
+    T("识别结果和真实屏幕完全对得上：标题、光标在第 1 项、5 个选项，第 4、5 项被标成需要打字。") +
+    U("我想问一下，现在在干什么？") +
+    T("现在在做的事：把「选择题」接进 macOS 对话页。attache-cli 那边已经做完，macOS 的选择卡片刚编译通过。") +
+    work(6, "32s", true);
+}
+function C() {
+  const ico = { Bash: "⌘", Read: "▤", Edit: "✎" };
+  const lane = (cls, c) => `<div class="lane ${cls}"><div class="rail2"><i></i></div><div class="c">${c}</div></div>`;
+  return U("就是它需要选择的时候，我没办法看到这个选择，这个怎么办？") +
+    lane("text", T("我能读这张图。截图里是 Claude 在用 <code>AskUserQuestion</code> 问你一个带选项的问题，对话页认不出这种问题。")) +
+    lane("think", THINK) +
+    TOOLS.slice(0, 3).map(t => lane("tool", `<span class="ico">${ico[t[0]]}</span>${t[1]}`)).join("") +
+    lane("text", T("识别结果和真实屏幕完全对得上：标题、光标在第 1 项、5 个选项，第 4、5 项被标成需要打字。")) +
+    TOOLS.slice(3).map(t => lane("tool", `<span class="ico">${ico[t[0]]}</span>${t[1]}`)).join("") +
+    U("我想问一下，现在在干什么？") +
+    lane("text", T("现在在做的事：把「选择题」接进 macOS 对话页。attache-cli 那边已经做完。"));
+}
+
+// A long conversation: 14 turns, each a prompt, some tool lines and a reply.
+const TURNS = [["15:02", "OK，现在我们把安卓端给改成对话模式了"], ["15:40", "第一点是一定要使用 attache-cli 来读 agent"], ["16:05", "需要我拍板的这几件事里边"], ["17:58", "大概到什么程度了？需要我来验收了吗？"], ["18:20", "你可以先截图，看看是否满足你的预期"], ["18:33", "macOS 端的这个 UI 问题还很大"], ["18:41", "Android 端似乎也有不少问题"], ["19:50", "这个窗口大小为什么不能拖动呢？"], ["19:56", "这个背景色就不适合用这种透明的效果了"], ["19:58", "这整个窗体看着有点说不出来的奇怪"], ["20:04", "我喜欢 1 和 3，优先做 3"], ["20:10", "为啥这个在我缩放窗口的时候感觉那么卡"], ["20:16", "就是它需要选择的时候，我没办法看到这个选择"], ["20:26", "我想问一下，现在在干什么？"]];
+function minimap(kind) {
+  const H = 560, n = TURNS.length;
+  if (kind === "A") {
+    let y = 10, html = "";
+    TURNS.forEach((t, i) => {
+      html += `<div class="blk u" style="top:${y}px" title="${t[1]}"></div>`; y += 7;
+      const tl = 2 + (i * 7) % 5; for (let k = 0; k < tl; k++) { html += `<div class="blk tl2" style="top:${y}px"></div>`; y += 3; }
+      const h = 10 + (i * 13) % 22; html += `<div class="blk a" style="top:${y}px;height:${h}px"></div>`; y += h + 6;
+    });
+    const vpTop = y - 120;
+    return `<div class="mm">${html}<div class="vp" style="top:${vpTop}px;height:118px"></div><div class="tip" style="top:${vpTop + 4}px">20:16 · 就是它需要选择的时候…</div></div>`;
+  }
+  if (kind === "B") {
+    let html = `<div class="track"></div>`;
+    TURNS.forEach((t, i) => {
+      const top = 14 + i * (H / n);
+      html += `<div class="tick ${i >= n - 2 ? "here" : ""}" style="top:${top}px" title="${t[1]}"></div>`;
+    });
+    html += `<div class="tip" style="top:${14 + (n - 2) * (H / n) - 9}px">20:16 · 就是它需要选择的时候…</div>`;
+    return `<div class="mm2">${html}</div>`;
+  }
+  return `<div class="mm3"><div class="h">对话历史</div>${TURNS.map((t, i) => `<div class="q ${i >= n - 2 ? "here" : ""}"><span class="tm">${t[0]}</span>${t[1]}</div>`).join("")}</div>`;
+}
+
+let ver = "A", theme = "dark";
+function draw() {
+  document.getElementById("desk").className = `desk ${ver} ${theme}`;
+  document.getElementById("scroll").innerHTML = { A, B, C }[ver]();
+  document.getElementById("mm").outerHTML = `<div id="mm">${minimap(ver)}</div>`;
+  document.getElementById("desc").innerHTML = DESC[ver];
+}
+function seg(id, set) {
+  document.querySelectorAll(`#${id} button`).forEach(b => b.onclick = () => {
+    document.querySelectorAll(`#${id} button`).forEach(x => x.classList.toggle("on", x === b));
+    set(b.dataset.v); draw();
+  });
+}
+seg("ver", v => ver = v); seg("theme", v => theme = v);
+const h = location.hash.slice(1).split("-");
+if (["A", "B", "C"].includes(h[0])) document.querySelector(`#ver [data-v="${h[0]}"]`).click();
+if (h.includes("light")) document.querySelector('#theme [data-v="light"]').click();
+draw();
+</script>
+</body>
+</html>
