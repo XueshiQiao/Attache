@@ -44,7 +44,11 @@ pub trait Host: Sync {
     fn alive(&self, pid: u32) -> bool;
 }
 
-const SEP: char = '\u{1}';
+/// A tab, not `\x01`: tmux 3.4 (Alpine's) writes a `\x01` in a format as the
+/// four characters `\001` whatever the locale, while a tab comes through
+/// under `-u` on 3.4 and 3.6a alike (measured 2026-11-06). The title, the one
+/// field free text is likely in, goes last, so a tab inside it stays in it.
+const SEP: char = '\t';
 
 pub struct RealHost;
 
@@ -85,8 +89,12 @@ impl Host for RealHost {
     }
 
     fn processes(&self) -> Vec<Process> {
-        // `ucomm` is the short name on both macOS and Linux procps; `comm`
-        // is a full path on macOS.
+        // Linux says it in /proc, with no `ps` to vary: busybox's (Alpine)
+        // takes none of the options below.
+        if std::path::Path::new("/proc/self/stat").exists() {
+            return proc_processes();
+        }
+        // macOS: `ucomm` is the short name; `comm` is a full path.
         let out = Command::new("ps")
             .args(["-A", "-o", "pid=", "-o", "ppid=", "-o", "ucomm="])
             .stderr(Stdio::null())
@@ -160,6 +168,31 @@ impl Host for RealHost {
     }
 }
 
+/// Every process from `/proc/<pid>/stat`: `pid (name) state ppid …`. The
+/// name is in brackets and may itself hold spaces or brackets, so it runs to
+/// the last `)`.
+fn proc_processes() -> Vec<Process> {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+            parse_stat(pid, &std::fs::read_to_string(e.path().join("stat")).ok()?)
+        })
+        .collect()
+}
+
+pub fn parse_stat(pid: u32, stat: &str) -> Option<Process> {
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+    let name = stat.get(open + 1..close)?.to_owned();
+    let mut rest = stat.get(close + 1..)?.split_whitespace();
+    let _state = rest.next()?;
+    let ppid = rest.next()?.parse().ok()?;
+    Some(Process { pid, ppid, name })
+}
+
 /// Children of each process, for walking down from a pane's process.
 pub fn children(processes: &[Process]) -> HashMap<u32, Vec<u32>> {
     let mut map: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -184,4 +217,17 @@ pub fn descendants(root: u32, children: &HashMap<u32, Vec<u32>>) -> Vec<u32> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_proc_stat_line_reads_even_with_brackets_in_the_name() {
+        let p = parse_stat(42, "42 (tmux: server) S 1 42 42 0 -1").unwrap();
+        assert_eq!((p.pid, p.ppid, p.name.as_str()), (42, 1, "tmux: server"));
+        let q = parse_stat(7, "7 (a) b)) R 3 7").unwrap();
+        assert_eq!((q.ppid, q.name.as_str()), (3, "a) b)"));
+    }
 }

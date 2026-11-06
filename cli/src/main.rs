@@ -12,6 +12,7 @@ mod claude_transcript;
 mod follow;
 mod fsutil;
 mod host;
+mod input;
 mod paths;
 mod send;
 mod setup;
@@ -64,12 +65,13 @@ fn dispatch(args: &[String]) -> i32 {
         "agents" => agents::run(rest, &host::RealHost),
         "seen" => agents::run_seen(rest),
         "follow" => follow::run(rest),
+        "input" => input::run(rest),
         "statusline" => statusline::run(rest),
         "setup" => setup::run_setup(),
         "uninstall" => setup::run_uninstall(),
         _ => {
             eprintln!(
-                "attache-cli {}\n\nUsage:\n  attache-cli version\n  attache-cli send <file>...\n  attache-cli agents [--pane %N]\n  attache-cli seen <kind> <conversation>\n  attache-cli follow <claude|agy> <transcript> [--before <offset>]\n  attache-cli setup | uninstall\n  attache-cli statusline claude   (run by Claude Code)",
+                "attache-cli {}\n\nUsage:\n  attache-cli version\n  attache-cli send <file>...\n  attache-cli agents [--pane %N]\n  attache-cli seen <kind> <conversation>\n  attache-cli follow <claude|agy> <transcript> [--before <offset>]\n  attache-cli input <%pane> --text <base64> [--enter] | --key <name>\n  attache-cli setup | uninstall\n  attache-cli statusline claude   (run by Claude Code)",
                 env!("CARGO_PKG_VERSION")
             );
             if cmd == "help" || cmd == "--help" {
