@@ -292,24 +292,87 @@ pub fn run_seen(args: &[String]) -> i32 {
 
 /// `attache-cli agents [--pane %N]`.
 pub fn run(args: &[String], host: &dyn Host) -> i32 {
-    let only = match args {
+    let (watch, rest) = match args.split_first() {
+        Some((w, rest)) if w == "--watch" => (true, rest),
+        _ => (false, args),
+    };
+    let only = match rest {
         [] => None,
-        [flag, pane]
-            if flag == "--pane"
-                && pane.starts_with('%')
-                && pane[1..].chars().all(|c| c.is_ascii_digit()) =>
-        {
-            Some(pane.as_str())
-        }
+        [flag, pane] if flag == "--pane" && crate::screen::is_pane(pane) => Some(pane.as_str()),
         _ => {
-            eprintln!("Usage: attache-cli agents [--pane %N]");
+            eprintln!("Usage: attache-cli agents [--watch] [--pane %N]");
             return 2;
         }
     };
+    if watch {
+        return run_watch(host, only);
+    }
     for agent in discover(host, only) {
         println!("{}", agent.to_json());
     }
     0
+}
+
+/// `agents --watch [--pane %N]`: the same agents, kept up to date, so no
+/// client has to ask again and again over a slow link.
+///
+/// ```text
+/// {"t":"agents","agents":[…]}     every agent (or the pane's), whenever any changed
+/// {"t":"screen",…}                with --pane: what `screen` reads, whenever it changed
+/// ```
+///
+/// The first of each is sent at once. Like `follow`, it runs until stdin
+/// ends (the SSH channel closed) and writes a byte to stderr every 15 s to
+/// find a channel that went without saying so. The host does the asking:
+/// a list every 1.5 s, one pane every 0.5 s, which on this machine is a
+/// `ps`, a `list-panes` and a read of Claude's session folder each time.
+fn run_watch(host: &dyn Host, only: Option<&str>) -> i32 {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let gone = Arc::new(AtomicBool::new(false));
+    crate::follow::watch_stdin(gone.clone());
+    let mut out = crate::follow::Out::default();
+    let tick = if only.is_some() {
+        Duration::from_millis(500)
+    } else {
+        Duration::from_millis(1500)
+    };
+    let mut last_agents: Option<String> = None;
+    let mut last_screen: Option<String> = None;
+    let mut beat = std::time::Instant::now();
+    loop {
+        let agents = discover(host, only);
+        let list = Value::Array(agents.iter().map(Agent::to_json).collect());
+        let text = list.to_string();
+        if last_agents.as_deref() != Some(text.as_str()) {
+            out.send(json!({ "t": "agents", "agents": list }));
+            last_agents = Some(text);
+        }
+        if let Some(pane) = only {
+            let mut v = match agents.first() {
+                Some(a) => crate::screen::Reading::of(a).to_json(a),
+                None => json!({ "pane": pane, "kind": null }),
+            };
+            v["t"] = json!("screen");
+            let text = v.to_string();
+            if last_screen.as_deref() != Some(text.as_str()) {
+                out.send(v);
+                last_screen = Some(text);
+            }
+        }
+        std::thread::sleep(tick);
+        if gone.load(Ordering::SeqCst) {
+            return 0;
+        }
+        if beat.elapsed() >= crate::follow::HEARTBEAT {
+            beat = std::time::Instant::now();
+            let mut err = std::io::stderr();
+            if err.write_all(b".").and_then(|_| err.flush()).is_err() {
+                return 0;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------- Claude

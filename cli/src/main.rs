@@ -14,6 +14,7 @@ mod fsutil;
 mod host;
 mod input;
 mod paths;
+mod screen;
 mod send;
 mod setup;
 mod statusline;
@@ -26,7 +27,7 @@ use serde_json::json;
 /// every subcommand and the files under the state folder. Fields are only
 /// ever added within one protocol; anything else raises it, and a client
 /// that does not know the new number says so instead of misreading.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 fn main() {
     let mut args: Vec<String> = std::env::args().collect();
@@ -66,12 +67,13 @@ fn dispatch(args: &[String]) -> i32 {
         "seen" => agents::run_seen(rest),
         "follow" => follow::run(rest),
         "input" => input::run(rest),
+        "screen" => screen::run(rest),
         "statusline" => statusline::run(rest),
         "setup" => setup::run_setup(),
         "uninstall" => setup::run_uninstall(),
         _ => {
             eprintln!(
-                "attache-cli {}\n\nUsage:\n  attache-cli version\n  attache-cli send <file>...\n  attache-cli agents [--pane %N]\n  attache-cli seen <kind> <conversation>\n  attache-cli follow <claude|agy> <transcript> [--before <offset>]\n  attache-cli input <%pane> --text <base64> [--enter] | --key <name>\n  attache-cli setup | uninstall\n  attache-cli statusline claude   (run by Claude Code)",
+                "attache-cli {}\n\nUsage:\n  attache-cli version\n  attache-cli send <file>...\n  attache-cli agents [--pane %N]\n  attache-cli seen <kind> <conversation>\n  attache-cli follow <claude|agy> <transcript> [--before <offset>]\n  attache-cli input <%pane> --text <base64> [--enter] | --key <name> --if <approval:<fingerprint>|panel|working>\n  attache-cli screen <%pane>\n  attache-cli setup | uninstall\n  attache-cli statusline claude   (run by Claude Code)",
                 env!("CARGO_PKG_VERSION")
             );
             if cmd == "help" || cmd == "--help" {

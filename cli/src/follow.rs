@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! {"t":"waiting"}                              the file does not exist yet
-//! {"t":"hello","protocol":1,"kind":…,"path":…,"start":<offset>,"earlier":<bool>}
+//! {"t":"hello","protocol":2,"kind":…,"path":…,"start":<offset>,"earlier":<bool>}
 //! {"t":"items","from":<n>,"items":[…]}         rows n.. replaced by these
 //! {"t":"status",…}                             when what the header shows changed
 //! {"t":"switched","path":…}                    the conversation moved to another file
@@ -41,7 +41,7 @@ const MIN_ITEMS: usize = 60;
 const FIRST_WINDOW: u64 = 512 * 1024;
 const MAX_WINDOW: u64 = 64 * 1024 * 1024;
 const TICK: Duration = Duration::from_millis(200);
-const HEARTBEAT: Duration = Duration::from_secs(15);
+pub(crate) const HEARTBEAT: Duration = Duration::from_secs(15);
 
 pub fn run(args: &[String]) -> i32 {
     let (kind, path, before) = match args {
@@ -75,7 +75,7 @@ fn usage() -> i32 {
 }
 
 /// The SSH channel closing ends stdin; nothing is ever read from it.
-fn watch_stdin(gone: Arc<AtomicBool>) {
+pub(crate) fn watch_stdin(gone: Arc<AtomicBool>) {
     thread::spawn(move || {
         let mut buf = [0u8; 256];
         let mut stdin = std::io::stdin();
@@ -87,12 +87,12 @@ fn watch_stdin(gone: Arc<AtomicBool>) {
 /// stdout, one JSON value a line; a write that fails means nobody is
 /// reading any more, and the process ends.
 #[derive(Default)]
-struct Out {
+pub(crate) struct Out {
     last_status: Option<String>,
 }
 
 impl Out {
-    fn send(&mut self, v: Value) {
+    pub(crate) fn send(&mut self, v: Value) {
         let mut stdout = std::io::stdout().lock();
         if writeln!(stdout, "{v}")
             .and_then(|_| stdout.flush())

@@ -19,4 +19,7 @@ do
   mkdir -p "dist/$name"
   cp "target/$target/release/attache-cli" "dist/$name/attache-cli"
 done
-ls -l dist/*/attache-cli
+# The version the builds are, beside them: the desktop app reads it from its
+# bundle and the phone from its assets, to install only over an older one.
+sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1 > dist/version.txt
+ls -l dist/*/attache-cli dist/version.txt

@@ -102,7 +102,7 @@ fn ours() -> String {
 #[test]
 fn version_names_the_protocol() {
     let v = json_line(&Host::new().run(&["version"]));
-    assert_eq!(v["protocol"], 1);
+    assert_eq!(v["protocol"], 2);
     assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
 }
 

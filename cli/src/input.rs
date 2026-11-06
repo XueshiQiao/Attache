@@ -1,5 +1,6 @@
 //! `attache-cli input <pane> --text <base64> [--enter]` and
-//! `attache-cli input <pane> --key <name>`: typing into an agent.
+//! `attache-cli input <pane> --key <name> --if <condition>`: typing into an
+//! agent.
 //!
 //! The text comes base64-encoded: it arrives on an SSH command line, and
 //! base64 has no character any shell or tmux would act on.
@@ -9,70 +10,245 @@
 //! once; two interleaved would arrive as one garbled line. So each message
 //! holds the pane's lock from its first command to its last. Other panes
 //! are not held up.
+//!
+//! **Nothing is pressed on the strength of what a client saw.** A client
+//! reads the screen, the person taps, and by the time the key arrives the
+//! screen can be another one: over the owner's relayed 5G link that gap is
+//! most of a second. A key that lands somewhere it was not meant for can
+//! cost the session its prompt cache, which no client can undo: an Esc on
+//! Claude's idle prompt is half of the two that open its rewind menu, a Tab
+//! there turns thinking on or off, and a message pasted into an open picker
+//! ends with an Enter that chooses something. So each key names the screen
+//! it is for (`--if`), and a message needs Claude's own input box; both are
+//! read again here, holding the pane, right before anything is sent. What
+//! is left is the few milliseconds between that capture and the key.
+//!
+//! What happened is printed as one JSON line, `{"sent":true}` or
+//! `{"sent":false,"why":…}`, because a client reading through `run-shell`
+//! sees stdout and not the exit status.
 
+use crate::agents::{agy_state, discover, State};
 use crate::fsutil::Lock;
+use crate::host::RealHost;
+use crate::screen::{self, Reading};
 use crate::{paths, tmux};
+use serde_json::json;
 use std::thread;
 use std::time::Duration;
 
-/// Keys a client may press on its own: the ones a panel or an approval
-/// takes. Anything else is typed as text.
-const KEYS: [&str; 16] = [
-    "Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BSpace", "1", "2", "3", "4", "5",
-    "6", "7", "8",
-];
+/// The keys an approval takes: the option's number, never an Enter after it
+/// (Claude selects on the digit; an Enter would submit the input box).
+const APPROVAL_KEYS: [&str; 8] = ["1", "2", "3", "4", "5", "6", "7", "8"];
+/// The keys a panel takes. Never letters: what one does depends on the panel.
+const PANEL_KEYS: [&str; 7] = ["Enter", "Escape", "Up", "Down", "Left", "Right", "Tab"];
+
+enum Condition {
+    /// The permission menu with this fingerprint is on screen.
+    Approval(String),
+    /// A panel or picker is open over the input box; with a fingerprint,
+    /// that very panel. Enter, the key that chooses, needs the fingerprint.
+    Panel(Option<String>),
+    /// A turn is visibly running (Claude's `✻ Verb…` line).
+    Working,
+}
 
 pub fn run(args: &[String]) -> i32 {
-    let Some(pane) = args.first().filter(|p| {
-        p.starts_with('%') && p.len() > 1 && p[1..].chars().all(|c| c.is_ascii_digit())
-    }) else {
+    let Some(pane) = args.first().filter(|p| screen::is_pane(p)) else {
         return usage();
     };
     let rest = &args[1..];
-    let lock_path = paths::state_dir()
-        .join("input")
-        .join(format!("{}.lock", &pane[1..]));
-    let Ok(Some(_lock)) = Lock::acquire(&lock_path, Duration::from_secs(10)) else {
-        eprintln!("attache-cli input: the pane is busy");
-        return 1;
-    };
-    match rest {
-        [flag, key] if flag == "--key" => {
-            if !KEYS.contains(&key.as_str()) {
+    enum Ask {
+        Key(String, Condition),
+        Text(String, bool),
+    }
+    let ask = match rest {
+        [flag, key, when, cond] if flag == "--key" && when == "--if" => {
+            let Some(c) = condition(cond) else {
+                return usage();
+            };
+            let allowed = match c {
+                Condition::Approval(_) => APPROVAL_KEYS.contains(&key.as_str()),
+                Condition::Panel(ref fp) => {
+                    PANEL_KEYS.contains(&key.as_str()) && (key != "Enter" || fp.is_some())
+                }
+                Condition::Working => key == "Escape",
+            };
+            if !allowed {
                 return usage();
             }
-            if tmux::run(&["send-keys", "-t", pane, key]).is_some() {
-                0
-            } else {
-                1
-            }
+            Ask::Key(key.clone(), c)
         }
         [flag, b64, more @ ..] if flag == "--text" && (more.is_empty() || more == ["--enter"]) => {
             let Some(text) = decode(b64).and_then(|b| String::from_utf8(b).ok()) else {
                 return usage();
             };
-            if type_text(pane, &text, !more.is_empty()) {
-                0
-            } else {
-                1
+            Ask::Text(text, !more.is_empty())
+        }
+        _ => return usage(),
+    };
+    let lock_path = paths::state_dir()
+        .join("input")
+        .join(format!("{}.lock", &pane[1..]));
+    let Ok(Some(_lock)) = Lock::acquire(&lock_path, Duration::from_secs(10)) else {
+        return answer(Err("busy"));
+    };
+    let agent = discover(&RealHost, Some(pane)).into_iter().next();
+    let kind = agent.as_ref().map(|a| a.kind);
+    match ask {
+        Ask::Key(key, cond) => {
+            // Every condition is about Claude's screen; on any other agent
+            // there is nothing to check it against, so nothing is pressed.
+            let Some(agent) = agent.filter(|a| a.kind == "claude") else {
+                return answer(Err("not_claude"));
+            };
+            // A pane scrolled back in copy mode would take the key as a
+            // copy-mode key, and Claude would get nothing while this said
+            // it was sent. The screen below the mode is what is read, so
+            // leaving the mode first changes nothing the check sees.
+            leave_copy_mode(pane);
+            let read = Reading::from_lines(&screen::capture(pane));
+            if let Err(why) = key_allowed(&read, &key, &cond) {
+                return answer(Err(why));
+            }
+            // The working line alone is drawn text, and a list item in the
+            // agent's own output can look like it; Claude's own session file
+            // has to say it is busy as well.
+            if matches!(cond, Condition::Working) && agent.state != State::Working {
+                return answer(Err("not_working"));
+            }
+            answer(
+                tmux::run(&["send-keys", "-t", pane, &key])
+                    .map(|_| ())
+                    .ok_or("tmux"),
+            )
+        }
+        Ask::Text(text, enter) => {
+            let ready = match kind {
+                Some("claude") => text_allowed(&Reading::from_lines(&screen::capture(pane))),
+                Some("agy") => {
+                    if agy_state(&tmux::lines(&["capture-pane", "-p", "-J", "-t", pane])) == State::NeedsYou {
+                        Err("question")
+                    } else {
+                        Ok(())
+                    }
+                }
+                // An agent recognised by name only: no reader for its
+                // screen yet, so typed as the person asked.
+                Some(_) => Ok(()),
+                // No agent at all in the pane: nothing a chat sends to.
+                None => Err("no_agent"),
+            };
+            if let Err(why) = ready {
+                return answer(Err(why));
+            }
+            let claude = kind == Some("claude");
+            answer(type_text(pane, &text, enter, claude))
+        }
+    }
+}
+
+fn condition(s: &str) -> Option<Condition> {
+    let fingerprint = |fp: &str| {
+        (fp.len() == 16 && fp.chars().all(|c| c.is_ascii_hexdigit())).then(|| fp.to_owned())
+    };
+    match s {
+        "panel" => Some(Condition::Panel(None)),
+        "working" => Some(Condition::Working),
+        _ => {
+            if let Some(fp) = s.strip_prefix("panel:") {
+                return fingerprint(fp).map(|f| Condition::Panel(Some(f)));
+            }
+            fingerprint(s.strip_prefix("approval:")?).map(Condition::Approval)
+        }
+    }
+}
+
+/// Whether `key` may be pressed on this screen for this condition.
+fn key_allowed(read: &Reading, key: &str, cond: &Condition) -> Result<(), &'static str> {
+    match cond {
+        Condition::Approval(fp) => {
+            let a = read.approval.as_ref().ok_or("question_gone")?;
+            if &a.fingerprint != fp {
+                return Err("question_changed");
+            }
+            let n: usize = key.parse().map_err(|_| "no_such_option")?;
+            if n == 0 || n > a.options.len() {
+                return Err("no_such_option");
+            }
+            Ok(())
+        }
+        Condition::Panel(fp) => {
+            read.panel.as_ref().ok_or("panel_closed")?;
+            match fp {
+                Some(fp) if read.panel_fingerprint.as_ref() != Some(fp) => Err("panel_changed"),
+                _ => Ok(()),
             }
         }
-        _ => usage(),
+        Condition::Working => {
+            // Only while the turn is visibly running and nothing is asking:
+            // an Esc after the turn ended reaches the idle prompt.
+            if read.approval.is_some() || read.panel.is_some() {
+                return Err("not_working");
+            }
+            read.activity.as_ref().map(|_| ()).ok_or("not_working")
+        }
+    }
+}
+
+/// A message goes only into Claude's own input box: not into a permission
+/// menu, where letters are answers, and not into a panel, where its Enter
+/// would choose whatever is selected.
+fn text_allowed(read: &Reading) -> Result<(), &'static str> {
+    if read.approval.is_some() {
+        return Err("question");
+    }
+    if read.panel.is_some() {
+        return Err("panel");
+    }
+    if !read.prompt {
+        return Err("no_prompt");
+    }
+    Ok(())
+}
+
+fn answer(r: Result<(), &'static str>) -> i32 {
+    match r {
+        Ok(()) => {
+            println!("{}", json!({ "sent": true }));
+            0
+        }
+        Err(why) => {
+            println!("{}", json!({ "sent": false, "why": why }));
+            // 1 for what went wrong, 3 for what was refused on purpose,
+            // `enter_withheld` included: the text went in, and the Enter
+            // after it was held back because the screen changed.
+            if why == "tmux" || why == "busy" {
+                1
+            } else {
+                3
+            }
+        }
     }
 }
 
 fn usage() -> i32 {
-    eprintln!("Usage: attache-cli input <%pane> --text <base64> [--enter] | --key <name>");
+    eprintln!(
+        "Usage: attache-cli input <%pane> --text <base64> [--enter]\n       attache-cli input <%pane> --key <name> --if approval:<fingerprint>|panel[:<fingerprint>]|working"
+    );
     2
 }
 
-fn type_text(pane: &str, text: &str, enter: bool) -> bool {
-    // A pane scrolled back in copy mode would take the text as copy-mode
-    // keys.
+fn leave_copy_mode(pane: &str) {
     let in_mode = tmux::lines(&["display-message", "-p", "-t", pane, "#{pane_in_mode}"]);
     if in_mode.first().map(String::as_str) == Some("1") {
         tmux::run(&["send-keys", "-X", "-t", pane, "cancel"]);
     }
+}
+
+fn type_text(pane: &str, text: &str, enter: bool, claude: bool) -> Result<(), &'static str> {
+    // A pane scrolled back in copy mode would take the text as copy-mode
+    // keys.
+    leave_copy_mode(pane);
     let sent = if text.starts_with('/') || text.starts_with('!') {
         // Typed, not pasted: `/` and `!` mean something to Claude Code only
         // as the first key typed on an empty prompt.
@@ -85,15 +261,26 @@ fn type_text(pane: &str, text: &str, enter: bool) -> bool {
             && tmux::run(&["paste-buffer", "-d", "-p", "-b", &buffer, "-t", pane]).is_some()
     };
     if !sent {
-        return false;
+        return Err("tmux");
     }
-    if enter {
-        // The agent's prompt takes a moment to finish taking a paste; an
-        // Enter inside it is a newline in the message, not a send.
-        thread::sleep(Duration::from_millis(150));
-        return tmux::run(&["send-keys", "-t", pane, "Enter"]).is_some();
+    if !enter {
+        return Ok(());
     }
-    true
+    // The agent's prompt takes a moment to finish taking a paste; an Enter
+    // inside it is a newline in the message, not a send.
+    thread::sleep(Duration::from_millis(150));
+    // Read again before the Enter: a permission menu or a picker that came
+    // up in those moments would take it as choosing whatever is selected.
+    // The text stays in the box, unsent, for the person to send again.
+    if claude {
+        let read = Reading::from_lines(&screen::capture(pane));
+        if read.approval.is_some() || read.panel.is_some() || !read.prompt {
+            return Err("enter_withheld");
+        }
+    }
+    tmux::run(&["send-keys", "-t", pane, "Enter"])
+        .map(|_| ())
+        .ok_or("tmux")
 }
 
 /// Standard base64, padding optional.

@@ -131,7 +131,7 @@ fn it_reads_then_sends_only_what_changed() {
             hello["start"].as_u64(),
             hello["earlier"].as_bool()
         ),
-        (Some(1), Some(0), Some(false))
+        (Some(2), Some(0), Some(false))
     );
     let first = f.next_of("items");
     assert_eq!(first["from"], 0);

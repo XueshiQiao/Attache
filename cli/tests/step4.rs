@@ -27,6 +27,18 @@ struct Server {
 
 impl Server {
     fn start(tmux: PathBuf, name: &str) -> Server {
+        // `cat` stands in for an agent, named `codex` so attache-cli knows it
+        // as one (by name only, with no screen reader): a pane with no agent
+        // in it takes no message at all.
+        let home = tempfile::tempdir().unwrap();
+        let agent = home.path().join("codex");
+        fs::copy("/bin/cat", &agent).unwrap();
+        // macOS kills a copied system binary on launch until it carries a
+        // signature of its own.
+        if cfg!(target_os = "macos") {
+            assert!(Command::new("codesign").args(["-s", "-", "-f"]).arg(&agent)
+                .output().unwrap().status.success());
+        }
         let socket = format!("attache-cli-input-{name}-{}", std::process::id());
         assert!(Command::new(&tmux)
             .args([
@@ -42,7 +54,7 @@ impl Server {
                 "300",
                 "-y",
                 "60",
-                "cat"
+                agent.to_str().unwrap()
             ])
             .status()
             .unwrap()
@@ -51,7 +63,7 @@ impl Server {
             tmux,
             socket,
             socket_path: String::new(),
-            home: tempfile::tempdir().unwrap(),
+            home,
         };
         s.socket_path = s
             .tmux(&["display-message", "-p", "-t", "probe", "#{socket_path}"])
@@ -212,11 +224,18 @@ fn only_known_keys_are_pressed() {
     let Some(tmux) = tmux_bin() else { return };
     let s = Server::start(tmux, "keys");
     let pane = s.pane();
-    assert!(s.input(&[&pane, "--key", "Enter"]).status.success());
-    assert_eq!(s.input(&[&pane, "--key", "C-c"]).status.code(), Some(2));
-    assert_eq!(s.input(&["probe", "--key", "Enter"]).status.code(), Some(2));
+    // A key names the screen it is for, or it is not a request at all.
+    assert_eq!(s.input(&[&pane, "--key", "Enter"]).status.code(), Some(2));
+    assert_eq!(s.input(&[&pane, "--key", "C-c", "--if", "panel"]).status.code(), Some(2));
+    assert_eq!(s.input(&["probe", "--key", "Enter", "--if", "panel"]).status.code(), Some(2));
     assert_eq!(
         s.input(&[&pane, "--text", "not base64!"]).status.code(),
         Some(2)
     );
+    // `codex` is no Claude: there is no screen to check a key against.
+    // Enter chooses, so it names the very panel it is for.
+    assert_eq!(s.input(&[&pane, "--key", "Enter", "--if", "panel"]).status.code(), Some(2));
+    let o = s.input(&[&pane, "--key", "Down", "--if", "panel"]);
+    assert_eq!(o.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("not_claude"));
 }
