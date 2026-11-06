@@ -496,6 +496,7 @@ touching `Attache/Agents/`:
 ```sh
 swiftc -O -o /tmp/attachecliccheck Attache/Agents/AttacheCliProtocol.swift \
   Attache/Agents/AgentChatModel.swift Attache/Agents/AttacheCliLink.swift \
+  Attache/Agents/HostAgents.swift Attache/Agents/AttacheCliInstaller.swift \
   Attache/Tmux/TmuxTransport.swift Attache/Tmux/TmuxSocket.swift \
   Attache/Tmux/PipeRead.swift Tools/AttacheCliCheck/main.swift
 /tmp/attachecliccheck
