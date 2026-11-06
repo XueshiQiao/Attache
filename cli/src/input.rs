@@ -64,10 +64,13 @@ pub fn run(args: &[String]) -> i32 {
     }
     let ask = match rest {
         [flag, n, when, cond] if flag == "--choose" && when == "--if" => {
-            let (Ok(n), Some(fp)) = (n.parse::<u32>(), cond.strip_prefix("question:")) else {
+            // `submit`: a multiple choice's Submit row, which ends that
+            // question and moves on to the next.
+            let n = if n == "submit" { Ok(0) } else { n.parse::<u32>().and_then(|n| if n == 0 { "x".parse() } else { Ok(n) }) };
+            let (Ok(n), Some(fp)) = (n, cond.strip_prefix("question:")) else {
                 return usage();
             };
-            if n == 0 || fp.len() != 16 || !fp.chars().all(|c| c.is_ascii_hexdigit()) {
+            if fp.len() != 16 || !fp.chars().all(|c| c.is_ascii_hexdigit()) {
                 return usage();
             }
             Ask::Choose(n, fp.to_owned())
@@ -250,7 +253,7 @@ fn answer(r: Result<(), &'static str>) -> i32 {
 
 fn usage() -> i32 {
     eprintln!(
-        "Usage: attache-cli input <%pane> --text <base64> [--enter]\n       attache-cli input <%pane> --key <name> --if approval:<fingerprint>|panel[:<fingerprint>]|working\n       attache-cli input <%pane> --choose <n> --if question:<fingerprint>"
+        "Usage: attache-cli input <%pane> --text <base64> [--enter]\n       attache-cli input <%pane> --key <name> --if approval:<fingerprint>|panel[:<fingerprint>]|working\n       attache-cli input <%pane> --choose <n|submit> --if question:<fingerprint>"
     );
     2
 }
@@ -265,11 +268,19 @@ fn choose(pane: &str, n: u32, fp: &str) -> Result<(), &'static str> {
     if q.fingerprint != fp {
         return Err("question_changed");
     }
-    let option = q.options.iter().find(|o| o.number == n).ok_or("no_such_option")?;
-    if option.typed {
-        return Err("typed_answer");
+    if n == 0 && !q.submit_row {
+        return Err("no_such_option");
     }
-    let (key, steps) = if n >= q.cursor { ("Down", n - q.cursor) } else { ("Up", q.cursor - n) };
+    if n > 0 {
+        let option = q.options.iter().find(|o| o.number == n).ok_or("no_such_option")?;
+        if option.typed {
+            return Err("typed_answer");
+        }
+    }
+    // Rows in the order the cursor moves through them: in a multiple choice
+    // the Submit row sits between the typed answer and "Chat about this".
+    let (from, to) = q.positions(n).ok_or("no_such_option")?;
+    let (key, steps) = if to >= from { ("Down", (to - from) as u32) } else { ("Up", (from - to) as u32) };
     if steps > 0 {
         let mut args = vec!["send-keys", "-t", pane];
         args.extend(std::iter::repeat_n(key, steps as usize));

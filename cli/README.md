@@ -45,9 +45,11 @@ then whenever it changed.
 `approval` (`subject`, `question`, `options` of `number`, `label`, `risk`,
 and `fingerprint`, a hash of the whole dialog, the command included),
 `panel` (its last rows) and `panel_fingerprint`, `question` (an
-`AskUserQuestion` with one question and one answer: `header`, `question`,
-`options` of `number`, `label`, `description`, `typed`, plus `cursor` and
-`fingerprint`, which leaves the cursor out), `activity` (`verb`, `detail`).
+`AskUserQuestion`: `header`, `question`, `tabs` of `title`, `answered` when
+several are asked, `multi`, `review` with `answers` of `question`, `answer`
+on the last tab, `options` of `number`, `label`, `description`, `typed`,
+`checked`, plus `cursor` (an option's number, 0 for Submit), `submit_row`,
+and `fingerprint`, which leaves the cursor and the hint line out), `activity` (`verb`, `detail`).
 Only Claude's screen is read; on another agent all of them are empty.
 
 `input` prints `{"sent":true}` or `{"sent":false,"why":…}`. **No key and no
@@ -56,8 +58,9 @@ names the screen it is for, `--if approval:<fingerprint>` (a digit, that
 very menu), `--if panel` (arrows, Tab, Esc) or `--if panel:<fingerprint>`
 (those and Enter, which chooses, on that very panel), or `--if working`
 (Esc, while the working line is up and Claude's session file says busy).
-`--choose <n> --if question:<fingerprint>` answers a question: the cursor
-is moved to answer `n` with arrows, the screen read again, and Enter
+`--choose <n|submit> --if question:<fingerprint>` answers a question (or,
+in a multiple choice, ticks answer `n`; `submit` is its Submit row): the
+cursor is moved there with arrows, the screen read again, and Enter
 pressed only if the cursor arrived on that very question; answers that
 need typing are refused (`typed_answer`).
 A message needs an agent in the pane and, for Claude, its input box with

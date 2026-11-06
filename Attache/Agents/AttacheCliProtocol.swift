@@ -110,9 +110,10 @@ nonisolated struct ApprovalMenu: Equatable, Sendable {
     let fingerprint: String
 }
 
-/// A question Claude asked with `AskUserQuestion`: one question, one answer
-/// picked from a list. attache-cli moves the cursor to the answer, looks
-/// again, and only then presses Enter.
+/// A question Claude asked with `AskUserQuestion`: one question or several
+/// (as tabs), each picked from a list or, as multiple choice, ticked; and the
+/// last tab, where the answers are reviewed and submitted. attache-cli moves
+/// the cursor to a row, looks again, and only then presses Enter.
 nonisolated struct QuestionMenu: Equatable, Sendable {
     struct Option: Equatable, Sendable {
         let number: Int
@@ -121,24 +122,52 @@ nonisolated struct QuestionMenu: Equatable, Sendable {
         /// Answered by typing (`Type something.`, `Chat about this`): the
         /// terminal's.
         let typed: Bool
+        /// A multiple choice's box is ticked.
+        let checked: Bool
+    }
+
+    struct Tab: Equatable, Sendable {
+        let title: String
+        let answered: Bool
     }
 
     let header: String
     let question: String
+    let tabs: [Tab]
+    let multi: Bool
+    /// The last tab of several: the answers given, Submit answers or Cancel.
+    let review: Bool
+    let answers: [(question: String, answer: String)]
     let options: [Option]
-    /// The question and its answers, not where the cursor is.
+    /// A multiple choice's Submit row, which ends that question.
+    let submitRow: Bool
+    /// The question and its rows, not where the cursor is.
     let fingerprint: String
+
+    static func == (a: QuestionMenu, b: QuestionMenu) -> Bool {
+        a.fingerprint == b.fingerprint && a.options == b.options && a.tabs == b.tabs
+    }
 
     init?(_ q: [String: Any]) {
         let fp = q["fingerprint"] as? String ?? ""
         let options = (q["options"] as? [[String: Any]] ?? []).compactMap { o -> Option? in
             guard let n = o["number"] as? Int else { return nil }
             return Option(number: n, label: o["label"] as? String ?? "",
-                          description: o["description"] as? String ?? "", typed: o["typed"] as? Bool ?? false)
+                          description: o["description"] as? String ?? "", typed: o["typed"] as? Bool ?? false,
+                          checked: o["checked"] as? Bool ?? false)
         }
         guard AttacheCliInput.isFingerprint(fp), !options.isEmpty else { return nil }
         header = q["header"] as? String ?? ""
         question = q["question"] as? String ?? ""
+        tabs = (q["tabs"] as? [[String: Any]] ?? []).map {
+            Tab(title: $0["title"] as? String ?? "", answered: $0["answered"] as? Bool ?? false)
+        }
+        multi = q["multi"] as? Bool ?? false
+        review = q["review"] as? Bool ?? false
+        answers = (q["answers"] as? [[String: Any]] ?? []).map {
+            (question: $0["question"] as? String ?? "", answer: $0["answer"] as? String ?? "")
+        }
+        submitRow = q["submit_row"] as? Bool ?? false
         self.options = options
         fingerprint = fp
     }

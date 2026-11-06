@@ -603,6 +603,17 @@ final class ChatHeaderView: NSView {
     }
 }
 
+extension ChatHeaderView {
+    /// A tag as the header draws them; the current one in the accent.
+    static func chip(_ text: String, current: Bool) -> NSView {
+        let view = ChipView(Chip(text: text))
+        if current {
+            view.layer?.backgroundColor = ChromeTheme.current.accent.withAlphaComponent(0.25).cgColor
+        }
+        return view
+    }
+}
+
 /// A rounded tag: a word or two, with a coloured dot when it is a state.
 private final class ChipView: NSView {
     init(_ chip: ChatHeaderView.Chip) {
@@ -765,10 +776,14 @@ final class ChatApprovalDock: NSView {
     }
 }
 
-/// A question Claude asked: its header, the question, and an answer a row.
-/// The answers that need typing are shown, and point to the terminal.
+/// A question Claude asked: the tabs when there are several (ticked when
+/// answered), the question, and an answer a row. A multiple choice ticks a
+/// row per click and moves on with its own button; the last tab lists the
+/// answers given, to submit or cancel. Answers that need typing point to
+/// the terminal.
 final class ChatQuestionDock: NSView {
     var onChoose: ((QuestionMenu.Option) -> Void)?
+    var onSubmitChoices: (() -> Void)?
     var onShowTerminal: (() -> Void)?
     private let stack = NSStackView()
     private var shown: QuestionMenu?
@@ -790,21 +805,48 @@ final class ChatQuestionDock: NSView {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         guard let q else { return }
         let theme = ChromeTheme.current
-        if !q.header.isEmpty {
-            stack.addArrangedSubview(ChatRowViews.label(q.header.uppercased(), font: .systemFont(ofSize: 10.5, weight: .semibold),
-                                                        colour: theme.mutedText, selectable: false))
+        let add = { (view: NSView, fill: Bool) in
+            self.stack.addArrangedSubview(view)
+            if fill { view.widthAnchor.constraint(equalTo: self.stack.widthAnchor).isActive = true }
         }
-        let question = ChatRowViews.label(q.question, font: .systemFont(ofSize: 13, weight: .semibold), colour: theme.text)
-        stack.addArrangedSubview(question)
-        question.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        if !q.tabs.isEmpty {
+            // ☒ answered, ☐ not yet; the review tab last.
+            let words = q.tabs.map { ($0.answered ? "☒ " : "☐ ") + $0.title } + ["✔ Submit"]
+            let row = NSStackView(views: words.map { word in
+                ChatHeaderView.chip(word, current: word.hasSuffix(" " + q.header) && !q.review
+                    || (q.review && word == "✔ Submit"))
+            })
+            row.orientation = .horizontal
+            row.spacing = 6
+            add(row, false)
+        } else if !q.header.isEmpty {
+            add(ChatRowViews.label(q.header.uppercased(), font: .systemFont(ofSize: 10.5, weight: .semibold),
+                                   colour: theme.mutedText, selectable: false), false)
+        }
+        add(ChatRowViews.label(q.question, font: .systemFont(ofSize: 13, weight: .semibold), colour: theme.text), true)
+        if q.review {
+            for (question, answer) in q.answers {
+                let line = ChatRowViews.label("\(question)\n→ \(answer)", font: .systemFont(ofSize: 12.5),
+                                              colour: theme.mutedText, selectable: true)
+                add(line, true)
+            }
+        }
         for option in q.options {
-            let row = AnswerRow(number: option.number, label: option.label,
+            let label = q.multi && !option.typed ? (option.checked ? "☑ " : "☐ ") + option.label : option.label
+            let row = AnswerRow(number: option.number, label: label,
                                 detail: option.description.isEmpty ? nil : option.description,
                                 note: option.typed ? "in the terminal" : nil) { [weak self] in
                 if option.typed { self?.onShowTerminal?() } else { self?.onChoose?(option) }
             }
-            stack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            add(row, true)
+        }
+        if q.multi, q.submitRow {
+            let done = ChatRowViews.button(q.tabs.isEmpty ? "Done" : "Next question") { [weak self] in
+                self?.onSubmitChoices?()
+            }
+            done.keyEquivalent = ""
+            done.bezelColor = theme.accent
+            add(done, false)
         }
     }
 }

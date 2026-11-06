@@ -269,41 +269,61 @@ fn activity_line(line: &str) -> Option<Activity> {
 
 // ---------------------------------------------------------------- question
 
-/// A question Claude asked with `AskUserQuestion`: one question, one answer
-/// picked from a list. Read from a real capture of Claude Code 2.1
-/// (2026-11-06):
+/// A question Claude asked with `AskUserQuestion`, read from real captures of
+/// Claude Code 2.1 (2026-11-06). Three screens, one shape:
 ///
 /// ```text
-/// ────────────────────────────────
-///  ☐ 提交钩子
+/// ────────────────────────────────            ← one question: a header chip
+///  ☐ 选项说明
 ///
-/// │ 提交 release.yml 时，pre-commit 钩子……你想怎么处理？
+/// （测试单选题）选择卡片里……？                     (sometimes `│ `-prefixed)
 ///
-/// ❯ 1. 这次跳过钩子 (Recommended)
-///      用 git commit --no-verify 提交并推送 release.yml……
-///   2. 允许 esbuild 运行安装脚本
-///      在仓库根目录新建 pnpm-workspace.yaml……
-///   3. 先不提交
-///      release.yml 的改动先留在暂存区……
-///   4. Type something.
+/// ❯ 1. 始终显示
+///      每个选项下面都写出说明
+///   2. 鼠标悬停才显示
+///   3. Type something.
 /// ────────────────────────────────
-///   5. Chat about this
+///   4. Chat about this
 ///
 /// Enter to select · ↑/↓ to navigate · Esc to cancel
+/// ──────────────────────────────── Herdr …    ← the input box's rule, below
+///
+/// ←  ☒ 卡片位置  ☐ 卡片内容  ✔ Submit  →         ← several: tabs, ☒ answered
+///   1. [✔] 问题的标题                            ← multiple choice
+///          比如「卡片位置」
+/// ❯ 2. [ ] 选项编号
+///   3. [ ] Type something
+///      Submit                                    ← an unnumbered row: done
+///
+/// Review your answers                            ← the last tab
+///  ● （测试题 1）……？
+///    → 输入框上方
+/// Ready to submit your answers?
+/// ❯ 1. Submit answers
+///   2. Cancel
 /// ```
 ///
-/// Narrow on purpose, as the permission menu is: several questions at once
-/// (a row of tabs with Submit) and multiple choice (checkboxes) are left to
-/// the terminal, and so are the two answers that need typing.
+/// Rows are what the cursor moves through: the numbered answers and, in a
+/// multiple choice, the Submit row before "Chat about this". The answers
+/// that need typing are the terminal's. Where the current tab is shows only
+/// in colour; the first one not yet answered is taken for it, as
+/// herdr-web-ui does.
 #[derive(Debug)]
 pub struct Question {
+    /// The tabs, when several questions are asked: (title, answered).
+    pub tabs: Vec<(String, bool)>,
     pub header: String,
     pub text: String,
+    pub multi: bool,
+    pub review: bool,
+    /// On the review tab: each question and the answer given.
+    pub answers: Vec<(String, String)>,
     pub options: Vec<QuestionOption>,
-    /// The option the cursor is on.
+    /// The row the cursor is on: an option's number, or 0 for Submit.
     pub cursor: u32,
-    /// A hash of the question and its answers, leaving out where the cursor
-    /// is: moving it does not make it another question.
+    /// Whether a multiple choice has its Submit row.
+    pub submit_row: bool,
+    /// A hash of the question and its rows, leaving out where the cursor is.
     pub fingerprint: String,
 }
 
@@ -312,9 +332,10 @@ pub struct QuestionOption {
     pub number: u32,
     pub label: String,
     pub description: String,
-    /// `Type something.` and `Chat about this`: answered by typing, in the
-    /// terminal.
+    /// `Type something.` (or a draft typed there) and `Chat about this`.
     pub typed: bool,
+    /// A multiple choice's box is ticked.
+    pub checked: bool,
 }
 
 impl Question {
@@ -322,63 +343,124 @@ impl Question {
         json!({
             "header": self.header,
             "question": self.text,
+            "tabs": self.tabs.iter().map(|(t, a)| json!({ "title": t, "answered": a })).collect::<Vec<_>>(),
+            "multi": self.multi,
+            "review": self.review,
+            "answers": self.answers.iter().map(|(q, a)| json!({ "question": q, "answer": a })).collect::<Vec<_>>(),
             "cursor": self.cursor,
+            "submit_row": self.submit_row,
             "fingerprint": self.fingerprint,
             "options": self.options.iter().map(|o| json!({
-                "number": o.number, "label": o.label, "description": o.description, "typed": o.typed,
+                "number": o.number, "label": o.label, "description": o.description,
+                "typed": o.typed, "checked": o.checked,
             })).collect::<Vec<_>>(),
         })
     }
+
+    /// Where row `target` (an option's number, or 0 for Submit) is among the
+    /// rows the cursor moves through, and where the cursor is.
+    pub fn positions(&self, target: u32) -> Option<(usize, usize)> {
+        let mut order: Vec<u32> = self.options.iter().map(|o| o.number).collect();
+        if self.submit_row {
+            // Submit sits before "Chat about this", the last numbered row.
+            let at = order.len().saturating_sub(1);
+            order.insert(at, 0);
+        }
+        let to = order.iter().position(|&n| n == target)?;
+        let from = order.iter().position(|&n| n == self.cursor)?;
+        Some((from, to))
+    }
+}
+
+fn is_any_rule(line: &str) -> bool {
+    is_dialog_rule(line) || is_box_rule(line)
 }
 
 pub fn question(rows: &[String]) -> Option<Question> {
-    let lines = trimmed(rows);
-    let footer = lines.last()?.to_lowercase();
-    if !(footer.contains("enter to select") && footer.contains("navigate")) {
-        return None;
+    let mut lines = trimmed(rows);
+    // The input box's rule (and the box) can follow the form; what matters
+    // is the last line of the form itself.
+    while lines.last().is_some_and(|l| l.trim().is_empty() || is_any_rule(l)) {
+        lines.pop();
     }
-    // The header, `☐ <title>`, opens the form; a row of tabs there (several
-    // questions, `✔ Submit`) is not this form.
-    let top = (0..lines.len()).rev().find(|&i| lines[i].trim_start().starts_with('☐'))?;
+    let last = lines.last()?.to_lowercase();
+    let footer = last.contains("enter to select") && last.contains("navigate");
+    // The header: the tab bar, or a single question's chip.
+    let top = (0..lines.len()).rev().find(|&i| {
+        let t = lines[i].trim_start();
+        t.starts_with('☐') || t.starts_with('☒') || (t.starts_with('←') && t.contains("Submit"))
+    })?;
     let header_line = lines[top].trim();
-    if header_line.contains("Submit") || header_line.contains('←') || header_line.matches('☐').count() > 1 {
+    let mut tabs = Vec::new();
+    let header = if header_line.starts_with('←') {
+        for part in header_line.split("  ") {
+            let p = part.trim();
+            if let Some(title) = p.strip_prefix('☐') {
+                tabs.push((title.trim().to_owned(), false));
+            } else if let Some(title) = p.strip_prefix('☒') {
+                tabs.push((title.trim().to_owned(), true));
+            }
+        }
+        if tabs.is_empty() {
+            return None;
+        }
+        tabs.iter().find(|t| !t.1).or(tabs.last()).map(|t| t.0.clone()).unwrap_or_default()
+    } else {
+        header_line.trim_start_matches(['☐', '☒']).trim().to_owned()
+    };
+    let body = &lines[top + 1..if footer { lines.len() - 1 } else { lines.len() }];
+    if body.iter().any(|l| l.trim() == "Review your answers") {
+        return review(&lines[top..], tabs, header);
+    }
+    if !footer {
         return None;
     }
-    let header = header_line.trim_start_matches('☐').trim().to_owned();
     let mut text: Vec<String> = Vec::new();
     let mut options: Vec<QuestionOption> = Vec::new();
     let mut cursor = None;
-    for line in &lines[top + 1..lines.len() - 1] {
+    let mut submit_row = false;
+    let mut multi = false;
+    for line in body {
         let t = line.trim();
-        if t.is_empty() || is_dialog_rule(line) {
-            continue;
-        }
-        if let Some(rest) = t.strip_prefix('│') {
-            if !options.is_empty() {
-                return None;
-            }
-            text.push(rest.trim().to_owned());
+        if t.is_empty() || is_any_rule(line) {
             continue;
         }
         if let Some((n, label)) = option_line(line) {
-            // Multiple choice draws a box per answer.
-            if label.starts_with('[') || label.starts_with('☐') || label.starts_with('☒') {
-                return None;
-            }
+            let (checked, label) = match label.strip_prefix("[✔] ").or_else(|| label.strip_prefix("[✓] ")) {
+                Some(rest) => (Some(true), rest.to_owned()),
+                None => match label.strip_prefix("[ ] ") {
+                    Some(rest) => (Some(false), rest.to_owned()),
+                    None => (None, label),
+                },
+            };
+            multi |= checked.is_some();
             if line.trim_start().starts_with('❯') {
                 cursor = Some(n);
             }
             let typed = label.starts_with("Type something") || label.starts_with("Chat about this");
-            options.push(QuestionOption { number: n, label, description: String::new(), typed });
+            options.push(QuestionOption { number: n, label, description: String::new(), typed, checked: checked == Some(true) });
+            continue;
+        }
+        // A multiple choice's unnumbered Submit row.
+        let plain = t.trim_start_matches('❯').trim();
+        if !options.is_empty() && plain == "Submit" {
+            submit_row = true;
+            if t.starts_with('❯') {
+                cursor = Some(0);
+            }
             continue;
         }
         // An answer's description, indented under it.
-        if line.starts_with("     ") {
+        if !options.is_empty() && line.starts_with("     ") {
             let last = options.last_mut()?;
             if !last.description.is_empty() {
                 last.description.push(' ');
             }
             last.description.push_str(t);
+            continue;
+        }
+        if options.is_empty() {
+            text.push(t.strip_prefix('│').unwrap_or(t).trim().to_owned());
             continue;
         }
         return None;
@@ -389,14 +471,67 @@ pub fn question(rows: &[String]) -> Option<Question> {
     if options.iter().enumerate().any(|(k, o)| o.number as usize != k + 1) {
         return None;
     }
-    let canonical: Vec<String> = lines[top..]
-        .iter()
-        .map(|l| l.replacen('❯', " ", 1))
-        .collect();
+    // A draft typed into the typed answer's row shows instead of its label:
+    // the row before "Chat about this" is the typed answer whatever it says.
+    let n = options.len();
+    if n >= 2 && options[n - 1].label.starts_with("Chat about this") {
+        options[n - 2].typed = true;
+    }
+    // Not the hint line: it changes with the cursor (`ctrl+g to edit in
+    // Vim` appears on the typed answer's row), and moving the cursor is not
+    // another question.
+    let canonical: Vec<String> = lines[top..lines.len() - 1].iter().map(|l| l.replacen('❯', " ", 1)).collect();
     Some(Question {
+        tabs,
         header,
         text: text.join("\n"),
+        multi,
+        review: false,
+        answers: Vec::new(),
         cursor: cursor?,
+        submit_row,
+        fingerprint: fnv(&canonical.join("\n")),
+        options,
+    })
+}
+
+/// The last tab of several questions: the answers given, Submit or Cancel.
+fn review(lines: &[&str], tabs: Vec<(String, bool)>, header: String) -> Option<Question> {
+    let mut answers: Vec<(String, String)> = Vec::new();
+    let mut options = Vec::new();
+    let mut cursor = None;
+    let mut text = String::new();
+    for line in &lines[1..] {
+        let t = line.trim();
+        if let Some(q) = t.strip_prefix('●') {
+            answers.push((q.trim().to_owned(), String::new()));
+        } else if let Some(a) = t.strip_prefix('→') {
+            if let Some(last) = answers.last_mut() {
+                last.1 = a.trim().to_owned();
+            }
+        } else if t.ends_with('?') && !t.starts_with('❯') && option_line(line).is_none() && t != "Review your answers" {
+            text = t.to_owned();
+        } else if let Some((n, label)) = option_line(line) {
+            if line.trim_start().starts_with('❯') {
+                cursor = Some(n);
+            }
+            options.push(QuestionOption { number: n, label, description: String::new(), typed: false, checked: false });
+        }
+    }
+    let labels: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
+    if labels != ["Submit answers", "Cancel"] || answers.is_empty() {
+        return None;
+    }
+    let canonical: Vec<String> = lines.iter().map(|l| l.replacen('❯', " ", 1)).collect();
+    Some(Question {
+        tabs,
+        header,
+        text: if text.is_empty() { "Ready to submit your answers?".into() } else { text },
+        multi: false,
+        review: true,
+        answers,
+        cursor: cursor?,
+        submit_row: false,
         fingerprint: fnv(&canonical.join("\n")),
         options,
     })
@@ -991,12 +1126,62 @@ mod tests {
         assert_ne!(a.fingerprint, question(&other).unwrap().fingerprint);
     }
 
+    // Real captures of Claude Code 2.1, 2026-11-06: one question, the first
+    // of two, a multiple choice, the cursor on its typed answer, the review.
+    fn fixture(text: &str) -> Vec<String> {
+        text.lines().map(str::to_owned).collect()
+    }
+
     #[test]
-    fn several_questions_or_boxes_are_left_to_the_terminal() {
-        let tabs: Vec<String> = asked().into_iter().map(|l| if l.contains("☐ 提交钩子") { "←  ☐ 提交钩子  ☐ 发布  ✔ Submit  →".to_owned() } else { l }).collect();
-        assert!(question(&tabs).is_none());
-        let boxes: Vec<String> = asked().into_iter().map(|l| l.replace("1. 这次", "1. [ ] 这次")).collect();
-        assert!(question(&boxes).is_none());
+    fn a_real_single_question_is_read_with_its_trailing_rule() {
+        let q = question(&fixture(include_str!("../tests/fixtures/ask-single.txt"))).unwrap();
+        assert_eq!(q.header, "选项说明");
+        assert!(q.tabs.is_empty() && !q.multi && !q.review);
+        assert!(q.text.starts_with("（测试单选题）"));
+        assert_eq!(q.options.len(), 5);
+        assert_eq!(q.cursor, 1);
+        assert_eq!(q.options[0].description, "每个选项下面都写出说明");
+        assert!(q.options[3].typed && q.options[4].typed && !q.options[2].typed);
+    }
+
+    #[test]
+    fn several_questions_read_their_tabs() {
+        let q = question(&fixture(include_str!("../tests/fixtures/ask-tabs-first.txt"))).unwrap();
+        assert_eq!(q.tabs, vec![("卡片位置".to_owned(), false), ("卡片内容".to_owned(), false)]);
+        assert_eq!(q.header, "卡片位置");
+        assert_eq!(q.options.len(), 4);
+        assert!(!q.multi);
+    }
+
+    #[test]
+    fn a_multiple_choice_reads_its_boxes_and_its_submit_row() {
+        let q = question(&fixture(include_str!("../tests/fixtures/ask-multi.txt"))).unwrap();
+        assert!(q.multi && q.submit_row);
+        assert_eq!(q.options.iter().map(|o| o.checked).collect::<Vec<_>>(), vec![true, true, false, false, false]);
+        assert_eq!(q.options[0].label, "问题的标题");
+        assert_eq!(q.cursor, 2);
+        // Submit is a row between the typed answer and "Chat about this".
+        assert_eq!(q.positions(0), Some((1, 4)));
+        assert_eq!(q.positions(5), Some((1, 5)));
+        let typed = question(&fixture(include_str!("../tests/fixtures/ask-multi-typed.txt"))).unwrap();
+        assert_eq!(typed.cursor, 4);
+        assert!(typed.options[3].typed);
+        // Moving the cursor is not another question.
+        assert_eq!(q.fingerprint, typed.fingerprint);
+    }
+
+    #[test]
+    fn the_review_tab_reads_the_answers() {
+        let q = question(&fixture(include_str!("../tests/fixtures/ask-review.txt"))).unwrap();
+        assert!(q.review);
+        assert_eq!(q.answers.len(), 2);
+        assert_eq!(q.answers[1].1, "问题的标题, 选项编号");
+        assert_eq!(q.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), vec!["Submit answers", "Cancel"]);
+        assert_eq!(q.cursor, 1);
+    }
+
+    #[test]
+    fn a_permission_menu_is_no_question() {
         assert!(question(&rows(MENU)).is_none());
     }
 }

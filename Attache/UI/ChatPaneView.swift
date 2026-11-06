@@ -212,6 +212,7 @@ final class ChatPaneView: NSView {
         working.onStop = { [weak self] in self?.confirmStop() }
         approval.onAnswer = { [weak self] option in self?.answer(option) }
         questionDock.onChoose = { [weak self] option in self?.model?.choose(option) }
+        questionDock.onSubmitChoices = { [weak self] in self?.model?.submitChoices() }
         questionDock.onShowTerminal = { [weak self] in self?.onShowTerminal?() }
         unreadable.onShowTerminal = { [weak self] in self?.onShowTerminal?() }
         panel.onKey = { [weak self] key in self?.model?.panelKey(key) }

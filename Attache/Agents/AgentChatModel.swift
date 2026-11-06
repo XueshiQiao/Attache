@@ -336,8 +336,20 @@ final class AgentChatModel {
     /// cursor there with arrows, reads the screen again, and presses Enter
     /// only if the cursor arrived on that very question.
     func choose(_ option: QuestionMenu.Option) {
-        guard let q = question, !option.typed else { return }
-        link.run(["input", pane, "--choose", String(option.number), "--if", "question:\(q.fingerprint)"]) { [weak self] lines in
+        guard !option.typed else { return }
+        choose(row: String(option.number))
+    }
+
+    /// A multiple choice's Submit row: that question is answered, on to the
+    /// next.
+    func submitChoices() {
+        guard question?.submitRow == true else { return }
+        choose(row: "submit")
+    }
+
+    private func choose(row: String) {
+        guard let q = question else { return }
+        link.run(["input", pane, "--choose", row, "--if", "question:\(q.fingerprint)"]) { [weak self] lines in
             guard let self else { return }
             let result = AttacheCliInput.Result(lines: lines)
             if !result.sent {
