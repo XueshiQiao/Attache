@@ -1,0 +1,25 @@
+[package]
+name = "attache-cli"
+version = "0.1.0"
+edition = "2021"
+description = "The host side of Attaché: what the phone and the desktop read agents through"
+publish = false
+
+[[bin]]
+name = "attache-cli"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
