@@ -40,6 +40,9 @@ final class ChatPaneView: NSView {
 
     /// What is drawn, by key, so a change re-makes only the rows it touched.
     private var drawn: [(id: String, view: NSView, mark: ChatMinimapView.Kind)] = []
+    /// The folds the person opened, by `ChatFold.key`. The page's own, like
+    /// which way the chat is switched: no one else has an opinion about it.
+    private var openFolds = Set<String>()
     /// The first element drawn. Fixed once chosen, so new rows at the bottom
     /// do not slide the window and rebuild everything; moved up a page at a
     /// time as the person scrolls to the top. Every row drawn is a live text
@@ -487,7 +490,9 @@ final class ChatPaneView: NSView {
         // newest message and read as the person scrolling away (found by
         // review, 2026-11-06).
         defer { updateMinimap() }
-        let all = Self.elements(rows: model.rows, pending: model.pending)
+        let all = Self.elements(rows: model.rows, pending: model.pending,
+                                working: model.agent?.phase == .working && !model.agentExited,
+                                open: openFolds)
         if let key = firstShownKey, let found = all.firstIndex(where: { $0.key == key }) {
             if revealEarlier, found > 0 {
                 revealEarlier = false
@@ -538,7 +543,14 @@ final class ChatPaneView: NSView {
         for gone in drawn[keep...] { gone.view.removeFromSuperview() }
         drawn.removeSubrange(keep...)
         for (i, element) in elements.enumerated().dropFirst(keep) {
-            let view = ChatRowViews.make(element, width: { [weak self] in self?.bounds.width ?? 600 })
+            let view: NSView
+            if case .fold(let fold) = element {
+                let folded = WorkFold(fold)
+                folded.onToggle = { [weak self] in self?.toggle(fold: fold.key) }
+                view = folded
+            } else {
+                view = ChatRowViews.make(element, width: { [weak self] in self?.bounds.width ?? 600 })
+            }
             list.addArrangedSubview(view)
             view.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
             // A run of tool steps reads as one block.
@@ -631,17 +643,86 @@ final class ChatPaneView: NSView {
         return chips
     }
 
+    private func toggle(fold key: String) {
+        // What was opened or closed stays where it is.
+        holdPosition()
+        if openFolds.remove(key) == nil { openFolds.insert(key) }
+        refresh()
+    }
+
     /// The rows as drawn: a sent message sits right after the row that was
     /// last when it went out. Each tool step is its own element, so the next
     /// step does not rebuild — and close — the ones the person opened.
-    static func elements(rows: [ChatRow], pending: [PendingMessage]) -> [ChatElement] {
+    ///
+    /// The work of a turn is folded (design F in
+    /// `docs/chat-tool-folding-designs.html`): everything between a prompt
+    /// and its answer — thinking, lines said along the way, tool steps — is
+    /// one line, and the answer, the turn's last reply, stands after it.
+    /// A turn still running folds all its work so far, and the line says
+    /// what it is doing. Thinking is a summary at most (often empty), and
+    /// what it says the answer says better, so a finished turn shows none of
+    /// it until opened. Command output and notes are not the agent's work
+    /// and split a fold where they fall.
+    static func elements(rows: [ChatRow], pending: [PendingMessage], working: Bool,
+                         open: Set<String>) -> [ChatElement] {
         let keys = Set(rows.map(\.key))
         let byAnchor = Dictionary(grouping: pending.filter { $0.anchorKey.map(keys.contains) ?? false },
                                   by: { $0.anchorKey ?? "" })
         var out: [ChatElement] = []
-        for row in rows {
+        func put(_ row: ChatRow) {
             out.append(.row(row))
             if let sent = byAnchor[row.key] { out += sent.map(ChatElement.pending) }
+        }
+        func fold(_ stretch: [ChatRow], live: Bool) {
+            guard let first = stretch.first else { return }
+            var thoughts = 0, steps = 0, failed = 0
+            var progress: String?, running: String?
+            for row in stretch {
+                switch row {
+                case .thinking(_, let text):
+                    thoughts += 1
+                    if live { progress = ChatFold.firstLine(text) ?? progress }
+                case .agent(_, let text):
+                    if live { progress = ChatFold.firstLine(text) ?? progress }
+                case .tool(_, let name, let summary, _, let result, let isError, _):
+                    steps += 1
+                    if isError { failed += 1 }
+                    running = result == nil ? "\(name)  \(summary)" : nil
+                default: break
+                }
+            }
+            // Lines said and nothing else is no work to fold.
+            guard thoughts + steps > 0 else { return stretch.forEach(put) }
+            let isOpen = open.contains(first.key)
+            out.append(.fold(ChatFold(key: first.key, thoughts: thoughts, steps: steps, failed: failed,
+                                      live: live, open: isOpen,
+                                      progress: live ? progress : nil, running: live ? running : nil)))
+            if isOpen {
+                stretch.forEach(put)
+            } else {
+                for row in stretch { if let sent = byAnchor[row.key] { out += sent.map(ChatElement.pending) } }
+            }
+        }
+        // Turns start at each prompt.
+        var turns: [[ChatRow]] = [[]]
+        for row in rows {
+            if case .user = row { turns.append([row]) } else { turns[turns.count - 1].append(row) }
+        }
+        for (t, turn) in turns.enumerated() {
+            let live = working && t == turns.count - 1
+            let answer = live ? nil : turn.lastIndex { if case .agent = $0 { return true } else { return false } }
+            var stretch: [ChatRow] = []
+            for (i, row) in turn.enumerated() {
+                switch row {
+                case .thinking, .tool, .agent where i != answer:
+                    stretch.append(row)
+                default:
+                    fold(stretch, live: false)
+                    stretch = []
+                    put(row)
+                }
+            }
+            fold(stretch, live: live)
         }
         out += pending.filter { !($0.anchorKey.map(keys.contains) ?? false) }.map(ChatElement.pending)
         return out
@@ -650,10 +731,35 @@ final class ChatPaneView: NSView {
 
 /// One thing in the list: a row, a message on its way, or a line of this
 /// page's own.
+/// The work between a prompt and its answer, folded into one line.
+struct ChatFold: Equatable {
+    /// The first folded row's key: the same as the work grows, so a fold
+    /// the person opened stays open.
+    let key: String
+    let thoughts: Int
+    let steps: Int
+    let failed: Int
+    /// The turn is still running.
+    let live: Bool
+    let open: Bool
+    /// While live: the first line of the latest thinking or line said.
+    let progress: String?
+    /// While live: the step still running.
+    let running: String?
+
+    static func firstLine(_ text: String) -> String? {
+        let line = text.split(whereSeparator: \.isNewline).first.map {
+            $0.trimmingCharacters(in: .whitespaces)
+        } ?? ""
+        return line.isEmpty ? nil : line
+    }
+}
+
 enum ChatElement {
     case row(ChatRow)
     case pending(PendingMessage)
     case note(id: String, text: String)
+    case fold(ChatFold)
 
     var isTool: Bool {
         if case .row(.tool) = self { return true }
@@ -666,6 +772,7 @@ enum ChatElement {
         case .row(let row): "r:" + row.key
         case .pending(let p): "p:\(p.id)"
         case .note(let id, _): "n:" + id
+        case .fold(let f): "f:" + f.key
         }
     }
 
@@ -675,7 +782,7 @@ enum ChatElement {
         case .pending(let p): .prompt(p.text)
         case .row(.agent), .row(.output): .reply
         case .row(.tool): .tool
-        case .row(.thinking), .row(.note), .note: .quiet
+        case .row(.thinking), .row(.note), .note, .fold: .quiet
         }
     }
 
@@ -685,6 +792,8 @@ enum ChatElement {
         case .row(let row): "r:\(row.key):\(Self.digest(row))"
         case .pending(let p): "p:\(p.id):\(p.unconfirmed)"
         case .note(let id, _): "n:\(id)"
+        case .fold(let f):
+            "f:\(f.key):\(f.thoughts):\(f.steps):\(f.failed):\(f.live):\(f.open):\(f.progress ?? ""):\(f.running ?? "")"
         }
     }
 

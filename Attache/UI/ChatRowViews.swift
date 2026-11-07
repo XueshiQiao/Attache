@@ -30,6 +30,8 @@ enum ChatRowViews {
             return UserBubble(text: message.text,
                               caption: message.unconfirmed ? "Not confirmed yet — check the terminal" : "Sending…",
                               faded: true)
+        case .fold(let fold):
+            return WorkFold(fold)
         }
     }
 
@@ -226,6 +228,83 @@ private final class AgentReply: NSView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not from a nib") }
+}
+
+/// A turn's work as one line: "▸ Thought 2× · 9 steps · 1 failed", the
+/// failures in red; while the turn runs, what it is doing beneath. A click
+/// opens it into the rows it folds, and closes it again.
+final class WorkFold: NSView {
+    var onToggle: (() -> Void)?
+    private var pressed = false
+
+    init(_ fold: ChatFold) {
+        super.init(frame: .zero)
+        let theme = ChromeTheme.current
+        let size = ChatRowViews.size - 1.5
+        let quiet: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: size), .foregroundColor: theme.mutedText]
+        let line = NSMutableAttributedString(string: fold.open ? "▾  " : "▸  ", attributes: [
+            .font: NSFont.systemFont(ofSize: size), .foregroundColor: theme.faintText])
+        var parts: [NSAttributedString] = []
+        if fold.live { parts.append(NSAttributedString(string: "Working", attributes: quiet)) }
+        if fold.thoughts > 0 { parts.append(NSAttributedString(string: "Thought \(fold.thoughts)×", attributes: quiet)) }
+        if fold.steps > 0 {
+            parts.append(NSAttributedString(string: "\(fold.steps) step\(fold.steps == 1 ? "" : "s")", attributes: [
+                .font: NSFont.systemFont(ofSize: size, weight: .semibold), .foregroundColor: theme.text]))
+        }
+        if fold.failed > 0 {
+            parts.append(NSAttributedString(string: "\(fold.failed) failed", attributes: [
+                .font: NSFont.systemFont(ofSize: size, weight: .semibold), .foregroundColor: NSColor.systemRed]))
+        }
+        for (i, part) in parts.enumerated() {
+            if i > 0 { line.append(NSAttributedString(string: "  ·  ", attributes: quiet)) }
+            line.append(part)
+        }
+        let head = NSTextField(labelWithAttributedString: line)
+        head.lineBreakMode = .byTruncatingTail
+        head.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        var views: [NSView] = [head]
+        // While it runs: what it last said it was doing, and the step in
+        // flight — the one line of progress the page owes the person.
+        if let progress = fold.progress {
+            let label = ChatRowViews.label(progress, font: .systemFont(ofSize: size), colour: theme.mutedText,
+                                           selectable: false)
+            label.maximumNumberOfLines = 2
+            label.lineBreakMode = .byTruncatingTail
+            views.append(label)
+        }
+        if let running = fold.running {
+            let label = ChatRowViews.label("…  " + running, font: .monospacedSystemFont(ofSize: size - 1, weight: .regular),
+                                           colour: theme.mutedText, selectable: false)
+            label.maximumNumberOfLines = 1
+            label.lineBreakMode = .byTruncatingTail
+            views.append(label)
+        }
+        let column = NSStackView(views: views)
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 3
+        for view in views.dropFirst() {
+            // Under the summary's text, past the chevron.
+            view.leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: 18).isActive = true
+            view.trailingAnchor.constraint(lessThanOrEqualTo: column.trailingAnchor).isActive = true
+        }
+        head.trailingAnchor.constraint(lessThanOrEqualTo: column.trailingAnchor).isActive = true
+        ChatRowViews.pin(column, in: self, insets: NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 24))
+        toolTip = fold.open ? "Click to fold the work away" : "Click to show the thinking and every step"
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func mouseDown(with event: NSEvent) { pressed = true }
+
+    // On mouse up, and only for a press that began here (CLAUDE.md).
+    override func mouseUp(with event: NSEvent) {
+        defer { pressed = false }
+        guard pressed, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        onToggle?()
+    }
 }
 
 /// A row that shows its first lines until clicked: thinking, long output.

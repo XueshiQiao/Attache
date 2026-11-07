@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tool Step Folding</title>
+<style>
+:root { --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif; --mono: ui-monospace, "SF Mono", Menlo, monospace; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.5 var(--font); background: #ececee; color: #222; -webkit-font-smoothing: antialiased; }
+body.dark { background: #161619; color: #ddd; }
+.bar { position: sticky; top: 0; z-index: 10; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 10px 20px; background: rgba(245,245,247,.92); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(0,0,0,.08); }
+body.dark .bar { background: rgba(20,20,23,.92); border-color: rgba(255,255,255,.08); }
+.seg { display: inline-flex; background: rgba(0,0,0,.06); border-radius: 8px; padding: 2px; }
+body.dark .seg { background: rgba(255,255,255,.08); }
+.seg button { border: 0; background: transparent; color: inherit; font: inherit; padding: 5px 11px; border-radius: 6px; cursor: pointer; opacity: .7; }
+.seg button.on { background: #fff; opacity: 1; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+body.dark .seg button.on { background: #3a3b41; }
+.hint { font-size: 12px; opacity: .6; }
+.grid { display: grid; gap: 22px; padding: 22px 20px 60px; max-width: 1800px; margin: 0 auto; }
+.grid.one { grid-template-columns: minmax(0, 860px); justify-content: center; }
+.grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 1000px) { .grid.two { grid-template-columns: minmax(0, 1fr); } }
+.card { border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.12), 0 0 0 .5px rgba(0,0,0,.18); }
+.head { padding: 12px 18px 10px; background: rgba(255,255,255,.75); border-bottom: 1px solid rgba(0,0,0,.07); }
+body.dark .head { background: rgba(40,40,45,.9); border-color: rgba(255,255,255,.07); }
+.head h2 { margin: 0 0 3px; font-size: 15px; }
+.head p { margin: 2px 0; font-size: 12px; opacity: .75; }
+
+/* The chat page, D look */
+.page { --bg: #fbfbfa; --text: #1f2023; --strong: #111; --mute: #6b6d73; --faint: #9a9ca2; --line: rgba(0,0,0,.1); --soft: rgba(0,0,0,.035); --code: rgba(0,0,0,.055); --accent: #2f6fde; --accentSoft: rgba(47,111,222,.1); --codeText: #b8441f; --bad: #d23f31; --badSoft: rgba(210,63,49,.08); --ok: #2f9e5b; --bubble: #e7eefc;
+  background: var(--bg); color: var(--text); font-size: 13.5px; line-height: 1.62; padding: 18px 22px 22px; }
+body.dark .page { --bg: #1f2024; --text: #e4e4e7; --strong: #fff; --mute: #a2a3a9; --faint: #6f7178; --line: rgba(255,255,255,.1); --soft: rgba(255,255,255,.04); --code: rgba(255,255,255,.08); --accent: #f0b440; --accentSoft: rgba(240,180,64,.12); --codeText: #f2a27a; --bad: #ff7b6e; --badSoft: rgba(255,123,110,.1); --ok: #4cc27c; --bubble: #2d3340; }
+.page p { margin: 0 0 9px; }
+.page code { font-family: var(--mono); font-size: 12.3px; color: var(--codeText); }
+.user { display: flex; justify-content: flex-end; margin: 4px 0 14px; }
+.user span { background: var(--bubble); padding: 7px 13px; border-radius: 14px; max-width: 80%; }
+.reply { margin: 0 0 10px; }
+.mono { font-family: var(--mono); font-size: 11.8px; }
+.click { cursor: pointer; user-select: none; }
+.chev { display: inline-block; width: 12px; color: var(--faint); transition: transform .15s; }
+.open > * > .chev, .open .chev.self { transform: rotate(90deg); }
+.steps { display: none; }
+.open > .steps { display: block; }
+.step { display: flex; gap: 8px; align-items: baseline; color: var(--mute); font-size: 12.3px; padding: 1px 0; }
+.step b { color: var(--text); font-weight: 600; }
+.step .sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.step .t { margin-left: auto; color: var(--faint); font-size: 11px; white-space: nowrap; }
+.step.bad, .step.bad b { color: var(--bad); }
+.live { display: flex; align-items: center; gap: 8px; color: var(--mute); font-size: 12.3px; margin: 6px 0 2px; }
+.spin { width: 10px; height: 10px; border-radius: 50%; border: 1.6px solid var(--line); border-top-color: var(--accent); animation: r .9s linear infinite; flex: none; }
+@keyframes r { to { transform: rotate(360deg); } }
+.err { margin: 4px 0 8px; padding: 6px 10px; border-radius: 8px; background: var(--badSoft); color: var(--bad); font-size: 12.3px; }
+.err .mono { color: var(--bad); opacity: .85; display: block; margin-top: 2px; white-space: pre-wrap; }
+
+.think { margin: 2px 0 10px; padding-left: 12px; border-left: 2px solid var(--line); color: var(--text); }
+.say { margin: 0 0 8px; }
+
+/* A: today */
+.vA .step { padding: 2px 0; }
+.vA .fold { margin: 2px 0 10px; }
+.vA .steps { display: block; }
+
+/* B: one summary line */
+.vB .fold { margin: 2px 0 12px; }
+.vB .sumline { display: flex; gap: 8px; align-items: baseline; color: var(--mute); font-size: 12.3px; }
+.vB .sumline .n { color: var(--text); font-weight: 600; }
+.vB .sumline .badn { color: var(--bad); font-weight: 600; }
+.vB .steps { margin: 4px 0 0 20px; padding-left: 10px; border-left: 1.5px solid var(--line); }
+
+/* C: chips */
+.vC .fold { margin: 2px 0 12px; }
+.vC .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.vC .chip { font-size: 11.5px; padding: 1px 9px; border-radius: 10px; background: var(--soft); border: 1px solid var(--line); color: var(--mute); }
+.vC .chip b { color: var(--text); font-weight: 600; }
+.vC .chip.bad { color: var(--bad); border-color: var(--bad); background: var(--badSoft); }
+.vC .chip.time { border: 0; background: none; color: var(--faint); }
+.vC .steps { margin: 8px 0 0; padding: 8px 12px; border-radius: 8px; background: var(--soft); border: 1px solid var(--line); }
+
+/* D: a quiet link under the reply */
+.vD .fold { margin: -2px 0 10px; }
+.vD .link { font-size: 11.8px; color: var(--faint); }
+.vD .link:hover { color: var(--accent); }
+.vD .link .bad { color: var(--bad); }
+.vD .steps { margin: 6px 0 0; }
+.vD .step { padding-left: 2px; }
+
+/* E: dots in the margin */
+.vE .turn { position: relative; padding-left: 26px; }
+.vE .rail { position: absolute; left: 6px; top: 6px; bottom: 6px; width: 2px; background: var(--line); border-radius: 1px; }
+.vE .fold { position: relative; margin: 0 0 10px; }
+.vE .dots { display: flex; gap: 3px; align-items: center; height: 18px; }
+.vE .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); opacity: .65; }
+.vE .dot.bad { background: var(--bad); opacity: 1; }
+.vE .dots .lab { margin-left: 6px; font-size: 11.5px; color: var(--faint); }
+.vE .marker { position: absolute; left: -24px; top: 4px; width: 10px; height: 10px; border-radius: 50%; background: var(--bg); border: 2px solid var(--faint); }
+.vE .open .marker { border-color: var(--accent); }
+.vE .steps { margin: 4px 0 0; }
+
+/* F: the whole working stretch as one line */
+.vF .fold { margin: 2px 0 12px; }
+.vF .sumline { display: flex; gap: 8px; align-items: baseline; color: var(--mute); font-size: 12.3px; }
+.vF .sumline .n { color: var(--text); font-weight: 600; }
+.vF .sumline .badn { color: var(--bad); font-weight: 600; }
+.vF .inner { display: none; margin: 8px 0 0 6px; padding-left: 14px; border-left: 1.5px solid var(--line); }
+.vF .open > .inner { display: block; }
+.vF .peek { margin: 4px 0 0 20px; color: var(--mute); font-size: 12.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vF .open > .peek { display: none; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <b>工具调用折叠：样式对比</b>
+  <div class="seg" id="mode"><button data-v="two" class="on">两列并排</button><button data-v="one">一列</button></div>
+  <div class="seg" id="theme"><button data-v="light" class="on">浅色</button><button data-v="dark">深色</button></div>
+  <div class="seg" id="pick"><button data-v="all" class="on">全部</button><button data-v="A">A</button><button data-v="B">B</button><button data-v="C">C</button><button data-v="D">D</button><button data-v="E">E</button><button data-v="F">F</button></div>
+  <span class="hint">折起来的那一行都可以点，点了展开、再点收起</span>
+</div>
+<div class="grid two" id="grid"></div>
+
+<script>
+// What a turn really looks like: thinking, a few tools, a line said,
+// more tools, thinking again, more tools (one failing), then the answer.
+const zh = { Read: "读文件", Grep: "搜索", Edit: "改文件", Bash: "命令" };
+const T1 = [
+  { k: "think", text: "表格里的文字是直接画在格子上的，所以选不了。先看聊天页和表格是怎么排版的。" },
+  { k: "tools", steps: [
+    { tool: "Read", sum: "Attache/UI/ChatPaneView.swift", t: "0.1s" },
+    { tool: "Grep", sum: "\"layoutSubtreeIfNeeded\" in Attache/UI", t: "0.2s" },
+    { tool: "Read", sum: "Attache/UI/MarkdownTable.swift", t: "0.1s" } ] },
+  { k: "say", text: "表格的格子是在 draw 里画的。接着看命令输出那块用在哪里。" },
+  { k: "tools", steps: [
+    { tool: "Grep", sum: "\"Expandable(\" in Attache/UI", t: "0.2s" },
+    { tool: "Read", sum: "Attache/UI/ChatRowViews.swift", t: "0.1s" } ] },
+  { k: "think", text: "格子底色照旧画，每个格子放一个能选中的文字视图；命令输出改成文字一直可选、超过 30 行放按钮。" },
+  { k: "tools", steps: [
+    { tool: "Edit", sum: "Attache/UI/MarkdownTable.swift  +28 −14", t: "0.3s" },
+    { tool: "Bash", sum: "xcodebuild … build", t: "48s", bad: true, err: "error: invalid redeclaration of 'layout()'" },
+    { tool: "Edit", sum: "Attache/UI/MarkdownTextView.swift  +3 −3", t: "0.2s" },
+    { tool: "Bash", sum: "xcodebuild … build", t: "51s" } ] },
+];
+const answer1 = `<div class="reply"><p>改好了：每个格子里的文字换成能选中的文字视图，<code>MarkdownTable.swift</code> 里格子只画底色和分隔线。构建成功。</p></div>`;
+const T2 = [
+  { k: "think", text: "命令输出用的是 Expandable，点文字就展开，所以没展开时选不了。改成按钮展开。" },
+  { k: "tools", steps: [
+    { tool: "Read", sum: "Attache/UI/ChatRowViews.swift", t: "0.1s" },
+    { tool: "Edit", sum: "Attache/UI/ChatRowViews.swift  +40 −22", t: "0.4s" } ] },
+];
+const running = { tool: "Bash", sum: "xcodebuild … build", t: "12s" };
+
+function counts(list) {
+  const c = {};
+  for (const s of list) c[s.tool] = (c[s.tool] || 0) + 1;
+  return Object.entries(c);
+}
+const secs = list => { const n = Math.round(list.reduce((a, s) => a + (parseFloat(s.t) || 0), 0)); return n < 1 ? "不到 1" : n; };
+const stepRow = s => `<div class="step${s.bad ? " bad" : ""}"><span>${s.bad ? "✗" : "✓"}</span><b>${s.tool}</b><span class="sum mono">${s.sum}</span><span class="t">${s.t}</span></div>`;
+const runRow = s => `<div class="live"><span class="spin"></span><b style="color:var(--text)">${s.tool}</b><span class="mono">${s.sum}</span><span style="margin-left:auto;color:var(--faint);font-size:11px">${s.t}</span></div>`;
+const errBox = s => `<div class="err">✗ ${s.tool} 失败<span class="mono">${s.err}</span></div>`;
+const thinkBlock = t => `<div class="think">${t}</div>`;
+const sayBlock = t => `<div class="say">${t}</div>`;
+const toggle = `onclick="this.parentNode.classList.toggle('open')"`;
+
+const user1 = `<div class="user"><span>表格和代码块里选不了文字，修一下</span></div>`;
+const user2 = `<div class="user"><span>命令输出也一起改了吧</span></div>`;
+
+// Each design folds a run of tools; thinking and what was said stay.
+function perRun(fold) {
+  return (turn, live) => turn.map(seg =>
+    seg.k === "think" ? thinkBlock(seg.text) : seg.k === "say" ? sayBlock(seg.text) : fold(seg.steps, { showErr: true })
+  ).join("") + (live ? runRow(running) : "");
+}
+
+const designs = [
+  { id: "A", name: "A · 现在", what: "对照：思考、说明、每一步工具调用都摊开。",
+    render: perRun(list => `<div class="fold"><div class="steps" style="display:block">${list.map(stepRow).join("")}</div></div>`) },
+  { id: "B", name: "B · 一行摘要（每段工具各一行）", what: "每一段连续的工具调用折成一行：几步、各是什么、花了多久；思考和说明照常显示。失败写在摘要里，错误单独显示。",
+    render: perRun((list, o) => {
+      const nb = list.filter(s => s.bad).length;
+      return `<div class="fold"><div class="sumline click" ${toggle}><span class="chev">▸</span><span><span class="n">${list.length} 步</span> · ${counts(list).map(([k, v]) => `${zh[k]} ${v}`).join(" · ")}${nb ? ` · <span class="badn">${nb} 步失败</span>` : ""} · ${secs(list)} 秒</span></div><div class="steps">${list.map(stepRow).join("")}</div>${o.showErr ? list.filter(s => s.bad).map(errBox).join("") : ""}</div>`;
+    }) },
+  { id: "C", name: "C · 标签（每段工具各一排）", what: "每一段工具调用变成一排小标签，每种工具一个，写着次数；失败的是红色标签。",
+    render: perRun((list, o) => {
+      const nb = list.filter(s => s.bad).length;
+      return `<div class="fold"><div class="chips click" ${toggle}><span class="chev">▸</span>${counts(list).map(([k, v]) => `<span class="chip">${k} <b>${v}</b></span>`).join("")}${nb ? `<span class="chip bad">✗ ${nb}</span>` : ""}<span class="chip time">${list.length} 步</span></div><div class="steps">${list.map(stepRow).join("")}</div>${o.showErr ? list.filter(s => s.bad).map(errBox).join("") : ""}</div>`;
+    }) },
+  { id: "D", name: "D · 小字（每段工具各一行小字）", what: "每一段工具调用只剩一行灰色小字「用了 3 个工具」，点开才显示；失败只在小字里标红。",
+    render: perRun(list => {
+      const nb = list.filter(s => s.bad).length;
+      return `<div class="fold vDfold"><span class="link click" ${toggle}><span class="chev">▸</span>用了 ${list.length} 个工具${nb ? `，<span class="bad">${nb} 个失败</span>` : ""}</span><div class="steps">${list.map(stepRow).join("")}</div></div>`;
+    }) },
+  { id: "E", name: "E · 左边的点（每段工具各一排）", what: "回复左边一条细竖线，每一段工具调用变成竖线旁一排小圆点，一步一个点，失败是红点。",
+    render: perRun((list, o) => `<div class="fold"><span class="marker"></span><div class="dots click" ${toggle}>${list.map(s => `<span class="dot${s.bad ? " bad" : ""}" title="${s.tool} ${s.sum}"></span>`).join("")}<span class="lab">${list.length} 步</span></div><div class="steps">${list.map(stepRow).join("")}</div>${o.showErr ? list.filter(s => s.bad).map(errBox).join("") : ""}</div>`),
+    wrap: true },
+  { id: "F", name: "F · 整段折叠", what: "从你发消息到最后回复之间的全部内容（思考、说明、工具调用）合成一行，下面露出最后一次思考的开头；点开按原来的顺序全部显示。失败照样写在摘要里，错误单独显示。进行中露出的是正在跑的那一步。",
+    render: (turn, live) => {
+      const all = turn.filter(x => x.k === "tools").flatMap(x => x.steps);
+      const thinks = turn.filter(x => x.k === "think");
+      const nb = all.filter(s => s.bad).length;
+      const inner = perRun(list => `<div class="steps" style="display:block">${list.map(stepRow).join("")}</div>`)(turn, false);
+      const last = thinks.length ? thinks[thinks.length - 1].text : "";
+      return `<div class="fold"><div class="sumline click" ${toggle}><span class="chev">▸</span><span>${live ? "工作中 · " : ""}思考 ${thinks.length} 次 · <span class="n">${all.length} 步</span>${nb ? ` · <span class="badn">${nb} 步失败</span>` : ""} · ${secs(all)} 秒</span></div>${live ? "" : `<div class="peek">${last}</div>`}<div class="inner">${inner}</div>${all.filter(s => s.bad).map(errBox).join("")}</div>${live ? runRow(running) : ""}`;
+    } },
+];
+const grid = document.getElementById("grid");
+for (const d of designs) {
+  const turn1 = d.render(T1, false) + answer1;
+  const turn2 = d.render(T2, true);
+  const body = d.wrap
+    ? `${user1}<div class="turn"><span class="rail"></span>${turn1}</div>${user2}<div class="turn"><span class="rail"></span>${turn2}</div>`
+    : `${user1}${turn1}${user2}${turn2}`;
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.v = d.id;
+  card.innerHTML = `<div class="head"><h2>${d.name}</h2><p>${d.what}</p></div><div class="page v${d.id}">${body}</div>`;
+  grid.appendChild(card);
+}
+
+function seg(id, on) {
+  const el = document.getElementById(id);
+  el.addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+    on(b.dataset.v);
+  });
+}
+seg("mode", v => { grid.className = "grid " + v; });
+seg("theme", v => { document.body.classList.toggle("dark", v === "dark"); });
+seg("pick", v => {
+  for (const c of grid.children) c.style.display = (v === "all" || c.dataset.v === v) ? "" : "none";
+  if (v !== "all") { grid.className = "grid one"; document.querySelectorAll("#mode button").forEach(x => x.classList.toggle("on", x.dataset.v === "one")); }
+});
+</script>
+</body>
+</html>
