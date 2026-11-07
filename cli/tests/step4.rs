@@ -27,6 +27,12 @@ struct Server {
 
 impl Server {
     fn start(tmux: PathBuf, name: &str) -> Server {
+        Server::start_with(tmux, name, true)
+    }
+
+    /// `echo: false` turns the pane's terminal echo off, so the screen holds
+    /// only what the stand-in agent printed back: the lines it received.
+    fn start_with(tmux: PathBuf, name: &str, echo: bool) -> Server {
         // `cat` stands in for an agent, named `codex` so attache-cli knows it
         // as one (by name only, with no screen reader): a pane with no agent
         // in it takes no message at all.
@@ -44,6 +50,12 @@ impl Server {
                 .output().unwrap().status.success());
         }
         let socket = format!("attache-cli-input-{name}-{}", std::process::id());
+        // `exec`, so the pane's command is the agent's name again.
+        let command = if echo {
+            agent.to_str().unwrap().to_owned()
+        } else {
+            format!("stty -echo; exec '{}'", agent.display())
+        };
         assert!(Command::new(&tmux)
             .args([
                 "-L",
@@ -58,7 +70,7 @@ impl Server {
                 "300",
                 "-y",
                 "60",
-                agent.to_str().unwrap()
+                &command
             ])
             .status()
             .unwrap()
@@ -73,6 +85,16 @@ impl Server {
             .tmux(&["display-message", "-p", "-t", "probe", "#{socket_path}"])
             .trim()
             .to_owned();
+        // Through the shell, the pane is `sh` until the `exec`, and a pane
+        // with no agent in it takes no message. Once it is the agent, the
+        // echo is already off.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while s.tmux(&["display-message", "-p", "-t", "probe", "#{pane_current_command}"]).trim()
+            != "codex"
+        {
+            assert!(Instant::now() < deadline, "the pane never became the agent");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         s
     }
 
@@ -196,7 +218,11 @@ fn a_pane_in_copy_mode_still_gets_the_message() {
 #[test]
 fn messages_sent_at_once_arrive_whole() {
     let Some(tmux) = tmux_bin() else { return };
-    let s = Server::start(tmux, "race");
+    // Echo off: with it on, the terminal draws the next message as it is
+    // pasted while `cat` may not yet have printed the one before, and the
+    // two land on one line of the screen though `cat` got both whole. Seen
+    // under a parallel `cargo test`; the screen then mixes two writers.
+    let s = Server::start_with(tmux, "race", false);
     let pane = s.pane();
     let texts: Vec<String> = (0..6)
         .map(|i| format!("message-{i}-{}", "x".repeat(120)))
@@ -212,12 +238,19 @@ fn messages_sent_at_once_arrive_whole() {
             });
         }
     });
-    let screen = s.screen_with(&texts[5]);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let screen = loop {
+        let screen = s.tmux(&["capture-pane", "-p", "-J", "-t", "probe"]);
+        if texts.iter().all(|t| screen.lines().any(|l| l == t)) || Instant::now() > deadline {
+            break screen;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
     for t in &texts {
-        // Echoed and printed back, each on a line of its own.
+        // Printed back once, on a line of its own: `cat` read it as a line.
         assert_eq!(
             screen.lines().filter(|l| l == t).count(),
-            2,
+            1,
             "{t} not whole in:\n{screen}"
         );
     }
