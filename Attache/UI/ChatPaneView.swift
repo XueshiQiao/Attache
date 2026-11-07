@@ -43,6 +43,13 @@ final class ChatPaneView: NSView {
     /// The folds the person opened, by `ChatFold.key`. The page's own, like
     /// which way the chat is switched: no one else has an opinion about it.
     private var openFolds = Set<String>()
+    /// Room let out below the last row so a fold shut near the bottom can
+    /// stay where it was clicked (`toggle(fold:)`); taken in again once the
+    /// person scrolls it out of view or the page changes.
+    private var slack: CGFloat = 0 {
+        didSet { if slack != oldValue { list.edgeInsets.bottom = 12 + slack } }
+    }
+    private var togglingFold = false
     /// The first element drawn. Fixed once chosen, so new rows at the bottom
     /// do not slide the window and rebuild everything; moved up a page at a
     /// time as the person scrolls to the top. Every row drawn is a live text
@@ -354,7 +361,11 @@ final class ChatPaneView: NSView {
             return
         }
         let visible = scroll.contentView.bounds
-        followsBottom = visible.maxY >= document.frame.height - 40
+        if slack > 0, visible.maxY < document.frame.height - slack {
+            slack = 0
+            return
+        }
+        followsBottom = slack == 0 && visible.maxY >= document.frame.height - 40
         // The top of what is drawn came into view: draw the page before it,
         // or, when everything read is drawn, fetch what is before that.
         guard visible.minY < 40 else { return }
@@ -552,6 +563,7 @@ final class ChatPaneView: NSView {
         var keep = 0
         while keep < drawn.count, keep < elements.count, drawn[keep].id == elements[keep].id { keep += 1 }
         guard keep < drawn.count || keep < elements.count else { return }
+        if !togglingFold { slack = 0 }
         // Earlier history goes in above what is being read: keep the rows
         // under the person's eyes where they are, measured from the bottom.
         let document = scroll.documentView
@@ -660,16 +672,39 @@ final class ChatPaneView: NSView {
         return chips
     }
 
+    /// Opens or shuts a fold without its line moving on screen, by a point:
+    /// a click opens it and a second click, the pointer not moved, shuts it
+    /// again. Holding the scroll offset is not enough — shut near the bottom,
+    /// the page gets shorter than the offset and the clip view pulls it back
+    /// down — so the line is measured before, found after, scrolled back to
+    /// where it was, and room is let out below when the page is short.
     private func toggle(fold key: String) {
-        // What was opened or closed stays where it is.
-        holdPosition()
+        guard let document = scroll.documentView else { return }
+        let clip = scroll.contentView
+        let before = foldView(key).map { $0.convert($0.bounds, to: document).minY - clip.bounds.minY }
+        followsBottom = false
         if openFolds.remove(key) == nil { openFolds.insert(key) }
+        togglingFold = true
+        slack = 0
         refresh()
-        // Shut at the bottom is at the bottom: follow it again, or the next
-        // message arrives below the view until the person scrolls.
-        if let document = scroll.documentView {
-            followsBottom = scroll.contentView.bounds.maxY >= document.frame.height - 40
+        togglingFold = false
+        guard let before, let view = foldView(key) else { return }
+        settle()
+        let target = view.convert(view.bounds, to: document).minY - before
+        let short = target + clip.bounds.height - document.frame.height
+        if short > 0 {
+            slack = ceil(short)
+            settle()
         }
+        movingScroll = true
+        document.scroll(NSPoint(x: 0, y: max(0, target)))
+        judgedHeight = document.frame.height
+        judgedViewport = clip.bounds.size
+        movingScroll = false
+    }
+
+    private func foldView(_ key: String) -> NSView? {
+        drawn.first { $0.id.hasPrefix("f:\(key):") }?.view
     }
 
     /// The rows as drawn: a sent message sits right after the row that was
