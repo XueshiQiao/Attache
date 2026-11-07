@@ -230,9 +230,9 @@ private final class AgentReply: NSView {
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 }
 
-/// A turn's work as one line: "▸ Thought 2× · 9 steps · 1 failed", the
-/// failures in red; while the turn runs, what it is doing beneath. A click
-/// opens it into the rows it folds, and closes it again.
+/// A run of thinking and tool steps as one line: "▸ Thought 2× · 9 steps ·
+/// 1 failed", the failures in red; while it runs, what it is doing beneath.
+/// A click opens it into the rows it folds, and closes it again.
 final class WorkFold: NSView {
     var onToggle: (() -> Void)?
     private var pressed = false
@@ -266,8 +266,8 @@ final class WorkFold: NSView {
         head.lineBreakMode = .byTruncatingTail
         head.setContentCompressionResistancePriority(.init(1), for: .horizontal)
         var views: [NSView] = [head]
-        // While it runs: what it last said it was doing, and the step in
-        // flight — the one line of progress the page owes the person.
+        // While it runs: the latest thinking and the step in flight — the
+        // line of progress the page owes the person.
         if !fold.open, let progress = fold.progress {
             let label = ChatRowViews.label(progress, font: .systemFont(ofSize: size), colour: theme.mutedText,
                                            selectable: false)

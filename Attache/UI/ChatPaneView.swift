@@ -676,15 +676,14 @@ final class ChatPaneView: NSView {
     /// last when it went out. Each tool step is its own element, so the next
     /// step does not rebuild — and close — the ones the person opened.
     ///
-    /// The work of a turn is folded (design F in
-    /// `docs/chat-tool-folding-designs.html`): everything between a prompt
-    /// and its answer — thinking, lines said along the way, tool steps — is
-    /// one line, and the answer, the turn's last reply, stands after it.
-    /// A turn still running folds all its work so far, and the line says
-    /// what it is doing. Thinking is a summary at most (often empty), and
-    /// what it says the answer says better, so a finished turn shows none of
-    /// it until opened. Command output and notes are not the agent's work
-    /// and split a fold where they fall.
+    /// The work is folded (design F in `docs/chat-tool-folding-designs.html`,
+    /// with what the agent writes kept): each run of thinking and tool steps
+    /// is one line, and everything the agent wrote to the person — its
+    /// `text` blocks, the lines along the way and the answer alike — stands
+    /// between them as it was written. The two are told apart by the block's
+    /// own type in the transcript, not guessed. Thinking is a summary at most
+    /// (often empty), so it stays folded until opened. The run still going
+    /// in a running turn says what it is doing.
     static func elements(rows: [ChatRow], pending: [PendingMessage], working: Bool,
                          open: Set<String>) -> [ChatElement] {
         let keys = Set(rows.map(\.key))
@@ -696,17 +695,13 @@ final class ChatPaneView: NSView {
             if let sent = byAnchor[row.key] { out += sent.map(ChatElement.pending) }
         }
         func fold(_ stretch: [ChatRow], key: String, live: Bool) {
-            // A finished stretch of lines said and nothing else is no work to
-            // fold; a live one still owes the person its "Working" line.
-            guard !stretch.isEmpty || live else { return }
+            guard !stretch.isEmpty else { return }
             var thoughts = 0, steps = 0, failed = 0
             var progress: String?, running: String?
             for row in stretch {
                 switch row {
                 case .thinking(_, let text):
                     thoughts += 1
-                    progress = ChatFold.firstLine(text) ?? progress
-                case .agent(_, let text):
                     progress = ChatFold.firstLine(text) ?? progress
                 case .tool(_, let name, let summary, _, let result, let isError, _):
                     steps += 1
@@ -717,7 +712,6 @@ final class ChatPaneView: NSView {
                 default: break
                 }
             }
-            guard live || thoughts + steps > 0 else { return stretch.forEach(put) }
             let isOpen = open.contains(key)
             out.append(.fold(ChatFold(key: key, thoughts: thoughts, steps: steps, failed: failed,
                                       live: live, open: isOpen,
@@ -738,26 +732,14 @@ final class ChatPaneView: NSView {
             // way: then the agent is working on that, its prompt has not
             // reached the transcript yet, and the last turn is finished.
             let live = working && t == turns.count - 1 && pending.isEmpty
-            // The answer is a reply nothing worked after. A turn stopped on
-            // a tool (interrupted, or waiting for approval) has none: a line
-            // said halfway is not an answer, and taking it for one split the
-            // turn in three.
-            var answer: Int?
-            if !live, let last = turn.lastIndex(where: { if case .agent = $0 { true } else { false } }),
-               !turn[(last + 1)...].contains(where: {
-                   switch $0 { case .tool, .thinking: true; default: false }
-               }) {
-                answer = last
-            }
-            // Keyed by the turn and the stretch's place in it, not by its first
-            // row: that row can turn out to be the answer, and a fold the
-            // person opened would then close itself.
+            // Keyed by the turn and the run's place in it, which only ever
+            // grows at the end, so a fold the person opened stays open.
             let turnKey = turn.first?.key ?? "start"
             var ordinal = 0
             var stretch: [ChatRow] = []
-            for (i, row) in turn.enumerated() {
+            for row in turn {
                 switch row {
-                case .thinking, .tool, .agent where i != answer:
+                case .thinking, .tool:
                     stretch.append(row)
                 default:
                     if !stretch.isEmpty { fold(stretch, key: "\(turnKey)#\(ordinal)", live: false); ordinal += 1 }
@@ -765,7 +747,7 @@ final class ChatPaneView: NSView {
                     put(row)
                 }
             }
-            if !stretch.isEmpty || live { fold(stretch, key: "\(turnKey)#\(ordinal)", live: live) }
+            fold(stretch, key: "\(turnKey)#\(ordinal)", live: live)
         }
         out += pending.filter { !($0.anchorKey.map(keys.contains) ?? false) }.map(ChatElement.pending)
         return out
@@ -774,7 +756,7 @@ final class ChatPaneView: NSView {
 
 /// One thing in the list: a row, a message on its way, or a line of this
 /// page's own.
-/// The work between a prompt and its answer, folded into one line.
+/// A run of thinking and tool steps, folded into one line.
 struct ChatFold: Equatable {
     /// The first folded row's key: the same as the work grows, so a fold
     /// the person opened stays open.
@@ -785,7 +767,7 @@ struct ChatFold: Equatable {
     /// The turn is still running.
     let live: Bool
     let open: Bool
-    /// While live: the first line of the latest thinking or line said.
+    /// While live: the first line of the latest thinking.
     let progress: String?
     /// While live: the step still running.
     let running: String?
