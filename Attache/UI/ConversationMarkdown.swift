@@ -30,7 +30,20 @@ enum ConversationMarkdown {
         var strong: NSColor
         var faint: NSColor
         var codeBackground: NSColor
+        /// How the blocks are set. `plain` is the conversation rail's;
+        /// `guides` is the chat page's (`docs/chat-markdown-designs.html`,
+        /// D with C's code blocks): room between blocks, inline code as
+        /// coloured monospace with no box, and the `MarkdownDecoration`s
+        /// that `MarkdownTextView` draws — so only it can show this look.
+        var look: Look = .plain
+        var accent: NSColor = .controlAccentColor
+        /// Inline code's colour in the `guides` look.
+        var codeText: NSColor = .systemOrange
+        /// Guide lines and the code box's edge.
+        var line: NSColor = .separatorColor
     }
+
+    enum Look { case plain, guides }
 
     /// Rendered strings, keyed by the message and the look they were rendered
     /// for.
@@ -52,6 +65,7 @@ enum ConversationMarkdown {
         let text: String
         let size: CGFloat
         let colour: Int
+        let look: Look
     }
 
     /// The same as `render`, memoised. Callers that draw the same message
@@ -60,7 +74,8 @@ enum ConversationMarkdown {
     static func rendered(_ markdown: String, style: Style) -> NSAttributedString {
         let key = Key(
             text: markdown, size: style.body.pointSize,
-            colour: style.text.hashValue &* 31 &+ style.strong.hashValue
+            colour: style.text.hashValue &* 31 &+ style.strong.hashValue,
+            look: style.look
         )
         if let hit = cache[key] { return hit }
 
@@ -84,12 +99,28 @@ enum ConversationMarkdown {
 
     static func render(_ markdown: String, style: Style) -> NSAttributedString {
         let output = NSMutableAttributedString()
+        var afterList = false
         for block in parse(markdown) {
-            output.append(draw(block, style: style))
+            output.append(draw(block, style: style, afterList: afterList))
+            switch block {
+            case .blank: break
+            case .listItem: afterList = true
+            default: afterList = false
+            }
         }
         // Trailing blank lines are padding the layout already provides.
         while output.string.hasSuffix("\n") {
             output.deleteCharacters(in: NSRange(location: output.length - 1, length: 1))
+        }
+        // TextKit gives the first paragraph no spacing before it, and a code
+        // box draws its padding up into that spacing: first in a reply, its
+        // top would be cut off. A hairline paragraph above makes it second.
+        if style.look == .guides, output.length > 0, Guides.startsWithCode(output) {
+            let hairline = NSMutableParagraphStyle()
+            hairline.maximumLineHeight = 1
+            output.insert(NSAttributedString(string: "\n", attributes: [
+                .font: NSFont.systemFont(ofSize: 1), .paragraphStyle: hairline,
+            ]), at: 0)
         }
         return output
     }
@@ -102,7 +133,7 @@ enum ConversationMarkdown {
     // drew was ragged. Fenced code has the same shape of problem — a uniform
     // background needs a uniform width.
 
-    private enum Block {
+    fileprivate enum Block {
         case heading(level: Int, text: String)
         case paragraph(String)
         case listItem(bullet: String, text: String, depth: Int)
@@ -202,7 +233,10 @@ enum ConversationMarkdown {
 
     // MARK: - Drawing
 
-    private static func draw(_ block: Block, style: Style) -> NSAttributedString {
+    private static func draw(_ block: Block, style: Style, afterList: Bool) -> NSAttributedString {
+        if style.look == .guides, let drawn = Guides.draw(block, style: style, afterList: afterList) {
+            return drawn
+        }
         switch block {
         case .blank:
             return NSAttributedString(string: "\n", attributes: [.font: style.body])
@@ -639,11 +673,9 @@ enum ConversationMarkdown {
                 flush()
                 result.append(NSAttributedString(
                     string: String(rest[rest.index(after: rest.startIndex)..<close]),
-                    attributes: [
-                        .font: codeFont,
-                        .foregroundColor: style.text,
-                        .backgroundColor: style.codeBackground,
-                    ]
+                    attributes: style.look == .guides
+                        ? [.font: codeFont, .foregroundColor: style.codeText]
+                        : [.font: codeFont, .foregroundColor: style.text, .backgroundColor: style.codeBackground]
                 ))
                 index = rest.index(after: close)
                 continue
@@ -693,3 +725,153 @@ enum ConversationMarkdown {
             .trimmingCharacters(in: .whitespaces)
     }
 }
+
+// MARK: - The chat page's look
+
+extension ConversationMarkdown {
+    /// The `guides` look's blocks; nil hands a block back to the plain
+    /// drawing (tables, rules).
+    fileprivate enum Guides {
+        static func startsWithCode(_ text: NSAttributedString) -> Bool {
+            guard let d = text.attribute(.markdownDecoration, at: 0, effectiveRange: nil) as? MarkdownDecoration,
+                  case .codeBox = d.kind else { return false }
+            return true
+        }
+
+        /// `afterList`: the block follows a list, whose items sit close
+        /// together, so a paragraph needs air of its own above it.
+        static func draw(_ block: Block, style: Style, afterList: Bool) -> NSAttributedString? {
+            switch block {
+            case .blank:
+                // Blocks carry their own spacing; a blank line on top of it
+                // doubles every gap.
+                return NSAttributedString()
+            case let .heading(level, text):
+                return heading(level: level, text: text, style: style)
+            case let .paragraph(text):
+                let p = paragraph(style, after: 9)
+                if afterList { p.paragraphSpacingBefore = 6 }
+                return finished(inline(text, style: style), p)
+            case let .listItem(bullet, text, depth):
+                return item(bullet: bullet, text: text, depth: depth, style: style)
+            case let .code(body):
+                return code(body, style: style)
+            case .table, .rule:
+                return nil
+            }
+        }
+
+        /// Line height about 1.6 of the font, as the design has it.
+        private static func paragraph(_ style: Style, after: CGFloat) -> NSMutableParagraphStyle {
+            let p = NSMutableParagraphStyle()
+            p.lineSpacing = (style.body.pointSize * 0.4).rounded()
+            p.paragraphSpacing = after
+            return p
+        }
+
+        private static func finished(_ text: NSAttributedString, _ paragraph: NSParagraphStyle,
+                                     decoration: MarkdownDecoration? = nil) -> NSAttributedString {
+            let result = NSMutableAttributedString(attributedString: text)
+            result.append(NSAttributedString(string: "\n", attributes: [.font: style(of: text)]))
+            let whole = NSRange(location: 0, length: result.length)
+            result.addAttribute(.paragraphStyle, value: paragraph, range: whole)
+            if let decoration { result.addAttribute(.markdownDecoration, value: decoration, range: whole) }
+            return result
+        }
+
+        private static func style(of text: NSAttributedString) -> NSFont {
+            (text.length > 0 ? text.attribute(.font, at: text.length - 1, effectiveRange: nil) as? NSFont : nil)
+                ?? .systemFont(ofSize: NSFont.systemFontSize)
+        }
+
+        /// A bar in the accent down its left, the text set in beside it.
+        private static func heading(level: Int, text: String, style: Style) -> NSAttributedString {
+            let base = style.body.pointSize
+            let size = level <= 2 ? base + 2.5 : base + 1
+            let p = paragraph(style, after: 7)
+            p.paragraphSpacingBefore = level <= 2 ? 16 : 12
+            p.firstLineHeadIndent = 13
+            p.headIndent = 13
+            let body = NSMutableAttributedString(attributedString: inline(
+                text, style: style, baseFont: .systemFont(ofSize: size, weight: .bold)))
+            body.addAttribute(.foregroundColor, value: style.strong, range: NSRange(location: 0, length: body.length))
+            return finished(body, p, decoration: MarkdownDecoration(.headingBar, colour: style.accent))
+        }
+
+        /// The first level a faint dot; deeper levels a guide line down the
+        /// left with a tick to each item; a number sits on a disc.
+        private static func item(bullet: String, text: String, depth: Int, style: Style) -> NSAttributedString {
+            let p = paragraph(style, after: 4)
+            let numbered = bullet != "•"
+            // The disc is the number's mark; the parser hands over `1.`.
+            let number = bullet.hasSuffix(".") ? String(bullet.dropLast()) : bullet
+            // Where this level's text starts: 18 for the first level, and
+            // each deeper level a guide (at +3) and its tick's width further.
+            let guideX = 18 + CGFloat(max(0, depth - 1)) * 21 + 3
+            let indent = depth == 0 ? (numbered ? 26 : 18) : guideX + 15
+            p.headIndent = indent
+            let result = NSMutableAttributedString()
+            var decoration: MarkdownDecoration?
+            if depth > 0 {
+                decoration = MarkdownDecoration(.guide(x: guideX), colour: style.line)
+                p.firstLineHeadIndent = indent
+                if numbered {
+                    result.append(NSAttributedString(string: number + ". ", attributes: [
+                        .font: style.body, .foregroundColor: style.faint]))
+                }
+            } else if numbered {
+                let font = NSFont.systemFont(ofSize: max(9, style.body.pointSize - 2.5), weight: .bold)
+                let width = (number as NSString).size(withAttributes: [.font: font]).width
+                let radius: CGFloat = 9
+                p.firstLineHeadIndent = max(0, radius - width / 2)
+                p.tabStops = [NSTextTab(textAlignment: .left, location: indent)]
+                result.append(NSAttributedString(string: number, attributes: [
+                    .font: font, .foregroundColor: style.accent,
+                    .baselineOffset: (style.body.pointSize - font.pointSize) / 3,
+                    .markdownDecoration: MarkdownDecoration(
+                        .disc(radius: radius), colour: style.accent.withAlphaComponent(0.16)),
+                ]))
+                result.append(NSAttributedString(string: "\t", attributes: [.font: style.body]))
+            } else {
+                p.firstLineHeadIndent = 4
+                p.tabStops = [NSTextTab(textAlignment: .left, location: indent)]
+                result.append(NSAttributedString(string: "•\t", attributes: [
+                    .font: style.body, .foregroundColor: style.faint]))
+            }
+            result.append(inline(text, style: style))
+            let done = NSMutableAttributedString(attributedString: finished(result, p))
+            if let decoration {
+                done.addAttribute(.markdownDecoration, value: decoration,
+                                  range: NSRange(location: 0, length: done.length))
+            }
+            return done
+        }
+
+        /// A rounded box with a faint fill and edge, full width, the code
+        /// set in from its sides.
+        private static func code(_ body: [String], style: Style) -> NSAttributedString {
+            let trimmed = body.drop { $0.trimmingCharacters(in: .whitespaces).isEmpty }
+                .reversed().drop { $0.trimmingCharacters(in: .whitespaces).isEmpty }.reversed()
+            guard !trimmed.isEmpty else { return NSAttributedString() }
+            let padding: CGFloat = 10
+            let box = MarkdownDecoration(.codeBox(padding: padding, stroke: style.line), colour: style.codeBackground)
+            let result = NSMutableAttributedString()
+            let lines = Array(trimmed)
+            for (k, line) in lines.enumerated() {
+                let p = NSMutableParagraphStyle()
+                p.lineSpacing = 2
+                p.firstLineHeadIndent = 13
+                p.headIndent = 13
+                p.tailIndent = -13
+                if k == 0 { p.paragraphSpacingBefore = 6 + padding }
+                if k == lines.count - 1 { p.paragraphSpacing = 9 + padding }
+                result.append(NSAttributedString(string: line + "\n", attributes: [
+                    .font: style.mono, .foregroundColor: style.text, .paragraphStyle: p,
+                    .markdownDecoration: box,
+                ]))
+            }
+            return result
+        }
+    }
+}
+

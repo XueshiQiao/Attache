@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat Markdown Styles</title>
+<style>
+:root { --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif; --mono: ui-monospace, "SF Mono", Menlo, monospace; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.5 var(--font); background: #ececee; color: #222; -webkit-font-smoothing: antialiased; }
+body.dark { background: #161619; color: #ddd; }
+
+.bar { position: sticky; top: 0; z-index: 10; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 10px 20px; background: rgba(245,245,247,.92); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(0,0,0,.08); }
+body.dark .bar { background: rgba(20,20,23,.92); border-color: rgba(255,255,255,.08); }
+.bar b { font-size: 13px; }
+.seg { display: inline-flex; background: rgba(0,0,0,.06); border-radius: 8px; padding: 2px; }
+body.dark .seg { background: rgba(255,255,255,.08); }
+.seg button { border: 0; background: transparent; color: inherit; font: inherit; padding: 5px 11px; border-radius: 6px; cursor: pointer; opacity: .7; }
+.seg button.on { background: #fff; opacity: 1; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+body.dark .seg button.on { background: #3a3b41; }
+
+.grid { display: grid; gap: 22px; padding: 22px 20px 60px; max-width: 1800px; margin: 0 auto; }
+.grid.one { grid-template-columns: minmax(0, 860px); justify-content: center; }
+.grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 1000px) { .grid.two { grid-template-columns: minmax(0, 1fr); } }
+
+.card { border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.12), 0 0 0 .5px rgba(0,0,0,.18); }
+.head { padding: 12px 18px 10px; background: rgba(255,255,255,.75); border-bottom: 1px solid rgba(0,0,0,.07); }
+body.dark .head { background: rgba(40,40,45,.9); border-color: rgba(255,255,255,.07); }
+.head h2 { margin: 0 0 3px; font-size: 15px; }
+.head p { margin: 2px 0; font-size: 12px; opacity: .75; }
+.head .cost { display: inline-block; margin-top: 4px; font-size: 11px; padding: 1px 8px; border-radius: 10px; background: rgba(0,0,0,.06); }
+body.dark .head .cost { background: rgba(255,255,255,.08); }
+.page { padding: 22px 26px 26px; }
+
+/* The chat page's colours: light and dark, as ChromeTheme gives them. */
+.page { --bg: #fbfbfa; --text: #1f2023; --strong: #111; --mute: #6b6d73; --faint: #9a9ca2; --line: rgba(0,0,0,.1); --code: rgba(0,0,0,.055); --accent: #2f6fde; --accentSoft: rgba(47,111,222,.1); --codeText: #b8441f; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13.5px; }
+body.dark .page { --bg: #1f2024; --text: #e4e4e7; --strong: #fff; --mute: #a2a3a9; --faint: #6f7178; --line: rgba(255,255,255,.1); --code: rgba(255,255,255,.08); --accent: #f0b440; --accentSoft: rgba(240,180,64,.12); --codeText: #f2a27a; }
+.page h3, .page h4, .page p, .page ul, .page ol, .page pre { margin: 0; }
+.page code { font-family: var(--mono); }
+.page ul, .page ol { padding: 0; list-style: none; }
+
+/* ---------- A: what the app draws today ---------- */
+.vA { line-height: 1.38; }
+.vA h3 { font-size: 15.5px; font-weight: 700; color: var(--strong); margin: 10px 0 2px; }
+.vA h3:first-child { margin-top: 0; }
+.vA p { margin: 0; }
+.vA li { position: relative; padding-left: 15px; }
+.vA ul > li::before { content: "•"; position: absolute; left: 2px; color: var(--faint); }
+.vA ol { counter-reset: n; }
+.vA ol > li { counter-increment: n; }
+.vA ol > li::before { content: counter(n) "."; position: absolute; left: 0; color: var(--faint); }
+.vA li li { margin-left: 14px; }
+.vA code { font-size: 12px; background: var(--code); }
+.vA pre { margin: 4px 0; font-size: 12px; line-height: 1.3; }
+.vA pre code { display: inline-block; background: var(--code); }
+.vA .gap { height: 14px; }
+
+/* ---------- B: room to breathe ---------- */
+.vB { line-height: 1.7; }
+.vB h3 { font-size: 17px; font-weight: 700; color: var(--strong); margin: 22px 0 8px; }
+.vB h3:first-child { margin-top: 0; }
+.vB p { margin: 0 0 10px; }
+.vB ul, .vB ol { margin: 0 0 10px; }
+.vB li { position: relative; padding-left: 20px; margin: 3px 0; }
+.vB ul > li::before { content: ""; position: absolute; left: 6px; top: .72em; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.vB li li::before { background: transparent !important; border: 1.3px solid var(--faint); width: 4px !important; height: 4px !important; }
+.vB ol { counter-reset: n; }
+.vB ol > li { counter-increment: n; padding-left: 24px; }
+.vB ol > li::before { content: counter(n) "."; position: absolute; left: 0; width: 18px; text-align: right; color: var(--accent); font-weight: 600; }
+.vB li ul { margin: 4px 0 6px; }
+.vB code { font-size: 12.2px; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+.vB pre { margin: 6px 0 12px; padding: 10px 12px; background: var(--code); border-radius: 8px; line-height: 1.45; font-size: 12.2px; }
+.vB pre code { background: none; padding: 0; }
+.vB strong { color: var(--strong); }
+
+/* ---------- C: like a document (GitHub) ---------- */
+.vC { line-height: 1.62; }
+.vC h3 { font-size: 17.5px; font-weight: 650; color: var(--strong); margin: 24px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.vC h3:first-child { margin-top: 0; }
+.vC p { margin: 0 0 10px; }
+.vC ul, .vC ol { margin: 0 0 10px; }
+.vC li { position: relative; padding-left: 22px; margin: 2px 0; }
+.vC ul > li::before { content: "•"; position: absolute; left: 7px; color: var(--text); }
+.vC li li::before { content: "◦" !important; }
+.vC ol { counter-reset: n; }
+.vC ol > li { counter-increment: n; padding-left: 26px; }
+.vC ol > li::before { content: counter(n) "."; position: absolute; left: 0; width: 20px; text-align: right; }
+.vC li ul { margin: 2px 0 4px; }
+.vC code { font-size: 12px; background: var(--code); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); }
+.vC pre { margin: 6px 0 12px; padding: 12px 14px; background: var(--code); border: 1px solid var(--line); border-radius: 8px; line-height: 1.45; font-size: 12px; }
+.vC pre code { background: none; border: 0; padding: 0; }
+
+/* ---------- D: guide lines ---------- */
+.vD { line-height: 1.62; }
+.vD h3 { font-size: 16px; font-weight: 700; color: var(--strong); margin: 22px 0 8px; padding-left: 10px; border-left: 3px solid var(--accent); line-height: 1.3; }
+.vD h3:first-child { margin-top: 0; }
+.vD p { margin: 0 0 9px; }
+.vD ul, .vD ol { margin: 0 0 10px; }
+.vD li { position: relative; padding-left: 18px; margin: 3px 0; }
+.vD ul > li::before { content: ""; position: absolute; left: 5px; top: .7em; width: 5px; height: 5px; border-radius: 50%; background: var(--faint); }
+.vD li ul { margin: 4px 0 6px 2px; padding-left: 2px; border-left: 1.5px solid var(--line); }
+.vD li li { padding-left: 16px; }
+.vD li li::before { width: 6px !important; height: 1.5px !important; border-radius: 0 !important; left: 0 !important; top: .78em !important; background: var(--line) !important; }
+.vD ol { counter-reset: n; }
+.vD ol > li { counter-increment: n; padding-left: 26px; }
+.vD ol > li::before { content: counter(n); position: absolute; left: 0; top: .22em; width: 18px; height: 18px; border-radius: 50%; background: var(--accentSoft); color: var(--accent); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
+.vD code { font-size: 12.3px; color: var(--codeText); }
+.vD pre { margin: 6px 0 12px; padding: 10px 12px; border-left: 3px solid var(--line); line-height: 1.45; font-size: 12.3px; }
+.vD pre code { color: var(--text); }
+.vD strong { color: var(--strong); }
+
+/* ---------- E: sections as cards ---------- */
+.vE { line-height: 1.62; }
+.vE .sec { background: rgba(127,127,127,.06); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px 6px; margin: 0 0 14px; }
+.vE h3 { font-size: 15.5px; font-weight: 700; color: var(--strong); margin: 0 0 8px; }
+.vE p { margin: 0 0 8px; }
+.vE ul, .vE ol { margin: 0 0 8px; }
+.vE li { position: relative; padding-left: 18px; margin: 2px 0; }
+.vE ul > li::before { content: "–"; position: absolute; left: 3px; color: var(--faint); }
+.vE li ul { margin: 2px 0 4px; }
+.vE ol { counter-reset: n; }
+.vE ol > li { counter-increment: n; padding-left: 24px; }
+.vE ol > li::before { content: counter(n); position: absolute; left: 0; top: .25em; width: 17px; height: 17px; border-radius: 5px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; line-height: 17px; text-align: center; }
+body.dark .vE ol > li::before { color: #1f2024; }
+.vE code { font-size: 12.2px; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+.vE pre { margin: 6px 0 10px; padding: 9px 12px; background: var(--bg); border-radius: 7px; line-height: 1.45; font-size: 12.2px; }
+.vE pre code { background: none; padding: 0; }
+.vE strong { color: var(--strong); }
+</style>
+</head>
+<body>
+<div class="bar">
+  <b>聊天页 Markdown 样式对比</b>
+  <div class="seg" id="mode"><button data-v="two" class="on">两列并排</button><button data-v="one">一列</button></div>
+  <div class="seg" id="theme"><button data-v="light" class="on">浅色</button><button data-v="dark">深色</button></div>
+  <div class="seg" id="pick"><button data-v="all" class="on">全部</button><button data-v="A">A</button><button data-v="B">B</button><button data-v="C">C</button><button data-v="D">D</button><button data-v="E">E</button></div>
+</div>
+<div class="grid two" id="grid"></div>
+
+<template id="sample">
+<div class="sec">
+<h3>4. 侧栏状态圆点改成读 attache-cli</h3>
+<ul>
+<li>圆点改为读 attache-cli 的 <code>agents --watch</code>，跟聊天页用的是同一份 agent 列表，不再读 hook 写进 tmux 的 <code>@agent_state</code>。attache-cli 的状态和圆点的对应关系：
+  <ul>
+  <li>needs_you：橙色圆点。</li>
+  <li>working：蓝色圆点。</li>
+  <li>done：绿色圆点。</li>
+  <li>unknown（attache-cli 看不出这个 agent 在做什么）：空心圆点。</li>
+  </ul>
+</li>
+<li>你选中一个窗口时，会调用 <code>attache-cli seen</code>，把这个窗口里 done 的 agent 变成 idle。隐藏当前窗口、自动跳到下一个窗口时也会这样做。</li>
+<li><strong>测过的</strong>：app 重启后截了图，每个窗口的圆点都跟 <code>attache-cli agents</code> 的输出一致。</li>
+<li><strong>没测过的</strong>：
+  <ul>
+  <li>点一个 done 的窗口，它会不会变成 idle。这要在你真实的 Dev 会话里切换窗口，所以我没点。</li>
+  <li>按 Alice 的意见修完以后的这一轮，我没截到图，因为显示器睡眠了。</li>
+  </ul>
+</li>
+<li>App 已经重启，重启时间是 <strong>21:49:25</strong>，构建完成是 21:48:58。可以测试了。</li>
+</ul>
+</div>
+<div class="gap"></div>
+<div class="sec">
+<h3>需要你决定的</h3>
+<ol>
+<li><strong>桌面仓库要不要提交？</strong> 工作区里有一批 11-04 留下的未提交改动，不是我改的。我改的文件是：
+  <ul>
+  <li><code>.github/workflows/build.yml</code></li>
+  <li><code>Attache/Agents/</code> 下面的四个文件，其中 <code>AgentRowBadge.swift</code> 是新建的</li>
+  <li><code>Attache/UI/</code> 下面的 <code>MainViewController.swift</code>、<code>SessionModel.swift</code></li>
+  </ul>
+</li>
+</ol>
+<p>其中 <code>TmuxSessionConnection.swift</code> 里同时有那批旧改动，提交时只能把我改的那几段单独加进去。</p>
+<ol start="2" style="counter-reset: n 1">
+<li><strong>以后可以做的</strong>：现在侧栏已经不用 agent hook 了。要不要把这部分整个删掉，你来定。</li>
+</ol>
+<pre><code>swiftc -O -o /tmp/attachecliccheck Attache/Agents/*.swift \
+  Tools/AttacheCliCheck/main.swift
+/tmp/attachecliccheck   # 33 cases, all pass</code></pre>
+</div>
+</template>
+
+<script>
+const variants = [
+  { id: "A", name: "A · 现在", what: "app 现在画出来的样子，作为对照：行距 1.38，段落和列表之间没有空隙，圆点是灰色小点，行内代码是一块不带圆角的灰底。",
+    cost: "对照" },
+  { id: "B", name: "B · 舒展", what: "只把间距放开：行距 1.7，段落之间、标题前后、列表项之间都留空；第一层圆点用主题色，第二层用空心圆；编号用主题色、右对齐；行内代码和代码块用浅底加圆角。",
+    cost: "改动小：大多是段落参数和颜色；只有行内代码的圆角底色要自己画" },
+  { id: "C", name: "C · 文档风", what: "参照 GitHub 的 README：标题下面有一条分隔线，列表缩进更深，第二层圆点是 ◦，行内代码和代码块带细边框。",
+    cost: "中等：标题下的分隔线和代码边框要自己画" },
+  { id: "D", name: "D · 层次线", what: "标题左边有一条主题色竖条；第二层列表左边有一条细竖线，看得出它属于上一条；编号是浅色圆圈里的数字；行内代码不加底色，只换成等宽字体和另一种颜色，不再出现一块块灰底。",
+    cost: "中等：竖条、竖线和圆圈编号要自己画；行内代码的颜色只改参数" },
+  { id: "E", name: "E · 分节卡片", what: "每个标题连同下面的内容放进一张浅色卡片，一节一节分开；编号是主题色方块；列表符号是短横线。",
+    cost: "较大：一条回复要按标题拆成几个视图" },
+];
+const sample = document.getElementById("sample").innerHTML;
+const grid = document.getElementById("grid");
+for (const v of variants) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.v = v.id;
+  card.innerHTML = `<div class="head"><h2>${v.name}</h2><p>${v.what}</p><span class="cost">实现：${v.cost}</span></div>
+    <div class="page v${v.id}">${sample}</div>`;
+  grid.appendChild(card);
+}
+// E keeps its section wrappers; the others draw them as plain blocks.
+for (const page of document.querySelectorAll(".page:not(.vE) .sec")) page.style.display = "contents";
+for (const gap of document.querySelectorAll(".page:not(.vA) .gap")) gap.remove();
+
+function seg(id, on) {
+  const el = document.getElementById(id);
+  el.addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+    on(b.dataset.v);
+  });
+}
+seg("mode", v => { grid.className = "grid " + v; });
+seg("theme", v => { document.body.classList.toggle("dark", v === "dark"); });
+seg("pick", v => {
+  for (const c of grid.children) c.style.display = (v === "all" || c.dataset.v === v) ? "" : "none";
+  if (v !== "all") { grid.className = "grid one"; document.querySelectorAll("#mode button").forEach(x => x.classList.toggle("on", x.dataset.v === "one")); }
+});
+</script>
+</body>
+</html>

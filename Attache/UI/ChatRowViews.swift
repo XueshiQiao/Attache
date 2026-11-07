@@ -162,6 +162,11 @@ private final class AgentReply: NSView {
         style.body = .systemFont(ofSize: ChatRowViews.size)
         style.bold = .systemFont(ofSize: ChatRowViews.size, weight: .semibold)
         style.mono = .monospacedSystemFont(ofSize: ChatRowViews.size - 1.5, weight: .regular)
+        let theme = ChromeTheme.current
+        style.look = .guides
+        style.accent = theme.accent
+        style.line = theme.separator
+        style.codeText = Self.codeColour(on: theme)
         let blocks = MarkdownBlocks.split(markdown)
         if blocks.contains(where: { if case .table = $0 { return true } else { return false } }) {
             // Tables drawn as grids between runs of text.
@@ -202,17 +207,18 @@ private final class AgentReply: NSView {
         ChatRowViews.pin(card, in: self, insets: NSEdgeInsets(top: 0, left: leading, bottom: 0, right: 24))
     }
 
-    private static func textField(_ markdown: String, style: ConversationMarkdown.Style) -> NSTextField {
-        let body = NSTextField(labelWithAttributedString: ConversationMarkdown.rendered(markdown, style: style))
-        body.maximumNumberOfLines = 0
-        body.isSelectable = true
-        // True, though nothing here is editable: a selectable field that may
-        // not keep text attributes drops them the moment it is clicked, and
-        // the whole reply redraws in the field's own smaller font (reported
-        // 2026-11-06: "click a line and the text gets smaller").
-        body.allowsEditingTextAttributes = true
-        body.giveWayHorizontally()
-        return body
+    private static func textField(_ markdown: String, style: ConversationMarkdown.Style) -> NSView {
+        MarkdownTextView(ConversationMarkdown.rendered(markdown, style: style))
+    }
+
+    /// Inline code in a warm tone that reads on the scheme: darker on a light
+    /// page, lighter on a dark one, decided by the scheme's own text colour.
+    private static func codeColour(on theme: ChromeTheme) -> NSColor {
+        let ink = theme.text.usingColorSpace(.sRGB)
+        let lightPage = (ink?.brightnessComponent ?? 0) < 0.5
+        return lightPage
+            ? NSColor(srgbRed: 0.72, green: 0.27, blue: 0.12, alpha: 1)
+            : NSColor(srgbRed: 0.95, green: 0.64, blue: 0.48, alpha: 1)
     }
 
     @available(*, unavailable)
@@ -224,38 +230,51 @@ private final class Expandable: NSView {
     private let body: NSTextField
     private let lines: Int
     private var open = false
+    private var toggle: ClosureButton?
 
     init(text: String, font: NSFont, lines: Int, colour: NSColor, insets: NSEdgeInsets? = nil) {
-        body = ChatRowViews.label(text, font: font, colour: colour, selectable: false)
+        // Selectable from the start: opening it used to be a click on the
+        // text itself, which left nothing in it to select until it was open.
+        body = ChatRowViews.label(text, font: font, colour: colour)
         self.lines = lines
         super.init(frame: .zero)
         body.maximumNumberOfLines = lines
         body.lineBreakMode = .byTruncatingTail
-        ChatRowViews.pin(body, in: self, insets: insets ?? NSEdgeInsets(top: 0, left: 18, bottom: 0, right: 24))
-        toolTip = "Click to show all of it"
+        let total = text.split(separator: "\n", omittingEmptySubsequences: false).count
+        guard total > lines else {
+            ChatRowViews.pin(body, in: self, insets: insets ?? NSEdgeInsets(top: 0, left: 18, bottom: 0, right: 24))
+            return
+        }
+        // So the whole thing opens with a button of its own.
+        let button = ClosureButton(title: "Show all \(total) lines") { [weak self] in self?.flip() }
+        button.isBordered = false
+        button.contentTintColor = ChromeTheme.current.accent
+        button.font = .systemFont(ofSize: max(10, font.pointSize - 0.5))
+        let column = NSStackView(views: [body, button])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 4
+        body.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        ChatRowViews.pin(column, in: self, insets: insets ?? NSEdgeInsets(top: 0, left: 18, bottom: 0, right: 24))
+        toggle = button
+        self.total = total
     }
+
+    private var total = 0
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 
-    private var pressed = false
-    override var mouseDownCanMoveWindow: Bool { false }
-    override func mouseDown(with event: NSEvent) { pressed = true }
-
-    // Opened on mouse up, and only by a press that began here (CLAUDE.md:
-    // track that a press started on the view).
-    override func mouseUp(with event: NSEvent) {
-        defer { pressed = false }
-        guard pressed, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+    private func flip() {
         open.toggle()
         body.maximumNumberOfLines = open ? 0 : lines
         body.lineBreakMode = open ? .byWordWrapping : .byTruncatingTail
-        body.isSelectable = open
+        toggle?.title = open ? "Show less" : "Show all \(total) lines"
         needsLayout = true
     }
 }
 
-/// A command's output: monospaced, in a card, thirty lines until clicked.
+/// A command's output: monospaced, in a card, thirty lines until opened.
 private final class OutputCard: NSView {
     init(text: String, isError: Bool) {
         super.init(frame: .zero)

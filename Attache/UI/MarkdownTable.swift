@@ -206,9 +206,35 @@ private final class TableGridView: NSView {
                                        options: [.usesLineFragmentOrigin, .usesFontLeading]).height) + 2 * pad.height
             }.max() ?? 0
         }
+        placeText()
         needsDisplay = true
         return NSSize(width: widths.reduce(0, +) + gap * CGFloat(columns + 1),
                       height: heights.reduce(0, +) + gap * CGFloat(heights.count + 1))
+    }
+
+    /// Each cell's text as a selectable text view on its cell; the grid only
+    /// paints the fills and rules. Drawn straight onto the grid, as it was,
+    /// no word of a table could be selected or copied.
+    private func placeText() {
+        subviews.forEach { $0.removeFromSuperview() }
+        var y = Self.gap
+        for (r, row) in cells.enumerated() {
+            var x = Self.gap
+            for (c, text) in row.enumerated() {
+                let frame = NSRect(x: x, y: y, width: widths[c], height: heights[r]).insetBy(dx: pad.width, dy: pad.height)
+                let view = NSTextView(frame: frame)
+                view.textContainer?.lineFragmentPadding = 0
+                view.textContainerInset = .zero
+                view.isEditable = false
+                view.isSelectable = true
+                view.drawsBackground = false
+                view.isAutomaticLinkDetectionEnabled = false
+                view.textStorage?.setAttributedString(text)
+                addSubview(view)
+                x += widths[c] + Self.gap
+            }
+            y += heights[r] + Self.gap
+        }
     }
 
     /// The phone's `TableWidths.fit`: columns that want no more than an even
@@ -269,12 +295,10 @@ private final class TableGridView: NSView {
         var y = Self.gap
         for (r, row) in cells.enumerated() {
             var x = Self.gap
-            for (c, text) in row.enumerated() {
+            for c in row.indices {
                 let cell = NSRect(x: x, y: y, width: widths[c], height: heights[r])
                 (r == 0 ? headFill : theme.background.withAlphaComponent(1)).setFill()
                 cell.fill()
-                text.draw(with: cell.insetBy(dx: pad.width, dy: pad.height),
-                          options: [.usesLineFragmentOrigin, .usesFontLeading])
                 x += widths[c] + Self.gap
             }
             y += heights[r] + Self.gap

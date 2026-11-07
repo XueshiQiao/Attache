@@ -351,9 +351,19 @@ final class ChatPaneView: NSView {
         tip.show(text)
     }
 
+    /// Two passes, not one: a reply learns its width in the first and only
+    /// then knows its height (`MarkdownTextView`), so after one pass a row
+    /// just added still counts as nothing and the document's height is short
+    /// by every new reply — a jump when history goes in above, or a page
+    /// that thinks it is too short to scroll.
+    private func settle() {
+        layoutSubtreeIfNeeded()
+        layoutSubtreeIfNeeded()
+    }
+
     private func scrollToBottom() {
         guard let document = scroll.documentView else { return }
-        layoutSubtreeIfNeeded()
+        settle()
         movingScroll = true
         document.scroll(NSPoint(x: 0, y: max(0, document.frame.height - scroll.contentView.bounds.height)))
         judgedHeight = document.frame.height
@@ -446,7 +456,7 @@ final class ChatPaneView: NSView {
         firstShownKey = first < all.count ? all[first].key : nil
         redrawRows(Array(all[first...]))
         // What follows reads the document's height: settle it first.
-        scroll.documentView?.layoutSubtreeIfNeeded()
+        settle()
         if following { scrollToBottom() }
         // Too little to scroll is too little to reach the top by scrolling:
         // fetch what came before until there is something to scroll.
@@ -492,7 +502,7 @@ final class ChatPaneView: NSView {
             drawn.append((element.id, view, element.minimapKind))
         }
         if prepended, let document {
-            layoutSubtreeIfNeeded()
+            settle()
             movingScroll = true
             document.scroll(NSPoint(x: 0, y: max(0, document.frame.height - fromBottom)))
             judgedHeight = document.frame.height
