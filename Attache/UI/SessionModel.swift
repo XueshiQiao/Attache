@@ -73,7 +73,7 @@ final class SessionModel {
         guard let window = connection.windows.first(where: { $0.index == index }),
               !hiddenWindowIDs.contains(window.id)
         else { return }
-        connection.selectWindow(id: window.id)
+        select(window.id)
     }
 
     func selectAdjacentWindow(offset: Int) {
@@ -82,12 +82,20 @@ final class SessionModel {
               let current = visible.firstIndex(where: { $0.id == connection.activeWindowID })
         else { return }
         let next = (current + offset + visible.count) % visible.count
-        connection.selectWindow(id: visible[next].id)
+        select(visible[next].id)
     }
 
     func newWindow() { connection.newWindow() }
 
-    func selectWindow(id: String) { connection.selectWindow(id: id) }
+    func selectWindow(id: String) { select(id) }
+
+    /// The person chose this window, so they have seen what its agent did:
+    /// tmux is told for its own `@agent_seen`, and attache-cli turns the
+    /// agent's Done into Idle, which is what the rail's dot reads.
+    private func select(_ id: String) {
+        connection.selectWindow(id: id)
+        HostAgents.shared(for: connection.transport).markSeen(window: id)
+    }
 
     func renameWindow(id: String, to name: String) {
         connection.renameWindow(id: id, to: name)
@@ -124,7 +132,7 @@ final class SessionModel {
         let visible = connection.windows.filter { !hiddenWindowIDs.contains($0.id) }
         if connection.activeWindowID == id, let next = visible.first {
             hidingActiveWindow = id
-            connection.selectWindow(id: next.id)
+            select(next.id)
         } else if visible.isEmpty {
             // Never leave the user staring at nothing with no way back.
             hiddenWindowIDs.remove(id)

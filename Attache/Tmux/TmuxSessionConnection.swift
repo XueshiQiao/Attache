@@ -506,9 +506,18 @@ final class TmuxSessionConnection {
     /// pane's numbers over the other pane's conversation, which is the kind of
     /// disagreement this codebase exists to avoid.
     func conversationEvidence(forWindow windowID: String) -> AgentPaneEvidence? {
-        guard let pane = agentPane(forWindow: windowID),
-              let evidence = evidenceByPane[pane]
-        else { return nil }
+        agentPane(forWindow: windowID).flatMap(conversationEvidence(forPane:))
+    }
+
+    /// What the agent in `pane` says about itself, for a caller that already
+    /// knows which pane speaks for its window — the rail, from attache-cli's
+    /// row — so the numbers are about the agent the dot is about.
+    func agentStats(forPane pane: String) -> AgentStats? { statsByPane[pane] }
+
+    /// `conversationEvidence(forWindow:)` for a pane chosen by the caller, on
+    /// the same terms as `agentStats(forPane:)`.
+    func conversationEvidence(forPane pane: String) -> AgentPaneEvidence? {
+        guard let evidence = evidenceByPane[pane] else { return nil }
         return AgentPaneEvidence(
             paneID: pane,
             kind: evidence.optionKind,

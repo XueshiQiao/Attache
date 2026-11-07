@@ -58,6 +58,10 @@ final class MainViewController: NSSplitViewController {
     /// rename read as "that session is gone" and threw the controller away —
     /// GPU surfaces, primed scrollback and the hidden-window set with it.
     private var models = [String: SessionModel]()
+    /// attache-cli's agent list for each host the rail lists windows of,
+    /// watched so a dot moves when its agent does. Keyed by host id; the
+    /// list is kept to tell when a changed transport gave the host a new one.
+    private var agentWatches = [String: (agents: HostAgents, token: HostAgentsToken)]()
     /// The route B content halves, one per session, made only while
     /// `tmuxDrawsItself` is on. Keyed the same way and for the same reason.
     ///
@@ -1444,6 +1448,19 @@ final class MainViewController: NSSplitViewController {
         }
     }
 
+    private func watchedAgents(on host: HostContext) -> HostAgents {
+        let agents = HostAgents.shared(for: host.transport)
+        if agentWatches[host.id]?.agents !== agents {
+            // Later, not now: a host whose install fails says so at once,
+            // and that would rebuild the rail from inside this rebuild.
+            let token = agents.observe { [weak self] in
+                DispatchQueue.main.async { self?.refreshSidebar() }
+            }
+            agentWatches[host.id] = (agents, token)
+        }
+        return agents
+    }
+
     private func refreshSidebar() {
         discardControllersForVanishedSessions()
 
@@ -1456,9 +1473,15 @@ final class MainViewController: NSSplitViewController {
         // session whose list is collapsed costs nothing, and a `git status` is
         // 82ms of process spawn that nobody would see the result of.
         var visiblePathsByHost = [String: Set<String>]()
+        var watchedHosts = Set<String>()
 
         var entries: [SessionSidebarView.Entry] = []
         for hostContext in hosts {
+            // Asked for only once the host has sessions to list: watching
+            // installs attache-cli there. Whatever the agent column says,
+            // because the conversation rail picks its pane from it too.
+            let agents = hostContext.server.sessionIDs.isEmpty ? nil : watchedAgents(on: hostContext)
+            if agents != nil { watchedHosts.insert(hostContext.id) }
             for session in hostContext.server.sessionIDs {
                 guard let connection = hostContext.server.connection(id: session) else { continue }
                 let id = SessionKey(host: hostContext.id, session: session).composite
@@ -1468,13 +1491,14 @@ final class MainViewController: NSSplitViewController {
                     var decoration = WindowDecoration()
                     decoration.path = connection.pathByWindow[window.id]
                     if AppSettings.sidebarShowsAgent {
-                        decoration.agent = connection.agentBadge(forWindow: window.id)
+                        let row = agents?.agent(inWindow: window.id)
+                        decoration.agent = row.map(AgentBadge.init(row:))
                         // Gated on the badge as well as on its own setting: the
                         // numbers belong to the agent the dot is about, so a rail
                         // with the agent column switched off has no place to put
                         // them either.
                         if AppSettings.sidebarShowsAgentStats {
-                            decoration.stats = connection.agentStats(forWindow: window.id)
+                            decoration.stats = row.flatMap { connection.agentStats(forPane: $0.pane) }
                         }
                         // The cache chip rides the same toggle as the other
                         // numbers, but not the same *source*: the wrapper's
@@ -1561,7 +1585,18 @@ final class MainViewController: NSSplitViewController {
         )
         sidebar.showGrokUsage(aiQuotaService.grokUsage)
 
+        // A host removed, or left with no sessions, stops its watch.
+        agentWatches = agentWatches.filter { watchedHosts.contains($0.key) }
+
         refreshConversation()
+    }
+
+    /// The pane attache-cli says speaks for a window: the one the rail's dot
+    /// is about, so the conversation and its numbers are about it too.
+    private func agentPane(inWindow windowID: String, ofSession composite: String) -> String? {
+        host(ofComposite: composite).flatMap {
+            HostAgents.shared(for: $0.transport).agent(inWindow: windowID)?.pane
+        }
     }
 
     /// Point the conversation rail at the window on screen.
@@ -1724,9 +1759,10 @@ final class MainViewController: NSSplitViewController {
     private func refreshConversation() {
         let connection = currentSessionID.flatMap { self.connection(id: $0) }
         let windowID = connection?.activeWindowID
-        let evidence = (connection != nil && windowID != nil)
-            ? connection!.conversationEvidence(forWindow: windowID!)
-            : nil
+        let agentPane = currentSessionID.flatMap { session in
+            windowID.flatMap { agentPane(inWindow: $0, ofSession: session) }
+        }
+        let evidence = agentPane.flatMap { connection?.conversationEvidence(forPane: $0) }
 
         // Evidence is read before any visibility guard, because the collapsed
         // rail is exactly the one that needs to notice an agent appearing.
@@ -1781,7 +1817,7 @@ final class MainViewController: NSSplitViewController {
         conversations.follow(evidence, onHost: currentHost?.id)
 
         let window = windowID.flatMap { id in connection?.windows.first { $0.id == id } }
-        let stats = windowID.flatMap { connection?.agentStats(forWindow: $0) }
+        let stats = agentPane.flatMap { connection?.agentStats(forPane: $0) }
         conversation.show(
             conversation: conversations.conversation,
             header: ConversationSidebarView.Header(

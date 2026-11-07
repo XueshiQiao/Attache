@@ -42,13 +42,33 @@ final class HostAgents {
         let id = UUID()
         observers[id] = observer
         start()
-        return HostAgentsToken { [weak self] in self?.observers[id] = nil }
+        return HostAgentsToken { [weak self] in self?.forget(id) }
+    }
+
+    /// The last observer gone: the `agents --watch` stops with it, or a host
+    /// removed or reconfigured keeps one running for the rest of the app's
+    /// life. The next `observe` starts it again.
+    private func forget(_ id: UUID) {
+        observers[id] = nil
+        guard observers.isEmpty else { return }
+        stream?.cancel()
+        stream = nil
+        started = false
     }
 
     /// The agent that speaks for a window: the most urgent of its panes,
     /// the order attache-cli's rows are already sorted in.
     func agent(inWindow windowID: String) -> AgentRow? {
         agents.first { $0.window == windowID }
+    }
+
+    /// The person looked at this window: every agent in it that finished
+    /// becomes Idle. attache-cli keeps that, so the rail hears it on the next
+    /// list rather than deciding it here.
+    func markSeen(window windowID: String) {
+        for row in agents where row.window == windowID {
+            if let seen = row.seenArguments { link.run(seen) { _ in } }
+        }
     }
 
     private func start() {
@@ -89,7 +109,10 @@ final class HostAgents {
             // time it keeps failing, so a host that is down costs an ssh a
             // minute rather than one every three seconds.
             guard let self else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + retry.next()) { [weak self] in self?.watch() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + retry.next()) { [weak self] in
+                guard let self, !self.observers.isEmpty else { return }
+                self.watch()
+            }
         })
     }
 

@@ -60,6 +60,9 @@ nonisolated struct AgentRow: Equatable, Sendable {
     let title: String
     let kind: String
     let phase: AgentPhase
+    /// attache-cli said `unknown`: running, but nothing it writes says what
+    /// it is doing. `phase` reads it as idle; the rail tells the two apart.
+    let isUnknown: Bool
     let since: Int?
     let conversation: String?
     let transcript: String?
@@ -78,15 +81,32 @@ nonisolated struct AgentRow: Equatable, Sendable {
         title = o["title"] as? String ?? ""
         kind = o["kind"] as? String ?? ""
         phase = AgentPhase(word: o["state"] as? String ?? "")
+        isUnknown = o["state"] as? String == "unknown"
         since = o["since"] as? Int
         conversation = o["conversation"] as? String
         transcript = o["transcript"] as? String
         model = o["model"] as? String
     }
 
+    /// The `attache-cli seen` that turns this agent from Done to Idle, or nil
+    /// when it is not Done or names no conversation to mark.
+    var seenArguments: [String]? {
+        guard phase == .done, let conversation, Self.isID(kind), Self.isID(conversation) else { return nil }
+        return ["seen", kind, conversation]
+    }
+
+    private static func isID(_ s: String) -> Bool {
+        (1...128).contains(s.count) && s.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }
+    }
+
     static func parse(_ objects: [[String: Any]]) -> [AgentRow] {
+        // Within idle, a known idle before `unknown`: the rail ranks a
+        // settled agent above one that says nothing, and a window's first row
+        // is the one that speaks for it.
         objects.compactMap(AgentRow.init).sorted {
-            $0.phase != $1.phase ? $0.phase < $1.phase : ($0.since ?? 0) > ($1.since ?? 0)
+            if $0.phase != $1.phase { return $0.phase < $1.phase }
+            if $0.isUnknown != $1.isUnknown { return !$0.isUnknown }
+            return ($0.since ?? 0) > ($1.since ?? 0)
         }
     }
 }

@@ -37,6 +37,22 @@ MainActor.assumeIsolated {
     check(rows.map(\.pane) == ["%2", "%3", "%1", "%4"], "agents sort by phase then newest, bad pane ids dropped")
     check(rows.last?.phase == .idle, "`unknown` reads as idle")
     check(rows[1].isFollowed && !rows[3].isFollowed, "claude and agy are followed, codex is not")
+    check(rows.last?.isUnknown == true && rows[2].isUnknown == false, "`unknown` stays apart from idle")
+    let idleFirst = AgentRow.parse([
+        object(#"{"pane":"%5","window":"@3","kind":"codex","state":"unknown"}"#),
+        object(#"{"pane":"%6","window":"@3","kind":"claude","state":"idle"}"#),
+    ])
+    check(idleFirst.map(\.pane) == ["%6", "%5"], "a known idle speaks for the window before an unknown one")
+
+    // Seen: only a Done agent, and only with a conversation that is a plain id.
+    let seen = AgentRow.parse([
+        object(#"{"pane":"%1","window":"@1","kind":"claude","state":"done","conversation":"c94cb7d8-1e11"}"#),
+        object(#"{"pane":"%2","window":"@1","kind":"claude","state":"idle","conversation":"abc"}"#),
+        object(#"{"pane":"%3","window":"@1","kind":"claude","state":"done"}"#),
+        object(#"{"pane":"%4","window":"@1","kind":"claude","state":"done","conversation":"../etc"}"#),
+    ])
+    check(seen.map(\.seenArguments) == [["seen", "claude", "c94cb7d8-1e11"], nil, nil, nil],
+          "seen is asked only for a Done agent with a plain conversation id")
 
     // The screen. A fingerprint that is not attache-cli's shape is no
     // fingerprint, and a menu without one cannot be answered.

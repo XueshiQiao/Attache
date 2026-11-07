@@ -47,7 +47,6 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var sidebarShowsAgentText: Bool
     @Published private(set) var sidebarShowsAgentStats: Bool
     @Published private(set) var sidebarShowsUsage: Bool
-    @Published private(set) var agentStateSource: AgentStateSource
     @Published private(set) var gitAutoFetch: Bool
     @Published private(set) var gitAutoFetchMinutes: Int
     @Published private(set) var hidesConversationWithoutAgent: Bool
@@ -286,7 +285,6 @@ final class SettingsStore: ObservableObject {
         sidebarShowsAgentText = AppSettings.sidebarShowsAgentText
         sidebarShowsAgentStats = AppSettings.sidebarShowsAgentStats
         sidebarShowsUsage = AppSettings.sidebarShowsUsage
-        agentStateSource = AppSettings.agentStateSource
         gitAutoFetch = AppSettings.gitAutoFetch
         gitAutoFetchMinutes = AppSettings.gitAutoFetchMinutes
         hidesConversationWithoutAgent = AppSettings.hidesConversationWithoutAgent
@@ -416,12 +414,6 @@ final class SettingsStore: ObservableObject {
     func setSidebarShowsAgent(_ shows: Bool) {
         AppSettings.sidebarShowsAgent = shows
         sidebarShowsAgent = shows
-        AppSettings.notifyChanged()
-    }
-
-    func setAgentStateSource(_ source: AgentStateSource) {
-        AppSettings.agentStateSource = source
-        agentStateSource = source
         AppSettings.notifyChanged()
     }
 

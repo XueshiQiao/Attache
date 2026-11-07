@@ -666,18 +666,15 @@ enum AppSettings {
         set { store.set(newValue, forKey: Key.sidebarShowsUsage) }
     }
 
-    /// Where an agent's state is read from. See `AgentStateStrategy`.
+    /// Where an agent's state is read from, for the pane-level badges that
+    /// still pick which pane's numbers a window shows. See
+    /// `AgentStateStrategy`.
     ///
-    /// Hooks are the default: exact, and the state lands in tmux where any
-    /// client can see it. Reading the pane needs nothing installed but infers
-    /// from a user interface its author is free to change.
-    static var agentStateSource: AgentStateSource {
-        get {
-            store.string(forKey: Key.agentStateSource)
-                .flatMap(AgentStateSource.init(rawValue:)) ?? .hook
-        }
-        set { store.set(newValue.rawValue, forKey: Key.agentStateSource) }
-    }
+    /// No longer a choice: the rail's dots come from attache-cli, so the
+    /// stored value is not read. Left at `screen` from before, it would keep
+    /// a `capture-pane` of every agent pane going every two seconds for a
+    /// badge nothing draws, with nowhere in Settings to turn it off.
+    static var agentStateSource: AgentStateSource { .hook }
 
     /// How the chat page looks (`ChatStyle`): `card` or `glass`. Only the
     /// look — what the page shows and what a click does are the same in both.

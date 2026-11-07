@@ -657,13 +657,9 @@ final class SidebarWindowRow: NSView, SidebarEditableRow {
 
         case .silent:
             activityDot.isHidden = false
-            tips.append(
-                AgentHookInstaller.isInstalled(forKind: decoration.agent?.kind)
-                    ? "\(agentName) is running. It started before the hook was installed —"
-                        + " restart it to see what it is doing."
-                    : "\(agentName) is running. Install the hook in Settings to see"
-                        + " what it is doing."
-            )
+            // attache-cli knows the agent by its process and nothing it
+            // writes says what it is doing (Codex, Grok, Gemini today).
+            tips.append("\(agentName) is running. What it is doing cannot be read.")
 
         case .none:
             // tmux's own flag, unchanged in meaning: it is what the `#` in a
@@ -925,8 +921,8 @@ final class SidebarWindowRow: NSView, SidebarEditableRow {
         case state(AgentState)
         /// Finished, and long enough ago that it is no longer news.
         case settled
-        /// An agent is here and has never said anything — its session started
-        /// before the hook did. Genuinely unknown, unlike `settled`.
+        /// An agent is here and nothing it writes says what it is doing.
+        /// Genuinely unknown, unlike `settled`.
         case silent
         /// No agent in this window at all.
         case none

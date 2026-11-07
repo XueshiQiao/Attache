@@ -89,31 +89,10 @@ struct BehaviourPage: View {
                 }
 
                 if store.sidebarShowsAgent {
-                    Picker(selection: Binding(
-                        get: { store.agentStateSource },
-                        set: { store.setAgentStateSource($0) }
-                    )) {
-                        ForEach(AgentStateSource.allCases, id: \.self) { source in
-                            Text(source.title).tag(source)
-                        }
-                    } label: {
-                        iconLabel(
-                            "antenna.radiowaves.left.and.right",
-                            .blue,
-                            "Where the agent's state comes from"
-                        )
-                    }
-
                     Label(
-                        store.agentStateSource == .hook
-                            ? "Exact, and the state is stored in tmux so any terminal attached to "
-                                + "the same session sees it. Needs the hook below."
-                            : "Needs nothing installed, and works the moment an agent appears. "
-                                + "It reads the pane and infers, so it is guessing from a user "
-                                + "interface its author is free to change — and it only knows "
-                                + "Claude Code's. A pane it has no rules for is marked as an "
-                                + "agent and nothing more.",
-                        systemImage: store.agentStateSource == .hook ? "checkmark.seal" : "eye"
+                        "Read through attache-cli on each host, from what the agents "
+                            + "write for themselves. Nothing has to be installed in them.",
+                        systemImage: "checkmark.seal"
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -268,9 +247,9 @@ struct BehaviourPage: View {
                 Text("Agent status")
             } footer: {
                 Text(
-                    "Without this, the sidebar can tell that Claude Code, Antigravity, or Grok is "
-                        + "running in a window, but not whether it is working, waiting for you, or "
-                        + "finished.\n\n"
+                    "The sidebar no longer needs this: its dots come from attache-cli. The hook "
+                        + "only keeps `@agent_state` written in tmux, for a status line or another "
+                        + "client that draws it; Remove takes it out of the agents' settings.\n\n"
                         + "Installing stages `attache-agent-hub` to ~/.config/attache/bin/ and "
                         + "registers lifecycle hooks for every detected agent (~/.claude/settings.json, "
                         + "~/.gemini/config/hooks.json, ~/.grok/hooks/attache-status.json). Existing "

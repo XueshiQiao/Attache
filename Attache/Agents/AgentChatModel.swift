@@ -511,13 +511,8 @@ final class AgentChatModel {
 
     /// Done becomes Idle once the person has seen what the agent did.
     private func markSeen() {
-        guard let agent, agent.phase == .done, let conversation = agent.conversation,
-              Self.isID(agent.kind), Self.isID(conversation) else { return }
-        link.run(["seen", agent.kind, conversation]) { _ in }
-    }
-
-    private static func isID(_ s: String) -> Bool {
-        (1...128).contains(s.count) && s.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }
+        guard let seen = agent?.seenArguments else { return }
+        link.run(seen) { _ in }
     }
 
     private static func runQuiet(_ argv: [String], completion: @escaping @MainActor (String?) -> Void) {

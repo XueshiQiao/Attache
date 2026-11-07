@@ -997,7 +997,9 @@
                         window: $0,
                         isHiddenFromSidebar: hiddenWindowIDs.contains($0.id),
                         currentPath: connection.pathByWindow[$0.id],
-                        agent: connection.agentBadge(forWindow: $0.id)
+                        // What the rail draws: attache-cli's row for the window.
+                        agent: HostAgents.shared(for: connection.transport)
+                            .agent(inWindow: $0.id).map(AgentBadge.init(row:))
                     )
                 },
                 surfaces: []
