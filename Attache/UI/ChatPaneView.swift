@@ -235,7 +235,9 @@ final class ChatPaneView: NSView {
 
         list.orientation = .vertical
         list.alignment = .leading
-        list.spacing = 10
+        // Further than a paragraph inside a message (8 more than a line), so
+        // each message reads as one.
+        list.spacing = 20
         list.edgeInsets = NSEdgeInsets(top: 12, left: 0, bottom: 12, right: 0)
         list.translatesAutoresizingMaskIntoConstraints = false
         let document = FlippedView()
@@ -508,7 +510,8 @@ final class ChatPaneView: NSView {
         // A row inside a fold that was shut since is found by its fold.
         func index(of key: String) -> Int? {
             all.firstIndex { $0.key == key } ?? all.firstIndex {
-                $0.folded?.members.contains { "r:" + $0 == key } ?? false
+                guard let f = $0.folded else { return false }
+                return "f:" + f.key == key || f.members.contains { "r:" + $0 == key }
             }
         }
         if let key = firstShownKey, let found = index(of: key) {
@@ -560,7 +563,21 @@ final class ChatPaneView: NSView {
         // Rows are replaced from the first one that changed, which is almost
         // always the tail: a new reply, a result landing on its call.
         var keep = 0
-        while keep < drawn.count, keep < elements.count, drawn[keep].id == elements[keep].id { keep += 1 }
+        while keep < drawn.count, keep < elements.count {
+            if drawn[keep].id == elements[keep].id { keep += 1; continue }
+            // A line whose run grew, finished, opened or shut: the same line,
+            // so its mark is told rather than the line (and every row after
+            // it) rebuilt — a re-render per step, and an opened run's steps
+            // shut under the person.
+            if case .reply(let row, let fold) = elements[keep], case .agent(_, let said) = row,
+               let marked = drawn[keep].view as? MarkedReply, marked.rowKey == row.key, marked.text == said {
+                marked.update(fold)
+                drawn[keep].id = elements[keep].id
+                keep += 1
+                continue
+            }
+            break
+        }
         guard keep < drawn.count || keep < elements.count else { return }
         if !togglingFold { slack = 0 }
         // Earlier history goes in above what is being read: keep the rows
@@ -576,8 +593,8 @@ final class ChatPaneView: NSView {
                 let folded = WorkFold(fold)
                 folded.onToggle = { [weak self] in self?.toggle(fold: fold.key) }
                 view = folded
-            } else if case .reply(.agent(_, let text), let fold) = element {
-                let reply = MarkedReply(markdown: text, fold: fold)
+            } else if case .reply(let row, let fold) = element, case .agent(_, let text) = row {
+                let reply = MarkedReply(row: row, markdown: text, fold: fold)
                 reply.onToggle = { [weak self] in self?.toggle(fold: fold.key) }
                 view = reply
             } else {
@@ -704,6 +721,10 @@ final class ChatPaneView: NSView {
         judgedHeight = document.frame.height
         judgedViewport = clip.bounds.size
         movingScroll = false
+        // The line is back under the pointer only now: its mark has to show
+        // its words for the click back, whatever it worked out while the
+        // page was still moving.
+        (foldView(key) as? MarkedReply)?.refreshHover()
     }
 
     private func foldView(_ key: String) -> NSView? {
@@ -816,7 +837,16 @@ final class ChatPaneView: NSView {
             closeRun()
             if let waiting = lead { items.append(.loose(waiting.run, key: waiting.key)) }
             for (i, item) in items.enumerated() {
-                let isLive = liveRun && i == items.count - 1
+                // The run still going, or — when the agent spoke while tools
+                // it started were still out — the last run holding one.
+                let holdsRunning: Bool = {
+                    switch item {
+                    case .text(_, let run, _), .loose(let run, _):
+                        run.contains { if case .tool(_, _, _, _, nil, _, _) = $0 { true } else { false } }
+                    case .other: false
+                    }
+                }()
+                let isLive = live && i == items.count - 1 && (liveRun || holdsRunning)
                 switch item {
                 case .other(let row):
                     put(row)
@@ -825,8 +855,8 @@ final class ChatPaneView: NSView {
                 case .text(let row, let run, let key):
                     let f = fold(run, key: key, live: isLive)
                     out.append(.reply(row, f))
-                    if let sent = byAnchor[row.key] { out += sent.map(ChatElement.pending) }
                     putWork(run, open: f.open)
+                    if let sent = byAnchor[row.key] { out += sent.map(ChatElement.pending) }
                 case .loose(let run, let key):
                     let f = fold(run, key: key, live: isLive)
                     out.append(.fold(f))
@@ -932,9 +962,8 @@ enum ChatElement {
         // Open, the header says only that it folds: with the counts in its
         // id, every new step of an opened running turn redrew everything
         // after it and shut every step the person had opened.
-        case .reply(let row, let f) where f.open: "f:\(f.key):\(Self.digest(row)):open"
         case .reply(let row, let f):
-            "f:\(f.key):\(Self.digest(row)):\(f.thoughts):\(f.steps):\(f.failed):\(f.live):\(f.running ?? "")"
+            "f:\(f.key):\(Self.digest(row)):\(f.thoughts):\(f.steps):\(f.failed):\(f.live):\(f.open):\(f.running ?? "")"
         case .fold(let f) where f.open: "f:\(f.key):open"
         case .fold(let f):
             "f:\(f.key):\(f.thoughts):\(f.steps):\(f.failed):\(f.live):\(f.progress ?? ""):\(f.running ?? "")"

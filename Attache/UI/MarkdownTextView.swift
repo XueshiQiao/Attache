@@ -42,7 +42,10 @@ extension NSAttributedString.Key {
 /// Draws the `MarkdownDecoration`s under the text it lays out.
 private final class MarkdownLayoutManager: NSLayoutManager {
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
-        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+        // The decorations first and the selection after: the other way
+        // round, a code box's fill covered the highlight, and text selected
+        // in a code block showed no sign of it.
+        defer { super.drawBackground(forGlyphRange: glyphsToShow, at: origin) }
         guard let storage = textStorage, let container = textContainers.first else { return }
         let characters = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
         var drawn = Set<ObjectIdentifier>()

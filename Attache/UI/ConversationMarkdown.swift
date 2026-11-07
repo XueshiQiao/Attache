@@ -749,7 +749,7 @@ extension ConversationMarkdown {
             case let .heading(level, text):
                 return heading(level: level, text: text, style: style)
             case let .paragraph(text):
-                let p = paragraph(style, after: 9)
+                let p = paragraph(style, after: 8)
                 if afterList { p.paragraphSpacingBefore = 6 }
                 return finished(inline(text, style: style), p)
             case let .listItem(bullet, text, depth):
@@ -761,10 +761,14 @@ extension ConversationMarkdown {
             }
         }
 
-        /// Line height about 1.6 of the font, as the design has it.
+        /// Three steps, each about 8pt wider than the one inside it: lines
+        /// (0.3 of the font), paragraphs (8 more), messages (`ChatPaneView`'s
+        /// list spacing, 20). At 0.4 between lines and 9 after a paragraph a
+        /// page read as one block — measured on a screenshot, two messages
+        /// sat 4.5pt further apart than two lines.
         private static func paragraph(_ style: Style, after: CGFloat) -> NSMutableParagraphStyle {
             let p = NSMutableParagraphStyle()
-            p.lineSpacing = (style.body.pointSize * 0.4).rounded()
+            p.lineSpacing = (style.body.pointSize * 0.3).rounded()
             p.paragraphSpacing = after
             return p
         }

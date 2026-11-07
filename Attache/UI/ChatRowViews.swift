@@ -34,7 +34,7 @@ enum ChatRowViews {
             return WorkFold(fold)
         case .reply(let row, let fold):
             guard case .agent(_, let text) = row else { return NSView() }
-            return MarkedReply(markdown: text, fold: fold)
+            return MarkedReply(row: row, markdown: text, fold: fold)
         }
     }
 
@@ -322,61 +322,79 @@ final class WorkFold: NSView {
 /// moving shuts it again.
 final class MarkedReply: NSView {
     var onToggle: (() -> Void)?
+    let rowKey: String
+    let text: String
     private let mark: FoldMark
+    private let running: NSTextField
     private var hoverArea: NSTrackingArea?
 
-    /// The text keeps clear of the column the mark reads in.
-    private static let markColumn: CGFloat = 84
+    /// The text stops this far from the right edge, clear of the column the
+    /// mark reads in; the mark sits `markInset` from the edge.
+    private static let textInset: CGFloat = 100
+    private static let markInset: CGFloat = 16
 
-    init(markdown: String, fold: ChatFold) {
+    init(row: ChatRow, markdown: String, fold: ChatFold) {
+        rowKey = row.key
+        text = markdown
         mark = FoldMark(fold)
+        running = ChatRowViews.label("", font: .monospacedSystemFont(ofSize: ChatRowViews.size - 2.5, weight: .regular),
+                                     colour: ChromeTheme.current.mutedText, selectable: false)
         super.init(frame: .zero)
         let reply = AgentReply(markdown: markdown)
-        var views: [NSView] = [reply]
-        if let running = fold.running {
-            let label = ChatRowViews.label("…  " + running,
-                                           font: .monospacedSystemFont(ofSize: ChatRowViews.size - 2.5, weight: .regular),
-                                           colour: ChromeTheme.current.mutedText, selectable: false)
-            label.maximumNumberOfLines = 1
-            label.lineBreakMode = .byTruncatingTail
-            views.append(label)
-        }
-        let column = NSStackView(views: views)
+        running.maximumNumberOfLines = 1
+        running.lineBreakMode = .byTruncatingTail
+        let column = NSStackView(views: [reply, running])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 3
         reply.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
-        if views.count > 1 {
-            // Under the reply's text, which is set in by 20.
-            views[1].leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: 20).isActive = true
-            views[1].trailingAnchor.constraint(lessThanOrEqualTo: column.trailingAnchor, constant: -24).isActive = true
-        }
-        ChatRowViews.pin(column, in: self, insets: NSEdgeInsets(top: 0, left: 0, bottom: 0, right: Self.markColumn))
+        // Under the reply's text, which is set in by 20.
+        running.leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: 20).isActive = true
+        running.trailingAnchor.constraint(lessThanOrEqualTo: column.trailingAnchor, constant: -24).isActive = true
+        // The reply keeps 24 on its right itself.
+        ChatRowViews.pin(column, in: self, insets: NSEdgeInsets(top: 0, left: 0, bottom: 0, right: Self.textInset - 24))
         mark.translatesAutoresizingMaskIntoConstraints = false
         addSubview(mark)
         NSLayoutConstraint.activate([
             mark.topAnchor.constraint(equalTo: topAnchor, constant: 1),
-            mark.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
+            mark.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.markInset),
+            // Words longer than the column run over the text on the mark's
+            // own backing rather than off the page.
+            mark.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 40),
         ])
         mark.onClick = { [weak self] in self?.onToggle?() }
+        update(fold)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 
+    /// The run changed — a step, a failure, done, opened or shut — and the
+    /// line did not.
+    func update(_ fold: ChatFold) {
+        mark.update(fold)
+        // Open, the step in flight is among the steps below; here it would
+        // be said twice.
+        let line = fold.open ? nil : fold.running
+        running.stringValue = line.map { "…  " + $0 } ?? ""
+        running.isHidden = line == nil
+    }
+
+    func refreshHover() {
+        guard let window else { return }
+        mark.hovering = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverArea { removeTrackingArea(hoverArea) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
                                   owner: self, userInfo: nil)
         addTrackingArea(area)
         hoverArea = area
-        // A row rebuilt under a still pointer — every open and shut is one —
-        // gets no "entered": ask where the pointer is instead, so the words
-        // the person just clicked are still there for the click back.
-        if let window {
-            mark.hovering = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
-        }
+        // A row rebuilt under a still pointer gets no "entered": ask where
+        // the pointer is instead.
+        refreshHover()
     }
 
     override func mouseEntered(with event: NSEvent) { mark.hovering = true }
@@ -388,42 +406,29 @@ final class MarkedReply: NSView {
 private final class FoldMark: NSView {
     var onClick: (() -> Void)?
     var hovering = false { didSet { if hovering != oldValue { apply() } } }
-    private let fold: ChatFold
+    private var fold: ChatFold
     private let dot = NSView()
     private let wheel = NSProgressIndicator()
-    private let words: NSTextField
+    private let words = NSTextField(labelWithString: "")
     private var pressed = false
 
     init(_ fold: ChatFold) {
         self.fold = fold
-        let theme = ChromeTheme.current
-        let size = max(10, ChatRowViews.size - 2.5)
-        let line = NSMutableAttributedString()
-        let quiet: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: size), .foregroundColor: theme.faintText]
-        let count = fold.steps > 0
-            ? "\(fold.steps) step\(fold.steps == 1 ? "" : "s")"
-            : "\(fold.thoughts) thought\(fold.thoughts == 1 ? "" : "s")"
-        line.append(NSAttributedString(string: count, attributes: quiet))
-        if fold.failed > 0 {
-            line.append(NSAttributedString(string: " · ", attributes: quiet))
-            line.append(NSAttributedString(string: "\(fold.failed) ✗", attributes: [
-                .font: NSFont.systemFont(ofSize: size, weight: .semibold), .foregroundColor: NSColor.systemRed]))
-        }
-        line.append(NSAttributedString(string: fold.open ? "  ⌄" : "  ›", attributes: quiet))
-        words = NSTextField(labelWithAttributedString: line)
         super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 9
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 2.5
-        dot.layer?.backgroundColor = (fold.failed > 0 ? NSColor.systemRed : theme.faintText.withAlphaComponent(0.7)).cgColor
         wheel.style = .spinning
         wheel.controlSize = .mini
         wheel.isIndeterminate = true
         wheel.isDisplayedWhenStopped = false
+        words.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         let row = NSStackView(views: [wheel, dot, words])
         row.orientation = .horizontal
         row.spacing = 4
         row.alignment = .centerY
-        ChatRowViews.pin(row, in: self, insets: NSEdgeInsets(top: 2, left: 4, bottom: 2, right: 0))
+        ChatRowViews.pin(row, in: self, insets: NSEdgeInsets(top: 2, left: 6, bottom: 2, right: 4))
         NSLayoutConstraint.activate([
             dot.widthAnchor.constraint(equalToConstant: 5),
             dot.heightAnchor.constraint(equalToConstant: 5),
@@ -433,19 +438,50 @@ private final class FoldMark: NSView {
             heightAnchor.constraint(greaterThanOrEqualToConstant: 18),
             widthAnchor.constraint(greaterThanOrEqualToConstant: 18),
         ])
-        toolTip = fold.open ? "Fold the steps away" : "Show the thinking and every step"
-        apply()
+        update(fold)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 
+    func update(_ fold: ChatFold) {
+        self.fold = fold
+        let theme = ChromeTheme.current
+        let size = max(10, ChatRowViews.size - 2.5)
+        let quiet: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: size), .foregroundColor: theme.faintText]
+        let line = NSMutableAttributedString(string: fold.steps > 0
+            ? "\(fold.steps) step\(fold.steps == 1 ? "" : "s")"
+            : "\(fold.thoughts) thought\(fold.thoughts == 1 ? "" : "s")", attributes: quiet)
+        if fold.failed > 0 {
+            line.append(NSAttributedString(string: " · ", attributes: quiet))
+            line.append(NSAttributedString(string: "\(fold.failed) ✗", attributes: [
+                .font: NSFont.systemFont(ofSize: size, weight: .semibold), .foregroundColor: NSColor.systemRed]))
+        }
+        line.append(NSAttributedString(string: fold.open ? "  ⌄" : "  ›", attributes: quiet))
+        words.attributedStringValue = line
+        dot.layer?.backgroundColor = (fold.failed > 0 ? NSColor.systemRed : theme.faintText.withAlphaComponent(0.7)).cgColor
+        toolTip = fold.open ? "Fold the steps away" : "Show the thinking and every step"
+        apply()
+    }
+
     private func apply() {
         let showWords = hovering || fold.open
         words.isHidden = !showWords
         dot.isHidden = showWords || fold.live
-        if fold.live { wheel.startAnimation(nil) } else { wheel.stopAnimation(nil) }
         wheel.isHidden = !fold.live
+        // On the page's own colour, so words that run over the text read.
+        layer?.backgroundColor = showWords ? ChromeTheme.current.background.withAlphaComponent(1).cgColor : nil
+        spin()
+    }
+
+    /// Turning only while in a window: started before, it ran for nobody.
+    private func spin() {
+        if fold.live, window != nil { wheel.startAnimation(nil) } else { wheel.stopAnimation(nil) }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        spin()
     }
 
     override var mouseDownCanMoveWindow: Bool { false }
