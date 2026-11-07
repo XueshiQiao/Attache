@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Android Chat Folds</title>
+<style>
+:root { --font: Roboto, -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; --mono: "Roboto Mono", ui-monospace, Menlo, monospace; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.5 var(--font); background: #e9e9ec; color: #222; -webkit-font-smoothing: antialiased; }
+body.dark { background: #121214; color: #ddd; }
+.bar { position: sticky; top: 0; z-index: 10; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 10px 20px; background: rgba(245,245,247,.92); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(0,0,0,.08); }
+body.dark .bar { background: rgba(20,20,23,.92); border-color: rgba(255,255,255,.08); }
+.seg { display: inline-flex; background: rgba(0,0,0,.06); border-radius: 8px; padding: 2px; }
+body.dark .seg { background: rgba(255,255,255,.08); }
+.seg button { border: 0; background: transparent; color: inherit; font: inherit; padding: 5px 11px; border-radius: 6px; cursor: pointer; opacity: .7; }
+.seg button.on { background: #fff; opacity: 1; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+body.dark .seg button.on { background: #3a3b41; }
+.hint { font-size: 12px; opacity: .6; }
+.grid { display: flex; flex-wrap: wrap; gap: 28px; padding: 24px 20px 60px; justify-content: center; }
+.col { width: 392px; }
+.col h2 { margin: 0 0 4px; font-size: 15px; }
+.col p.what { margin: 0 0 12px; font-size: 12px; opacity: .75; min-height: 54px; }
+
+/* The phone */
+.phone { width: 392px; height: 780px; border-radius: 34px; padding: 10px; background: #1b1b1d; box-shadow: 0 20px 50px rgba(0,0,0,.25); }
+.screen { --bg: #fbf8ff; --text: #1b1b21; --mute: #46464f; --faint: #8e8e98; --line: #c6c5d0; --card: #efedf4; --primaryC: #dde1ff; --primary: #4355b9; --code: #b8441f; --bad: #ba1a1a; --badSoft: #ffdad6;
+  width: 100%; height: 100%; border-radius: 26px; overflow: hidden; background: var(--bg); color: var(--text); display: flex; flex-direction: column; position: relative; }
+body.dark .screen { --bg: #131318; --text: #e4e1e9; --mute: #c6c5d0; --faint: #90909a; --line: #46464f; --card: #1f1f25; --primaryC: #2a3a8f; --primary: #bac3ff; --code: #f2a27a; --bad: #ffb4ab; --badSoft: #5c1a14; }
+.status { height: 26px; display: flex; justify-content: space-between; align-items: center; padding: 0 22px; font-size: 12px; font-weight: 600; }
+.top { padding: 6px 16px 8px; border-bottom: 1px solid var(--line); }
+.top b { font-size: 15px; }
+.top .chips { display: flex; gap: 6px; margin-top: 4px; }
+.top .chip { font-size: 11px; padding: 1px 8px; border-radius: 8px; background: var(--card); color: var(--mute); }
+.scroll { flex: 1; overflow-y: auto; padding: 12px 14px 8px; font-size: 15px; line-height: 1.55; }
+.composer { margin: 8px 12px 14px; padding: 10px 14px; border-radius: 22px; background: var(--card); color: var(--faint); font-size: 15px; }
+.user { display: flex; justify-content: flex-end; margin: 16px 0 10px; }
+.user span { background: var(--primaryC); padding: 9px 13px; border-radius: 16px 16px 4px 16px; max-width: 82%; }
+.say { margin: 0 0 12px; position: relative; }
+.say p { margin: 0; }
+.say code, .scroll code { font-family: var(--mono); font-size: 13px; color: var(--code); }
+.say ul { margin: 4px 0 0; padding-left: 20px; }
+
+/* today: thinking + tool card */
+.thinking { margin: 0 0 10px; color: var(--mute); }
+.thinking .lab { font-size: 13px; font-weight: 500; }
+.thinking .t { font-style: italic; font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.toolcard { margin: 0 0 12px; padding: 10px 12px; border-radius: 12px; background: var(--card); }
+.trow { display: flex; gap: 6px; align-items: baseline; font-size: 13px; }
+.trow + .trow, .trow + .out + .trow { margin-top: 8px; }
+.trow .m { width: 14px; text-align: center; color: var(--primary); }
+.trow .m.bad { color: var(--bad); }
+.trow b { font-weight: 600; }
+.trow .s { color: var(--mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.out { font-family: var(--mono); font-size: 11.5px; color: var(--mute); padding-left: 20px; margin-top: 2px; white-space: pre; overflow: hidden; }
+
+/* steps, when opened */
+.steps { display: none; margin: 6px 0 2px; padding: 8px 10px; border-radius: 10px; background: var(--card); }
+.open > .steps { display: block; }
+.st { display: flex; gap: 6px; align-items: baseline; font-size: 12.5px; color: var(--mute); padding: 2px 0; }
+.st b { color: var(--text); font-weight: 600; }
+.st .s { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.st.bad, .st.bad b { color: var(--bad); }
+.st.th { font-style: italic; display: block; padding: 2px 0 4px 8px; border-left: 2px solid var(--line); margin-bottom: 4px; }
+.spin { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.6px solid var(--line); border-top-color: var(--primary); animation: r .9s linear infinite; vertical-align: -1px; }
+@keyframes r { to { transform: rotate(360deg); } }
+.running { color: var(--mute); font-size: 12.5px; margin-top: 4px; }
+.running .s { font-family: var(--mono); font-size: 11.5px; }
+
+/* B: a mark at the right, count shown, the whole line taps */
+.vB .say .text { padding-right: 44px; }
+.vB .mark { position: absolute; right: -6px; top: -4px; min-width: 40px; height: 32px; display: flex; align-items: center; justify-content: flex-end; gap: 4px; padding: 0 6px; cursor: pointer; color: var(--faint); font-size: 12px; }
+.vB .mark .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+.vB .mark .dot.bad { background: var(--bad); }
+
+/* C: a quiet line under the sentence */
+.vC .under { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; padding: 4px 10px 4px 8px; border-radius: 14px; color: var(--faint); font-size: 12.5px; cursor: pointer; min-height: 28px; }
+.vC .under:active { background: var(--card); }
+.vC .under .bad { color: var(--bad); font-weight: 600; }
+
+/* D: a mark at the right that opens a sheet */
+.vD .say .text { padding-right: 44px; }
+.vD .mark { position: absolute; right: -6px; top: -4px; min-width: 40px; height: 32px; display: flex; align-items: center; justify-content: flex-end; gap: 4px; padding: 0 6px; cursor: pointer; color: var(--faint); font-size: 12px; }
+.vD .mark .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+.vD .mark .dot.bad { background: var(--bad); }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-radius: 20px 20px 0 0; box-shadow: 0 -8px 30px rgba(0,0,0,.25); padding: 8px 16px 22px; transform: translateY(105%); visibility: hidden; transition: transform .2s, visibility .2s; z-index: 5; }
+.sheet.show { transform: none; visibility: visible; }
+.sheet .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--line); margin: 2px auto 10px; }
+.sheet h3 { margin: 0 0 4px; font-size: 13px; color: var(--mute); font-weight: 500; }
+.sheet .quote { font-size: 14px; margin: 0 0 10px; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.scrim { position: absolute; inset: 0; background: rgba(0,0,0,.25); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 4; }
+.scrim.show { opacity: 1; pointer-events: auto; }
+
+/* E: a small badge right after the last word */
+.vE .badge { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; padding: 0 7px; height: 20px; border-radius: 10px; background: var(--card); color: var(--faint); font-size: 11.5px; vertical-align: 1px; cursor: pointer; }
+.vE .badge .bad { color: var(--bad); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <b>安卓聊天页：思考和工具调用怎么收起来</b>
+  <div class="seg" id="theme"><button data-v="light" class="on">浅色</button><button data-v="dark">深色</button></div>
+  <span class="hint">每个手机里都可以点：点标记展开或收起（D 是弹出底部面板）</span>
+</div>
+<div class="grid" id="grid"></div>
+
+<script>
+const T = (tool, sum, bad, out) => ({ tool, sum, bad, out });
+// One turn, as it really comes, and one still running.
+const turn = [
+  { text: "先看一下聊天页现在是怎么画这些行的。",
+    think: ["每一轮里，把最后一条回复之前的工作过程合成一个可折叠的元素。"],
+    steps: [T("Read", "app/…/chat/AgentChatScreen.kt"), T("Grep", "\"ToolGroupCard\" in chat/")] },
+  { text: "现在改代码，再构建一次。", think: [],
+    steps: [T("Edit", "AgentChatScreen.kt  +64 −12"), T("Bash", "./gradlew assembleOssDebug", true, "e: Unresolved reference: MarkedText"), T("Edit", "AgentChatScreen.kt  +2 −2"), T("Bash", "./gradlew assembleOssDebug", false, "BUILD SUCCESSFUL in 41s")] },
+  { text: "<p>改好了，APK 已经发到你手机上：</p><ul><li>思考和工具调用收成一个小标记</li><li>Agent 写给你的话照常显示</li></ul>", steps: null },
+];
+const live = { text: "好，接着把间距也调一下。", think: [], steps: [T("Read", "ChatMarkdown.kt")], running: T("Bash", "./gradlew assembleOssDebug") };
+
+const stepList = (m) => `${(m.think || []).map(t => `<div class="st th">${t}</div>`).join("")}${m.steps.map(s => `<div class="st${s.bad ? " bad" : ""}"><span>${s.bad ? "✗" : "✓"}</span><b>${s.tool}</b><span class="s">${s.sum}</span></div>`).join("")}${m.running ? `<div class="st"><span class="spin"></span><b>${m.running.tool}</b><span class="s">${m.running.sum}</span></div>` : ""}`;
+const count = m => { const n = m.steps.length + (m.running ? 1 : 0), bad = m.steps.filter(s => s.bad).length; return { n, bad }; };
+const text = m => m.text.startsWith("<") ? m.text : `<p>${m.text}</p>`;
+const running = m => m.running ? `<div class="running"><span class="spin"></span> <b>${m.running.tool}</b> <span class="s">${m.running.sum}</span></div>` : "";
+const user = t => `<div class="user"><span>${t}</span></div>`;
+
+function today(m) {
+  let h = `<div class="say">${text(m)}</div>`;
+  if (!m.steps) return h;
+  h += (m.think || []).map(t => `<div class="thinking"><div class="lab">Thinking</div><div class="t">${t}</div></div>`).join("");
+  h += `<div class="toolcard">${m.steps.map(s => `<div class="trow"><span class="m${s.bad ? " bad" : ""}">${s.bad ? "✗" : "✓"}</span><b>${s.tool}</b><span class="s">${s.sum}</span></div>${s.out ? `<div class="out">${s.out}</div>` : ""}`).join("")}${m.running ? `<div class="trow"><span class="m"><span class="spin"></span></span><b>${m.running.tool}</b><span class="s">${m.running.sum}</span></div>` : ""}</div>`;
+  return h;
+}
+function markB(m) {
+  if (!m.steps) return `<div class="say">${text(m)}</div>`;
+  const c = count(m);
+  const sign = m.running ? `<span class="spin"></span>` : `<span class="dot${c.bad ? " bad" : ""}"></span>`;
+  return `<div class="say"><div class="text">${text(m)}</div><div class="mark" onclick="this.parentNode.classList.toggle('open')">${c.n}${sign}</div>${running(m)}<div class="steps">${stepList(m)}</div></div>`;
+}
+function underC(m) {
+  if (!m.steps) return `<div class="say">${text(m)}</div>`;
+  const c = count(m);
+  return `<div class="say">${text(m)}<div class="under" onclick="this.parentNode.classList.toggle('open')">${m.running ? `<span class="spin"></span>` : "▸"} ${c.n} step${c.n === 1 ? "" : "s"}${c.bad ? ` · <span class="bad">${c.bad} ✗</span>` : ""}</div>${m.running ? `<div class="running"><b>${m.running.tool}</b> <span class="s">${m.running.sum}</span></div>` : ""}<div class="steps">${stepList(m)}</div></div>`;
+}
+let sheetSeq = 0;
+function markD(m, phone) {
+  if (!m.steps) return `<div class="say">${text(m)}</div>`;
+  const c = count(m);
+  const id = "s" + (sheetSeq++);
+  phone.sheets.push(`<div class="sheet" id="${id}"><div class="grab"></div><h3>${c.n} step${c.n === 1 ? "" : "s"}${c.bad ? ` · ${c.bad} failed` : ""}</h3><div class="quote">${m.text.replace(/<[^>]+>/g, " ")}</div>${stepList(m)}</div>`);
+  const sign = m.running ? `<span class="spin"></span>` : `<span class="dot${c.bad ? " bad" : ""}"></span>`;
+  return `<div class="say"><div class="text">${text(m)}</div><div class="mark" onclick="openSheet(this,'${id}')">${c.n}${sign}</div>${running(m)}</div>`;
+}
+function badgeE(m) {
+  if (!m.steps) return `<div class="say">${text(m)}</div>`;
+  const c = count(m);
+  const b = `<span class="badge" onclick="this.closest('.say').classList.toggle('open')">${m.running ? `<span class="spin"></span>` : ""}${c.n}${c.bad ? ` · <span class="bad">${c.bad}✗</span>` : ""}</span>`;
+  const t = text(m).replace(/<\/p>(?![\s\S]*<\/p>)/, b + "</p>");
+  return `<div class="say">${t}${running(m)}<div class="steps">${stepList(m)}</div></div>`;
+}
+function openSheet(el, id) {
+  const screen = el.closest(".screen");
+  screen.querySelector("#" + id).classList.add("show");
+  screen.querySelector(".scrim").classList.add("show");
+}
+function closeSheets(scrim) {
+  scrim.classList.remove("show");
+  scrim.parentNode.querySelectorAll(".sheet").forEach(s => s.classList.remove("show"));
+}
+
+const designs = [
+  { id: "A", name: "A · 现在", what: "对照：思考是「Thinking」加两行斜体；工具调用是一张卡片，每步一行，命令直接露出几行输出。", render: today },
+  { id: "B", name: "B · 桌面同款：右边的小点", what: "跟桌面一样挂在上一句话的右边。手机没有悬停，所以小点旁边一直写着步数「4 •」，失败是红点，进行中是转圈。点它在这句话下面展开。点的区域有 40×32，比看到的点大。", render: markB },
+  { id: "C", name: "C · 句子下面一行小字", what: "标记放在这句话下面，一行灰字「▸ 4 steps · 1 ✗」，整行都能点，按下去有浅色底。手指最好点，也最容易看出属于哪句话；代价是每句话下面多一行。", render: underC },
+  { id: "D", name: "D · 右边的小点，点开是底部面板", what: "样子跟 B 一样，但点了不在页面里展开，而是从底部弹出一块面板，顶上引用这句话，下面列出步骤；点外面收起。页面本身完全不动，读到哪里还在哪里。", render: markD },
+  { id: "E", name: "E · 句尾的小徽标", what: "紧跟在这句话最后一个字后面，一个浅底小徽标「4 · 1✗」。离文字最近，一眼知道属于哪句；在长句子里位置不固定。点它在下面展开。", render: badgeE },
+];
+
+const grid = document.getElementById("grid");
+for (const d of designs) {
+  sheetSeq = 0;
+  const phone = { sheets: [] };
+  const r = m => d.id === "D" ? d.render(m, phone) : d.render(m);
+  const body = user("聊天页里的工具调用太多了，收起来一点") + turn.map(r).join("") + user("间距也调一下吧") + r(live);
+  const col = document.createElement("div");
+  col.className = "col";
+  col.innerHTML = `<h2>${d.name}</h2><p class="what">${d.what}</p>
+    <div class="phone"><div class="screen v${d.id}">
+      <div class="status"><span>11:24</span><span>5G ▮▮▮</span></div>
+      <div class="top"><b>Attaché</b><div class="chips"><span class="chip">● Claude · working</span><span class="chip">Opus 5.5</span><span class="chip">ctx 42%</span></div></div>
+      <div class="scroll">${body}</div>
+      <div class="composer">Message Claude</div>
+      ${d.id === "D" ? `<div class="scrim" onclick="closeSheets(this)"></div>${phone.sheets.join("")}` : ""}
+    </div></div>`;
+  grid.appendChild(col);
+}
+document.querySelectorAll(".scroll").forEach(s => s.scrollTop = s.scrollHeight);
+
+document.getElementById("theme").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  document.querySelectorAll("#theme button").forEach(x => x.classList.toggle("on", x === b));
+  document.body.classList.toggle("dark", b.dataset.v === "dark");
+});
+</script>
+</body>
+</html>
