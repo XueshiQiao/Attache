@@ -62,6 +62,44 @@ struct TerminalPage: View {
             }
 
             Section {
+                HStack {
+                    iconLabel("text.bubble", .teal, "Text size")
+                    Spacer()
+                    // What a reply on the chat page is set in; the
+                    // conversation rail is a point smaller.
+                    Text(String(format: "%g pt", store.conversationFontSize + 1))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Stepper(
+                        value: Binding(
+                            get: { store.conversationFontSize },
+                            set: { store.setConversationFontSize($0) }
+                        ),
+                        in: Double(AppSettings.conversationFontSizeRange.lowerBound)
+                            ... Double(AppSettings.conversationFontSizeRange.upperBound),
+                        step: 0.5
+                    ) { EmptyView() }
+                        .labelsHidden()
+                    Button("Reset") {
+                        store.setConversationFontSize(Double(AppSettings.defaultConversationFontSize))
+                    }
+                    .controlSize(.small)
+                    .disabled(store.conversationFontSize == Double(AppSettings.defaultConversationFontSize))
+                }
+            } header: {
+                Text("Chat")
+            } footer: {
+                Text(
+                    "The chat page and the conversation rail. Separate from the terminal's size "
+                        + "on purpose: the terminal is set in character cells, so changing its size "
+                        + "changes how many columns tmux gives every pane."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
                 TerminalSamplePreview(definition: previewDefinition, fontFamily: store.fontFamily, fontSize: store.fontSize)
             } header: {
                 Text("Preview")

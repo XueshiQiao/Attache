@@ -32,6 +32,7 @@ final class SettingsStore: ObservableObject {
     // ─── Mirrors of AppSettings ──────────────────────────────────────────────
     @Published private(set) var fontFamily: String
     @Published private(set) var fontSize: Double
+    @Published private(set) var conversationFontSize: Double
     @Published private(set) var appearance: AppSettings.Appearance
     @Published private(set) var lightThemeName: String
     @Published private(set) var darkThemeName: String
@@ -270,6 +271,7 @@ final class SettingsStore: ObservableObject {
     init() {
         fontFamily = AppSettings.fontFamily
         fontSize = AppSettings.fontSize
+        conversationFontSize = Double(AppSettings.conversationFontSize)
         appearance = AppSettings.appearance
         lightThemeName = AppSettings.lightThemeName
         darkThemeName = AppSettings.darkThemeName
@@ -308,6 +310,14 @@ final class SettingsStore: ObservableObject {
     }
 
     func resetFontSize() { setFontSize(AppSettings.defaultFontSize) }
+
+    /// The chat page and the conversation rail; half points, since the step
+    /// between 12.5 and 13.5 is already easy to see in running text.
+    func setConversationFontSize(_ size: Double) {
+        AppSettings.conversationFontSize = CGFloat((size * 2).rounded() / 2)
+        conversationFontSize = Double(AppSettings.conversationFontSize)
+        AppSettings.notifyChanged()
+    }
 
     /// Monospaced families only. A proportional font in a terminal makes every
     /// column measurement meaningless, and the grid this app places panes on
