@@ -199,6 +199,7 @@ final class SessionSidebarView: NSView {
     private weak var editingRow: SidebarEditableRow?
     private var pendingRebuild = false
     private var pendingUpdate: Update?
+    private var mouseRetryScheduled = false
     /// The row the last mouse-down landed on, as an identity that survives a
     /// rebuild. What it guards is in `isDoubleClick(on:clickCount:)`.
     private var lastPressedRow: String?
@@ -402,7 +403,9 @@ final class SessionSidebarView: NSView {
     /// against them; letting them move underneath leaves the two describing
     /// different states. Switching sessions mid-drag — ⌃⌘2 is enough, a mouse
     /// drag does not block keys — then made the drop look up a window id that
-    /// is not in the new list and silently do nothing.
+    /// is not in the new list and silently do nothing. Held while a button is
+    /// down too: a press that turns into a drag five points later resolves
+    /// against the rows drawn when it began.
     func update(hosts: [HostDescriptor] = [], entries: [Entry], selected: String?) {
         // Pruned here rather than only where an update is applied, because a
         // held-back update is *replaced* by the next one, not queued behind it.
@@ -414,6 +417,11 @@ final class SessionSidebarView: NSView {
         let update = Update(hosts: hosts, entries: entries, selected: selected)
         guard editor == nil, draggingWindowID == nil, draggingSessionID == nil else {
             pendingUpdate = update
+            return
+        }
+        guard !mouseIsDown else {
+            pendingUpdate = update
+            retryWhenMouseIsUp()
             return
         }
         apply(update)
@@ -443,7 +451,20 @@ final class SessionSidebarView: NSView {
 
     /// Whatever tmux said while the rail was busy. Only the last one is kept:
     /// each is a complete description, so an older one has nothing to add.
+    ///
+    /// Not while a rename or a drag is still on: rows with no first responder
+    /// of their own (the hidden-count and new-session rows) resume from their
+    /// click without ending a rename, and applying here would swap the lists
+    /// out from under the field while `rebuild` keeps the old rows. Both end
+    /// paths clear their state first and resume themselves.
     private func resumeUpdates() {
+        guard editor == nil, draggingWindowID == nil, draggingSessionID == nil,
+              pendingUpdate != nil || pendingRebuild
+        else { return }
+        guard !mouseIsDown else {
+            retryWhenMouseIsUp()
+            return
+        }
         if let pendingUpdate {
             self.pendingUpdate = nil
             pendingRebuild = false
@@ -451,6 +472,31 @@ final class SessionSidebarView: NSView {
         } else if pendingRebuild {
             pendingRebuild = false
             rebuild()
+        }
+    }
+
+    /// A button a row answers is down, anywhere on the system.
+    ///
+    /// Left and right only. Asked of `NSEvent` rather than tracked as state,
+    /// because a row destroyed mid-press never delivers its mouse-up and any
+    /// flag we kept would latch on forever — but the system's own state
+    /// latches too: measured 2026-11-07, a window-dragging utility swallowed a
+    /// side button's release, button 3 read as held in the session state while
+    /// the HID state said released, `pressedMouseButtons` stayed 8, and every
+    /// rebuild was put off until the rail was empty across a relaunch.
+    private var mouseIsDown: Bool { NSEvent.pressedMouseButtons & 0b11 != 0 }
+
+    /// Looks again shortly, since most releases never reach the rail: a press
+    /// in the terminal, a context menu, a button the pointer slid off. Waiting
+    /// for the next tmux notification instead left the rail stale for as long
+    /// as nothing changed. A rename or a drag resumes on its own when it ends.
+    private func retryWhenMouseIsUp() {
+        guard !mouseRetryScheduled else { return }
+        mouseRetryScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self else { return }
+            mouseRetryScheduled = false
+            resumeUpdates()
         }
     }
 
@@ -550,11 +596,10 @@ final class SessionSidebarView: NSView {
         // drag, so the guard above does not cover it: the press lands on a row,
         // a notification arrives, the row is replaced, and the release goes to
         // a view that no longer exists — the click simply does nothing, which
-        // is what "it is hard to click" turned out to be. Asked of `NSEvent`
-        // rather than tracked as state, because a row destroyed mid-press never
-        // delivers its mouse-up and any flag we kept would latch on forever.
-        guard NSEvent.pressedMouseButtons == 0 else {
+        // is what "it is hard to click" turned out to be. See `mouseIsDown`.
+        guard !mouseIsDown else {
             pendingRebuild = true
+            retryWhenMouseIsUp()
             return
         }
 
@@ -690,7 +735,8 @@ final class SessionSidebarView: NSView {
                     }
                     row.onDoubleClick = { [weak self] in self?.beginRenameWindow(window, in: session) }
                     row.isDoubleClick = { [weak self] identity, count in
-                        self?.isDoubleClick(on: identity, clickCount: count) ?? false
+                        // A window id alone repeats across hosts.
+                        self?.isDoubleClick(on: "\(session) \(identity)", clickCount: count) ?? false
                     }
                     row.onContextMenu = { [weak self, weak row] point in
                         guard let row else { return }
@@ -1295,7 +1341,10 @@ final class SessionSidebarView: NSView {
 
     private func beginRenameWindow(_ window: TmuxWindow, in session: String) {
         guard let row = rows.compactMap({ row -> SidebarWindowRow? in
-            guard case .window(let view, _) = row, view.windowID == window.id else { return nil }
+            // The session as well: window ids repeat across hosts.
+            guard case .window(let view, let rowSession) = row, rowSession == session,
+                  view.windowID == window.id
+            else { return nil }
             return view
         }).first else { return }
         beginEditing(over: row, text: window.name, target: .window(session: session, id: window.id))
