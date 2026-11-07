@@ -41,6 +41,10 @@ env:
   XCODE_VERSION: "27.1"
   XCODE_BUILD: "27A9275"
   MACOS_SDK: "27.0"
+  # attache-cli (cli/) is built here, not committed, and the app bundles
+  # every build of it. The Rust it is developed with, for the same reason
+  # the Xcode above is pinned.
+  RUST_VERSION: "1.99.1"
 
 jobs:
   build:
@@ -105,6 +109,36 @@ jobs:
             exit 1
           fi
 
+      # Before the project is generated: project.yml bundles cli/dist as a
+      # folder, and cli/dist exists only once build-all.sh has made it.
+      - name: Install Rust
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          fi
+          # Either way: rustup's proxies live here, and a rustc elsewhere on
+          # the image's PATH would otherwise build with another version.
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          got=$(rustc --version | awk '{print $2}')
+          [ "$got" = "$RUST_VERSION" ] || { echo "::error::rustc is $got, not $RUST_VERSION"; exit 1; }
+
+      # The tests that need tmux skip themselves when it is absent; the
+      # parsers and the input rules run either way.
+      - name: Build and test attache-cli
+        run: |
+          cd cli
+          cargo test
+          ./build-all.sh
+          want=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [ "$(cat dist/version.txt)" = "$want" ] || { echo "::error::cli/dist/version.txt is not $want"; exit 1; }
+          for d in darwin-arm64 darwin-x86_64 linux-aarch64 linux-x86_64; do
+            [ -s "dist/$d/attache-cli" ] || { echo "::error::cli/dist/$d/attache-cli missing"; exit 1; }
+          done
+          ./dist/darwin-$(uname -m)/attache-cli version
+
       - name: Generate Xcode project
         run: xcodegen generate
 
@@ -156,6 +190,18 @@ jobs:
             build \
             SYMROOT="$(pwd)/build"
 
+      # A bundle without attache-cli builds and runs, and then reads no agent
+      # on any host: the chat and the rail's dots stay empty. Checked on the
+      # built app, so a project.yml that stopped carrying cli/dist fails here.
+      - name: Verify the app carries attache-cli
+        run: |
+          DIST="build/Release/$APP_NAME.app/Contents/Resources/dist"
+          want=$(sed -n 's/^version = "\(.*\)"$/\1/p' cli/Cargo.toml | head -1)
+          [ "$(cat "$DIST/version.txt" 2>/dev/null)" = "$want" ] || { echo "::error::the app does not carry attache-cli $want"; exit 1; }
+          for d in darwin-arm64 darwin-x86_64 linux-aarch64 linux-x86_64; do
+            cmp -s "$DIST/$d/attache-cli" "cli/dist/$d/attache-cli" || { echo "::error::the app's $d attache-cli is not the one just built"; exit 1; }
+          done
+
       - name: Sign app
         if: ${{ env.HAS_APPLE_SECRETS == 'true' }}
         run: |
@@ -185,6 +231,17 @@ jobs:
             done
           fi
 
+          # attache-cli's macOS builds sit in Resources as data the app
+          # copies to each host, but they are Mach-O all the same: the notary
+          # rejects an unsigned one anywhere in the bundle, and the copy the
+          # app installs runs on the user's Mac. Signed before the app, whose
+          # seal covers Resources. The Linux builds are not Mach-O and are
+          # sealed as plain files.
+          for f in "$APP_PATH"/Contents/Resources/dist/darwin-*/attache-cli; do
+            codesign --force --options runtime --timestamp \
+              --sign "Developer ID Application" "$f"
+          done
+
           if [ -f "$APP_PATH/Contents/MacOS/attache-agent-hub" ]; then
             codesign --force --options runtime --timestamp \
               --entitlements "$ENTITLEMENTS" \
@@ -196,6 +253,10 @@ jobs:
             --sign "Developer ID Application" "$APP_PATH"
 
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          # --deep walks nested bundles, not files in Resources.
+          for f in "$APP_PATH"/Contents/Resources/dist/darwin-*/attache-cli; do
+            codesign --verify --strict --verbose=2 "$f"
+          done
 
       - name: Notarize app
         if: ${{ env.HAS_APPLE_SECRETS == 'true' }}
