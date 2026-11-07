@@ -63,6 +63,10 @@ final class ChatPaneView: NSView {
     /// is not taken for the person scrolling away from the bottom.
     private var movingScroll = false
     private var noticeTimer: Timer?
+    /// What the drawn rows were built with (`rowLook`), and whether a
+    /// change to it is waiting for this page to be seen.
+    private var rowsBuiltFor = ChatPaneView.rowLook()
+    private var rowsStale = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -130,14 +134,51 @@ final class ChatPaneView: NSView {
         sheet.style = style
     }
 
+    /// Every settings change comes through here, for every session's page,
+    /// and rebuilding the rows is the expensive part — every reply laid out
+    /// again, every table cell, then the page twice over (measured 2026-11-07:
+    /// about 1.8 s of main thread per step of the text-size stepper, the
+    /// window beachballing). So the rows are rebuilt only when what they are
+    /// drawn with moved (an opacity drag or the terminal's font does not touch
+    /// them), and on a page nobody can see only once it is shown.
     func applyChromeTheme() {
         applyStyle()
         sheet.needsDisplay = true
-        drawn.forEach { $0.view.removeFromSuperview() }
-        drawn = []
         header.applyChromeTheme()
         composer.applyChromeTheme()
+        guard Self.rowLook() != rowsBuiltFor else { return }
+        guard window != nil, !isHiddenOrHasHiddenAncestor else {
+            rowsStale = true
+            return
+        }
+        rebuildRows()
+    }
+
+    private func rebuildRows() {
+        rowsStale = false
+        rowsBuiltFor = Self.rowLook()
+        drawn.forEach { $0.view.removeFromSuperview() }
+        drawn = []
         refresh()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if rowsStale, window != nil, !isHiddenOrHasHiddenAncestor { rebuildRows() }
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        if rowsStale, window != nil { rebuildRows() }
+    }
+
+    /// Everything a row's look is made from: the text size, the chat style
+    /// and the theme's colours (which move with the opacity settings too,
+    /// since the text roles are solved against the composited window).
+    private static func rowLook() -> String {
+        let t = ChromeTheme.current
+        let colours = [t.background, t.text, t.mutedText, t.faintText, t.accent, t.separator, t.hover]
+        return colours.map { "\($0)" }.joined(separator: "|") + "|\(ChatRowViews.size)|\(ChatStyle.current.rawValue)"
     }
 
     // MARK: - Layout
@@ -276,6 +317,12 @@ final class ChatPaneView: NSView {
     /// The document's height when the scroll position was last judged.
     private var judgedHeight: CGFloat = 0
     private var judgedViewport = NSSize.zero
+
+    /// A row the person opened grows the page under them: what they opened
+    /// stays where it is, rather than the page following its bottom past it.
+    func holdPosition() {
+        followsBottom = false
+    }
 
     @objc private func scrolled() {
         updateMinimapViewport()
@@ -455,9 +502,9 @@ final class ChatPaneView: NSView {
         let first = min(firstShown ?? 0, all.count)
         firstShownKey = first < all.count ? all[first].key : nil
         redrawRows(Array(all[first...]))
-        // What follows reads the document's height: settle it first.
-        settle()
-        if following { scrollToBottom() }
+        // What follows reads the document's height: settle it first —
+        // `scrollToBottom` settles for itself.
+        if following { scrollToBottom() } else { settle() }
         // Too little to scroll is too little to reach the top by scrolling:
         // fetch what came before until there is something to scroll.
         if let document = scroll.documentView, first == 0, model.earlierNotLoaded, !model.loadingEarlier,

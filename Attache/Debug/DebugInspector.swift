@@ -160,6 +160,10 @@
                 AppSettings.fontSize = value
                 changed.append("fontSize")
             }
+            if let raw = parameters["conversationFontSize"], let value = Double(raw) {
+                AppSettings.conversationFontSize = CGFloat(value)
+                changed.append("conversationFontSize")
+            }
             if let value = parameters["fontFamily"] {
                 AppSettings.fontFamily = value
                 changed.append("fontFamily")

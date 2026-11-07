@@ -717,9 +717,8 @@ final class EmbeddedSessionViewController: NSViewController {
     func applySettings() {
         _ = terminalController.setTheme(AppSettings.terminalTheme())
         _ = terminalController.setTerminalConfiguration(AppSettings.terminalConfiguration())
-        titleBand.applyChromeTheme()
-        paneCards.applyChromeTheme()
-        chatView.applyChromeTheme()
+        // The chrome is `applyChromeTheme`'s, which every settings change
+        // calls next: doing it here as well rebuilt each chat page twice.
         refreshPaneCards()
     }
 
