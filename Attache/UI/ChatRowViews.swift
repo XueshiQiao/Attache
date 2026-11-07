@@ -32,6 +32,9 @@ enum ChatRowViews {
                               faded: true)
         case .fold(let fold):
             return WorkFold(fold)
+        case .reply(let row, let fold):
+            guard case .agent(_, let text) = row else { return NSView() }
+            return MarkedReply(markdown: text, fold: fold)
         }
     }
 
@@ -307,6 +310,152 @@ final class WorkFold: NSView {
         defer { pressed = false }
         guard pressed, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
         onToggle?()
+    }
+}
+
+/// A line of the agent's with the run of thinking and tools that came with
+/// it, as a mark at the right of its first line (design E in
+/// `docs/chat-fold-attach-designs.html`): a dot — red when a step failed,
+/// turning while the run goes on — that reads "3 steps · 1 ✗ ›" while the
+/// pointer is on the line or the run is open. A click opens the run beneath
+/// the line; the mark stays where it was clicked, so a second click without
+/// moving shuts it again.
+final class MarkedReply: NSView {
+    var onToggle: (() -> Void)?
+    private let mark: FoldMark
+    private var hoverArea: NSTrackingArea?
+
+    /// The text keeps clear of the column the mark reads in.
+    private static let markColumn: CGFloat = 84
+
+    init(markdown: String, fold: ChatFold) {
+        mark = FoldMark(fold)
+        super.init(frame: .zero)
+        let reply = AgentReply(markdown: markdown)
+        var views: [NSView] = [reply]
+        if let running = fold.running {
+            let label = ChatRowViews.label("…  " + running,
+                                           font: .monospacedSystemFont(ofSize: ChatRowViews.size - 2.5, weight: .regular),
+                                           colour: ChromeTheme.current.mutedText, selectable: false)
+            label.maximumNumberOfLines = 1
+            label.lineBreakMode = .byTruncatingTail
+            views.append(label)
+        }
+        let column = NSStackView(views: views)
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 3
+        reply.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        if views.count > 1 {
+            // Under the reply's text, which is set in by 20.
+            views[1].leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: 20).isActive = true
+            views[1].trailingAnchor.constraint(lessThanOrEqualTo: column.trailingAnchor, constant: -24).isActive = true
+        }
+        ChatRowViews.pin(column, in: self, insets: NSEdgeInsets(top: 0, left: 0, bottom: 0, right: Self.markColumn))
+        mark.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(mark)
+        NSLayoutConstraint.activate([
+            mark.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            mark.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
+        ])
+        mark.onClick = { [weak self] in self?.onToggle?() }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverArea = area
+        // A row rebuilt under a still pointer — every open and shut is one —
+        // gets no "entered": ask where the pointer is instead, so the words
+        // the person just clicked are still there for the click back.
+        if let window {
+            mark.hovering = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) { mark.hovering = true }
+    override func mouseExited(with event: NSEvent) { mark.hovering = false }
+}
+
+/// The mark itself: a dot, a turning wheel while the run goes on, or the
+/// words, by state.
+private final class FoldMark: NSView {
+    var onClick: (() -> Void)?
+    var hovering = false { didSet { if hovering != oldValue { apply() } } }
+    private let fold: ChatFold
+    private let dot = NSView()
+    private let wheel = NSProgressIndicator()
+    private let words: NSTextField
+    private var pressed = false
+
+    init(_ fold: ChatFold) {
+        self.fold = fold
+        let theme = ChromeTheme.current
+        let size = max(10, ChatRowViews.size - 2.5)
+        let line = NSMutableAttributedString()
+        let quiet: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: size), .foregroundColor: theme.faintText]
+        let count = fold.steps > 0
+            ? "\(fold.steps) step\(fold.steps == 1 ? "" : "s")"
+            : "\(fold.thoughts) thought\(fold.thoughts == 1 ? "" : "s")"
+        line.append(NSAttributedString(string: count, attributes: quiet))
+        if fold.failed > 0 {
+            line.append(NSAttributedString(string: " · ", attributes: quiet))
+            line.append(NSAttributedString(string: "\(fold.failed) ✗", attributes: [
+                .font: NSFont.systemFont(ofSize: size, weight: .semibold), .foregroundColor: NSColor.systemRed]))
+        }
+        line.append(NSAttributedString(string: fold.open ? "  ⌄" : "  ›", attributes: quiet))
+        words = NSTextField(labelWithAttributedString: line)
+        super.init(frame: .zero)
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 2.5
+        dot.layer?.backgroundColor = (fold.failed > 0 ? NSColor.systemRed : theme.faintText.withAlphaComponent(0.7)).cgColor
+        wheel.style = .spinning
+        wheel.controlSize = .mini
+        wheel.isIndeterminate = true
+        wheel.isDisplayedWhenStopped = false
+        let row = NSStackView(views: [wheel, dot, words])
+        row.orientation = .horizontal
+        row.spacing = 4
+        row.alignment = .centerY
+        ChatRowViews.pin(row, in: self, insets: NSEdgeInsets(top: 2, left: 4, bottom: 2, right: 0))
+        NSLayoutConstraint.activate([
+            dot.widthAnchor.constraint(equalToConstant: 5),
+            dot.heightAnchor.constraint(equalToConstant: 5),
+            wheel.widthAnchor.constraint(equalToConstant: 11),
+            wheel.heightAnchor.constraint(equalToConstant: 11),
+            // A target worth aiming at even when it is only a dot.
+            heightAnchor.constraint(greaterThanOrEqualToConstant: 18),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 18),
+        ])
+        toolTip = fold.open ? "Fold the steps away" : "Show the thinking and every step"
+        apply()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    private func apply() {
+        let showWords = hovering || fold.open
+        words.isHidden = !showWords
+        dot.isHidden = showWords || fold.live
+        if fold.live { wheel.startAnimation(nil) } else { wheel.stopAnimation(nil) }
+        wheel.isHidden = !fold.live
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func mouseDown(with event: NSEvent) { pressed = true }
+
+    // On mouse up, and only for a press that began here (CLAUDE.md).
+    override func mouseUp(with event: NSEvent) {
+        defer { pressed = false }
+        guard pressed, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        onClick?()
     }
 }
 

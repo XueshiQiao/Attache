@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fold Placement</title>
+<style>
+:root { --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif; --mono: ui-monospace, "SF Mono", Menlo, monospace; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.5 var(--font); background: #ececee; color: #222; -webkit-font-smoothing: antialiased; }
+body.dark { background: #161619; color: #ddd; }
+.bar { position: sticky; top: 0; z-index: 10; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 10px 20px; background: rgba(245,245,247,.92); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(0,0,0,.08); }
+body.dark .bar { background: rgba(20,20,23,.92); border-color: rgba(255,255,255,.08); }
+.seg { display: inline-flex; background: rgba(0,0,0,.06); border-radius: 8px; padding: 2px; }
+body.dark .seg { background: rgba(255,255,255,.08); }
+.seg button { border: 0; background: transparent; color: inherit; font: inherit; padding: 5px 11px; border-radius: 6px; cursor: pointer; opacity: .7; }
+.seg button.on { background: #fff; opacity: 1; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+body.dark .seg button.on { background: #3a3b41; }
+.hint { font-size: 12px; opacity: .6; }
+.grid { display: grid; gap: 22px; padding: 22px 20px 60px; max-width: 1800px; margin: 0 auto; }
+.grid.one { grid-template-columns: minmax(0, 860px); justify-content: center; }
+.grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 1000px) { .grid.two { grid-template-columns: minmax(0, 1fr); } }
+.card { border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.12), 0 0 0 .5px rgba(0,0,0,.18); }
+.head { padding: 12px 18px 10px; background: rgba(255,255,255,.75); border-bottom: 1px solid rgba(0,0,0,.07); }
+body.dark .head { background: rgba(40,40,45,.9); border-color: rgba(255,255,255,.07); }
+.head h2 { margin: 0 0 3px; font-size: 15px; }
+.head p { margin: 2px 0; font-size: 12px; opacity: .75; }
+
+.page { --bg: #fbfbfa; --text: #1f2023; --strong: #111; --mute: #6b6d73; --faint: #9a9ca2; --line: rgba(0,0,0,.1); --soft: rgba(0,0,0,.04); --accent: #2f6fde; --codeText: #b8441f; --bad: #d23f31; --bubble: #e7eefc;
+  background: var(--bg); color: var(--text); font-size: 13.5px; line-height: 1.62; padding: 18px 22px 22px; position: relative; }
+body.dark .page { --bg: #1f2024; --text: #e4e4e7; --strong: #fff; --mute: #a2a3a9; --faint: #6f7178; --line: rgba(255,255,255,.1); --soft: rgba(255,255,255,.05); --accent: #f0b440; --codeText: #f2a27a; --bad: #ff7b6e; --bubble: #2d3340; }
+.page p { margin: 0; }
+.page code { font-family: var(--mono); font-size: 12.3px; color: var(--codeText); }
+.page ul { margin: 4px 0 0; padding-left: 20px; }
+.user { display: flex; justify-content: flex-end; margin: 4px 0 14px; }
+.user span { background: var(--bubble); padding: 7px 13px; border-radius: 14px; max-width: 80%; }
+.msg { position: relative; margin: 0 0 12px; }
+.steps { display: none; margin: 6px 0 0; padding: 6px 0 2px 12px; border-left: 1.5px solid var(--line); }
+.msg.open .steps, .fold.open .steps { display: block; }
+.step { display: flex; gap: 8px; align-items: baseline; color: var(--mute); font-size: 12.2px; padding: 1px 0; }
+.step b { color: var(--text); font-weight: 600; }
+.step .sum { font-family: var(--mono); font-size: 11.6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.step.bad, .step.bad b { color: var(--bad); }
+.think { color: var(--mute); font-size: 12.2px; padding: 2px 0 4px 10px; border-left: 2px solid var(--line); margin: 2px 0 4px; }
+.badge { cursor: pointer; user-select: none; color: var(--faint); font-size: 11.5px; white-space: nowrap; }
+.badge:hover { color: var(--accent); }
+.badge .bad { color: var(--bad); }
+.spin { display: inline-block; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--line); border-top-color: var(--accent); animation: r .9s linear infinite; vertical-align: -1px; margin-right: 4px; }
+@keyframes r { to { transform: rotate(360deg); } }
+.running { color: var(--mute); font-size: 12px; margin-top: 3px; }
+.running .sum { font-family: var(--mono); font-size: 11.6px; }
+
+/* A: today — its own line */
+.vA .fold { margin: 0 0 12px; color: var(--mute); font-size: 12.3px; }
+.vA .fold .hd { cursor: pointer; user-select: none; }
+.vA .fold .hd b { color: var(--text); }
+
+/* B: on the right of the sentence before it, level with its first line */
+.vB .msg .text { padding-right: 86px; }
+.vB .msg .badge { position: absolute; right: 0; top: 2px; }
+
+/* C: right after the sentence's last word */
+.vC .msg .badge { margin-left: 8px; padding: 0 6px; border-radius: 9px; background: var(--soft); }
+
+/* D: a narrow column of its own on the right */
+.vD { padding-right: 122px; }
+.vD .msg .badge { position: absolute; right: -108px; top: 2px; width: 100px; text-align: left; padding-left: 10px; border-left: 1px solid var(--line); }
+
+/* E: only a dot until the pointer is on the sentence */
+.vE .msg .text { padding-right: 86px; }
+.vE .msg .badge { position: absolute; right: 0; top: 2px; }
+.vE .msg .badge .full { display: none; }
+.vE .msg .badge .dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--faint); opacity: .7; vertical-align: 2px; }
+.vE .msg .badge .dot.bad { background: var(--bad); opacity: 1; }
+.vE .msg:hover .badge .full, .vE .msg.open .badge .full { display: inline; }
+.vE .msg:hover .badge .dot, .vE .msg.open .badge .dot { display: none; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <b>折叠行放在哪：样式对比</b>
+  <div class="seg" id="mode"><button data-v="two" class="on">两列并排</button><button data-v="one">一列</button></div>
+  <div class="seg" id="theme"><button data-v="light" class="on">浅色</button><button data-v="dark">深色</button></div>
+  <div class="seg" id="pick"><button data-v="all" class="on">全部</button><button data-v="A">A</button><button data-v="B">B</button><button data-v="C">C</button><button data-v="D">D</button><button data-v="E">E</button></div>
+  <span class="hint">标记都可以点：点了展开，再点收起，标记本身的位置不变</span>
+</div>
+<div class="grid two" id="grid"></div>
+
+<script>
+// A turn as it really comes: a line, its tools, a line, its tools, ... the answer.
+// The second turn starts with tools before anything is said, and is still running.
+const T = (tool, sum, bad) => ({ tool, sum, bad });
+const turn1 = [
+  { text: "好，就按 F 做，并且去掉失败步骤的单独显示。先在桌面端做。",
+    work: { thoughts: [], steps: [T("Read", "Attache/UI/ChatPaneView.swift")] } },
+  { text: "聊天页现在是把对话记录的每一行直接变成一个视图。先看它组装这些元素的地方。",
+    work: { thoughts: ["每一轮里，把最后一条回复之前的工作过程合成一个可折叠的元素。"], steps: [T("Grep", "\"elements(rows\" in Attache/UI"), T("Read", "Attache/UI/ChatRowViews.swift")] } },
+  { text: "现在写代码。",
+    work: { thoughts: [], steps: [T("Edit", "Attache/UI/ChatPaneView.swift  +120 −14"), T("Bash", "xcodebuild … build", true), T("Edit", "Attache/UI/ChatPaneView.swift  +2 −2"), T("Bash", "xcodebuild … build")] } },
+  { text: "<p>改好了，已经提交。现在的样子：</p><ul><li>Agent 写给你的话照常显示</li><li>只有思考和工具调用会折叠</li></ul>", work: null },
+];
+const turn2Lead = { thoughts: [], steps: [T("Read", "Attache/UI/ChatPaneView.swift"), T("Grep", "\"holdPosition\" in Attache/UI")] };
+const turn2 = [
+  { text: "明白：点一下展开，鼠标不动再点一下收起，那一行的位置必须一点不动。", lead: turn2Lead,
+    work: { thoughts: [], steps: [T("Edit", "Attache/UI/ChatPaneView.swift  +40 −12")], running: T("Bash", "xcodebuild … build") } },
+];
+
+const stepRow = s => `<div class="step${s.bad ? " bad" : ""}"><span>${s.bad ? "✗" : "✓"}</span><b>${s.tool}</b><span class="sum">${s.sum}</span></div>`;
+const stepsHtml = w => `<div class="steps">${w.thoughts.map(t => `<div class="think">${t}</div>`).join("")}${w.steps.map(stepRow).join("")}</div>`;
+const count = w => {
+  const n = w.steps.length + (w.running ? 1 : 0), bad = w.steps.filter(s => s.bad).length;
+  return { n, bad, label: `${n} step${n === 1 ? "" : "s"}` };
+};
+const badge = (w, full) => {
+  const c = count(w);
+  const live = w.running ? `<span class="spin"></span>` : "";
+  return `<span class="badge" onclick="toggle(this)">${live}${full !== false ? `<span class="full">${c.label}${c.bad ? ` · <span class="bad">${c.bad} ✗</span>` : ""} ›</span>` : ""}${w.running || c.bad ? "" : ""}</span>`;
+};
+const running = w => w.running ? `<div class="running">… <b>${w.running.tool}</b> <span class="sum">${w.running.sum}</span></div>` : "";
+function toggle(el) {
+  const host = el.closest(".msg") || el.closest(".fold");
+  host.classList.toggle("open");
+}
+// A, the separate line, for comparison.
+function renderA(turn) {
+  return turn.map(m => {
+    const lead = m.lead ? foldA(m.lead) : "";
+    const body = `<div class="msg"><div class="text">${m.text.startsWith("<") ? m.text : `<p>${m.text}</p>`}</div></div>`;
+    return lead + body + (m.work ? foldA(m.work) : "");
+  }).join("");
+}
+function foldA(w) {
+  const c = count(w);
+  const head = `${w.running ? "Working · " : ""}${w.thoughts.length ? `Thought ${w.thoughts.length}× · ` : ""}<b>${c.label}</b>${c.bad ? ` · <span style="color:var(--bad);font-weight:600">${c.bad} failed</span>` : ""}`;
+  return `<div class="fold"><div class="hd" onclick="this.parentNode.classList.toggle('open')">▸ ${head}</div>${running(w)}${stepsHtml(w)}</div>`;
+}
+// B–E: the work hangs on the sentence before it (or, when nothing was said
+// yet, on the sentence after it), and opens beneath that sentence.
+function renderAttached(turn, variant) {
+  return turn.map(m => {
+    const w = m.work && m.lead ? { thoughts: [...m.lead.thoughts, ...m.work.thoughts], steps: [...m.lead.steps, ...m.work.steps], running: m.work.running } : (m.work || m.lead);
+    const text = m.text.startsWith("<") ? m.text : `<p>${m.text}</p>`;
+    if (!w) return `<div class="msg"><div class="text">${text}</div></div>`;
+    let b = badge(w);
+    if (variant === "E") {
+      const c = count(w);
+      b = `<span class="badge" onclick="toggle(this)">${w.running ? `<span class="spin"></span>` : `<span class="dot${c.bad ? " bad" : ""}"></span>`}<span class="full">${c.label}${c.bad ? ` · <span class="bad">${c.bad} ✗</span>` : ""} ›</span></span>`;
+    }
+    if (variant === "C") {
+      // after the last word: inside the last paragraph
+      const t = text.replace(/<\/p>(?![\s\S]*<\/p>)|<\/li><\/ul>$/, m0 => b + m0);
+      return `<div class="msg"><div class="text">${t === text ? text + b : t}</div>${running(w)}${stepsHtml(w)}</div>`;
+    }
+    return `<div class="msg"><div class="text">${text}</div>${b}${running(w)}${stepsHtml(w)}</div>`;
+  }).join("");
+}
+
+const designs = [
+  { id: "A", name: "A · 现在", what: "对照：每一串思考和工具调用自己占一行，夹在两段话中间。" },
+  { id: "B", name: "B · 挂在上一句的右边（你的方案）", what: "折叠行变成上一句话第一行最右边的小字「3 steps ›」，失败的写成红色「1 ✗」。点它，步骤在这句话下面展开，小字不动。一轮开头还没说话就先跑的工具，挂到后面的第一句话上。进行中：小字前面有个转圈，这句话下面一行灰字显示正在跑的那一步。" },
+  { id: "C", name: "C · 紧跟在句尾", what: "小标记紧跟在这句话最后一个字后面，带一点浅底。离文字近，一眼知道它属于哪句；代价是每句话的结尾都多了个东西，长短不一。" },
+  { id: "D", name: "D · 右侧单独一栏", what: "正文右边留一条窄栏，所有标记都放在这一栏里，跟它那句话的第一行对齐，用一条细线和正文隔开。正文区域完全干净，标记上下对成一列，像文档的批注栏。代价是正文窄了一点。" },
+  { id: "E", name: "E · 平时只有一个点", what: "平时在右边只留一个小圆点（失败是红点，进行中是转圈）。鼠标移到这句话上，小圆点才变成「3 steps ›」。最安静，但不移鼠标就看不出有几步。" },
+];
+
+const grid = document.getElementById("grid");
+const user1 = `<div class="user"><span>我倾向于选择 F，就按 F 来。</span></div>`;
+const user2 = `<div class="user"><span>点开的时候，它所在的位置不能变。</span></div>`;
+for (const d of designs) {
+  const body = d.id === "A" ? user1 + renderA(turn1) + user2 + renderA(turn2) : user1 + renderAttached(turn1, d.id) + user2 + renderAttached(turn2, d.id);
+  const card = document.createElement("div");
+  card.className = "card";
+  card.dataset.v = d.id;
+  card.innerHTML = `<div class="head"><h2>${d.name}</h2><p>${d.what}</p></div><div class="page v${d.id}">${body}</div>`;
+  grid.appendChild(card);
+}
+
+function seg(id, on) {
+  const el = document.getElementById(id);
+  el.addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+    on(b.dataset.v);
+  });
+}
+seg("mode", v => { grid.className = "grid " + v; });
+seg("theme", v => { document.body.classList.toggle("dark", v === "dark"); });
+seg("pick", v => {
+  for (const c of grid.children) c.style.display = (v === "all" || c.dataset.v === v) ? "" : "none";
+  if (v !== "all") { grid.className = "grid one"; document.querySelectorAll("#mode button").forEach(x => x.classList.toggle("on", x.dataset.v === "one")); }
+});
+</script>
+</body>
+</html>
