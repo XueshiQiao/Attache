@@ -245,13 +245,16 @@ final class WorkFold: NSView {
         let line = NSMutableAttributedString(string: fold.open ? "▾  " : "▸  ", attributes: [
             .font: NSFont.systemFont(ofSize: size), .foregroundColor: theme.faintText])
         var parts: [NSAttributedString] = []
-        if fold.live { parts.append(NSAttributedString(string: "Working", attributes: quiet)) }
-        if fold.thoughts > 0 { parts.append(NSAttributedString(string: "Thought \(fold.thoughts)×", attributes: quiet)) }
-        if fold.steps > 0 {
+        if fold.open {
+            // Its rows are right below; the counts would only repeat them.
+            parts.append(NSAttributedString(string: "Hide the work", attributes: quiet))
+        } else if fold.live { parts.append(NSAttributedString(string: "Working", attributes: quiet)) }
+        if !fold.open, fold.thoughts > 0 { parts.append(NSAttributedString(string: "Thought \(fold.thoughts)×", attributes: quiet)) }
+        if !fold.open, fold.steps > 0 {
             parts.append(NSAttributedString(string: "\(fold.steps) step\(fold.steps == 1 ? "" : "s")", attributes: [
                 .font: NSFont.systemFont(ofSize: size, weight: .semibold), .foregroundColor: theme.text]))
         }
-        if fold.failed > 0 {
+        if !fold.open, fold.failed > 0 {
             parts.append(NSAttributedString(string: "\(fold.failed) failed", attributes: [
                 .font: NSFont.systemFont(ofSize: size, weight: .semibold), .foregroundColor: NSColor.systemRed]))
         }
@@ -265,14 +268,14 @@ final class WorkFold: NSView {
         var views: [NSView] = [head]
         // While it runs: what it last said it was doing, and the step in
         // flight — the one line of progress the page owes the person.
-        if let progress = fold.progress {
+        if !fold.open, let progress = fold.progress {
             let label = ChatRowViews.label(progress, font: .systemFont(ofSize: size), colour: theme.mutedText,
                                            selectable: false)
             label.maximumNumberOfLines = 2
             label.lineBreakMode = .byTruncatingTail
             views.append(label)
         }
-        if let running = fold.running {
+        if !fold.open, let running = fold.running {
             let label = ChatRowViews.label("…  " + running, font: .monospacedSystemFont(ofSize: size - 1, weight: .regular),
                                            colour: theme.mutedText, selectable: false)
             label.maximumNumberOfLines = 1

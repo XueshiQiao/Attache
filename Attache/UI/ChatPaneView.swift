@@ -112,6 +112,7 @@ final class ChatPaneView: NSView {
             firstShown = nil
             firstShownKey = nil
             followsBottom = true
+            openFolds = []
             model?.onChange = { [weak self] in self?.refresh() }
             model?.isOnScreen = window != nil && !isHidden
         }
@@ -493,7 +494,14 @@ final class ChatPaneView: NSView {
         let all = Self.elements(rows: model.rows, pending: model.pending,
                                 working: model.agent?.phase == .working && !model.agentExited,
                                 open: openFolds)
-        if let key = firstShownKey, let found = all.firstIndex(where: { $0.key == key }) {
+        // A row inside a fold that was shut since is found by its fold.
+        func index(of key: String) -> Int? {
+            all.firstIndex { $0.key == key } ?? all.firstIndex {
+                if case .fold(let f) = $0 { return f.members.contains { "r:" + $0 == key } }
+                return false
+            }
+        }
+        if let key = firstShownKey, let found = index(of: key) {
             if revealEarlier, found > 0 {
                 revealEarlier = false
                 firstShown = max(0, found - Self.page)
@@ -504,7 +512,16 @@ final class ChatPaneView: NSView {
             // Never chosen, or the row it was is gone (another transcript).
             firstShown = all.isEmpty ? nil : max(0, all.count - Self.page)
         }
-        let first = min(firstShown ?? 0, all.count)
+        var first = min(firstShown ?? 0, all.count)
+        // Never start a page inside an open fold: its rows would be drawn
+        // with nothing above them to shut it by.
+        if first < all.count, case .row(let row) = all[first],
+           let header = all[..<first].lastIndex(where: {
+               if case .fold(let f) = $0 { return f.open && f.members.contains(row.key) }
+               return false
+           }) {
+            first = header
+        }
         firstShownKey = first < all.count ? all[first].key : nil
         redrawRows(Array(all[first...]))
         // What follows reads the document's height: settle it first —
@@ -648,6 +665,11 @@ final class ChatPaneView: NSView {
         holdPosition()
         if openFolds.remove(key) == nil { openFolds.insert(key) }
         refresh()
+        // Shut at the bottom is at the bottom: follow it again, or the next
+        // message arrives below the view until the person scrolls.
+        if let document = scroll.documentView {
+            followsBottom = scroll.contentView.bounds.maxY >= document.frame.height - 40
+        }
     }
 
     /// The rows as drawn: a sent message sits right after the row that was
@@ -673,35 +695,38 @@ final class ChatPaneView: NSView {
             out.append(.row(row))
             if let sent = byAnchor[row.key] { out += sent.map(ChatElement.pending) }
         }
-        func fold(_ stretch: [ChatRow], live: Bool) {
-            guard let first = stretch.first else { return }
+        func fold(_ stretch: [ChatRow], key: String, live: Bool) {
+            // A finished stretch of lines said and nothing else is no work to
+            // fold; a live one still owes the person its "Working" line.
+            guard !stretch.isEmpty || live else { return }
             var thoughts = 0, steps = 0, failed = 0
             var progress: String?, running: String?
             for row in stretch {
                 switch row {
                 case .thinking(_, let text):
                     thoughts += 1
-                    if live { progress = ChatFold.firstLine(text) ?? progress }
+                    progress = ChatFold.firstLine(text) ?? progress
                 case .agent(_, let text):
-                    if live { progress = ChatFold.firstLine(text) ?? progress }
+                    progress = ChatFold.firstLine(text) ?? progress
                 case .tool(_, let name, let summary, _, let result, let isError, _):
                     steps += 1
                     if isError { failed += 1 }
-                    running = result == nil ? "\(name)  \(summary)" : nil
+                    // Tools run side by side: one that came back does not
+                    // mean the one before it did.
+                    if result == nil { running = "\(name)  \(summary)" }
                 default: break
                 }
             }
-            // Lines said and nothing else is no work to fold.
-            guard thoughts + steps > 0 else { return stretch.forEach(put) }
-            let isOpen = open.contains(first.key)
-            out.append(.fold(ChatFold(key: first.key, thoughts: thoughts, steps: steps, failed: failed,
+            guard live || thoughts + steps > 0 else { return stretch.forEach(put) }
+            let isOpen = open.contains(key)
+            out.append(.fold(ChatFold(key: key, thoughts: thoughts, steps: steps, failed: failed,
                                       live: live, open: isOpen,
-                                      progress: live ? progress : nil, running: live ? running : nil)))
-            if isOpen {
-                stretch.forEach(put)
-            } else {
-                for row in stretch { if let sent = byAnchor[row.key] { out += sent.map(ChatElement.pending) } }
-            }
+                                      progress: live ? progress : nil, running: live ? running : nil,
+                                      members: stretch.map(\.key))))
+            if isOpen { stretch.forEach { out.append(.row($0)) } }
+            // A message sent meanwhile goes after the work it was sent
+            // during, open or shut, so opening does not move it.
+            for row in stretch { if let sent = byAnchor[row.key] { out += sent.map(ChatElement.pending) } }
         }
         // Turns start at each prompt.
         var turns: [[ChatRow]] = [[]]
@@ -709,20 +734,38 @@ final class ChatPaneView: NSView {
             if case .user = row { turns.append([row]) } else { turns[turns.count - 1].append(row) }
         }
         for (t, turn) in turns.enumerated() {
-            let live = working && t == turns.count - 1
-            let answer = live ? nil : turn.lastIndex { if case .agent = $0 { return true } else { return false } }
+            // The last turn is the running one — unless a message is on its
+            // way: then the agent is working on that, its prompt has not
+            // reached the transcript yet, and the last turn is finished.
+            let live = working && t == turns.count - 1 && pending.isEmpty
+            // The answer is a reply nothing worked after. A turn stopped on
+            // a tool (interrupted, or waiting for approval) has none: a line
+            // said halfway is not an answer, and taking it for one split the
+            // turn in three.
+            var answer: Int?
+            if !live, let last = turn.lastIndex(where: { if case .agent = $0 { true } else { false } }),
+               !turn[(last + 1)...].contains(where: {
+                   switch $0 { case .tool, .thinking: true; default: false }
+               }) {
+                answer = last
+            }
+            // Keyed by the turn and the stretch's place in it, not by its first
+            // row: that row can turn out to be the answer, and a fold the
+            // person opened would then close itself.
+            let turnKey = turn.first?.key ?? "start"
+            var ordinal = 0
             var stretch: [ChatRow] = []
             for (i, row) in turn.enumerated() {
                 switch row {
                 case .thinking, .tool, .agent where i != answer:
                     stretch.append(row)
                 default:
-                    fold(stretch, live: false)
+                    if !stretch.isEmpty { fold(stretch, key: "\(turnKey)#\(ordinal)", live: false); ordinal += 1 }
                     stretch = []
                     put(row)
                 }
             }
-            fold(stretch, live: live)
+            if !stretch.isEmpty || live { fold(stretch, key: "\(turnKey)#\(ordinal)", live: live) }
         }
         out += pending.filter { !($0.anchorKey.map(keys.contains) ?? false) }.map(ChatElement.pending)
         return out
@@ -746,12 +789,24 @@ struct ChatFold: Equatable {
     let progress: String?
     /// While live: the step still running.
     let running: String?
+    /// The keys of the rows folded, to find the fold a row is in.
+    let members: [String]
 
+    /// A line of prose for the progress line: fences, rules and table rows
+    /// skipped, heading and list marks and emphasis taken off.
     static func firstLine(_ text: String) -> String? {
-        let line = text.split(whereSeparator: \.isNewline).first.map {
-            $0.trimmingCharacters(in: .whitespaces)
-        } ?? ""
-        return line.isEmpty ? nil : line
+        var inFence = false
+        for raw in text.split(whereSeparator: \.isNewline) {
+            var line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("```") { inFence.toggle(); continue }
+            if inFence || line.hasPrefix("|") || line.allSatisfy({ "-*_=".contains($0) }) { continue }
+            while let mark = ["#", ">", "- ", "* ", "+ "].first(where: { line.hasPrefix($0) }) {
+                line = String(line.dropFirst(mark.count)).trimmingCharacters(in: .whitespaces)
+            }
+            line = line.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+            if !line.isEmpty { return line }
+        }
+        return nil
     }
 }
 
@@ -782,6 +837,7 @@ enum ChatElement {
         case .pending(let p): .prompt(p.text)
         case .row(.agent), .row(.output): .reply
         case .row(.tool): .tool
+        case .fold(let f) where f.steps > 0: .tool
         case .row(.thinking), .row(.note), .note, .fold: .quiet
         }
     }
@@ -792,8 +848,12 @@ enum ChatElement {
         case .row(let row): "r:\(row.key):\(Self.digest(row))"
         case .pending(let p): "p:\(p.id):\(p.unconfirmed)"
         case .note(let id, _): "n:\(id)"
+        // Open, the header says only that it folds: with the counts in its
+        // id, every new step of an opened running turn redrew everything
+        // after it and shut every step the person had opened.
+        case .fold(let f) where f.open: "f:\(f.key):open"
         case .fold(let f):
-            "f:\(f.key):\(f.thoughts):\(f.steps):\(f.failed):\(f.live):\(f.open):\(f.progress ?? ""):\(f.running ?? "")"
+            "f:\(f.key):\(f.thoughts):\(f.steps):\(f.failed):\(f.live):\(f.progress ?? ""):\(f.running ?? "")"
         }
     }
 
