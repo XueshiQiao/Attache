@@ -101,6 +101,21 @@ private final class MarkdownLayoutManager: NSLayoutManager {
     }
 }
 
+/// Copies without the hairline paragraph a reply that opens with a code block
+/// starts with (`ConversationMarkdown.render`): it is spacing, not text.
+private final class ReplyTextView: NSTextView {
+    override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        let range = selectedRange()
+        guard range.location == 0, range.length > 1, let storage = textStorage,
+              storage.string.hasPrefix("\n") else {
+            return super.writeSelection(to: pboard, types: types)
+        }
+        let text = storage.attributedSubstring(from: NSRange(location: 1, length: range.length - 1))
+        pboard.clearContents()
+        return pboard.writeObjects([text])
+    }
+}
+
 /// Rendered markdown, selectable, at the height its width gives it, with the
 /// decorations `ConversationMarkdown` asks for drawn under it.
 ///
@@ -121,7 +136,7 @@ final class MarkdownTextView: NSView {
         container.lineFragmentPadding = 0
         manager.addTextContainer(container)
         storage.addLayoutManager(manager)
-        text = NSTextView(frame: .zero, textContainer: container)
+        text = ReplyTextView(frame: .zero, textContainer: container)
         super.init(frame: .zero)
         // A code box last reaches its padding below the text: its spacing
         // after went with the trailing newline. (One first is given a

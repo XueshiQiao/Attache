@@ -215,22 +215,40 @@ private final class TableGridView: NSView {
     /// Each cell's text as a selectable text view on its cell; the grid only
     /// paints the fills and rules. Drawn straight onto the grid, as it was,
     /// no word of a table could be selected or copied.
+    ///
+    /// The views are made once and moved after that: a width change (every
+    /// step of a window drag) used to rebuild them all, at a TextKit stack a
+    /// cell, and drop whatever was selected.
     private func placeText() {
-        subviews.forEach { $0.removeFromSuperview() }
-        var y = Self.gap
-        for (r, row) in cells.enumerated() {
-            var x = Self.gap
-            for (c, text) in row.enumerated() {
-                let frame = NSRect(x: x, y: y, width: widths[c], height: heights[r]).insetBy(dx: pad.width, dy: pad.height)
-                let view = NSTextView(frame: frame)
+        let count = cells.reduce(0) { $0 + $1.count }
+        if subviews.count != count {
+            subviews.forEach { $0.removeFromSuperview() }
+            for text in cells.joined() {
+                let view = NSTextView(frame: .zero)
                 view.textContainer?.lineFragmentPadding = 0
                 view.textContainerInset = .zero
                 view.isEditable = false
                 view.isSelectable = true
                 view.drawsBackground = false
                 view.isAutomaticLinkDetectionEnabled = false
+                // Sized by the grid, which measured the cell; left resizable,
+                // a cell that wrapped differently would grow into the next row.
+                view.isVerticallyResizable = false
+                view.isHorizontallyResizable = false
                 view.textStorage?.setAttributedString(text)
                 addSubview(view)
+            }
+        }
+        var views = subviews.makeIterator()
+        var y = Self.gap
+        for (r, row) in cells.enumerated() {
+            var x = Self.gap
+            for c in row.indices {
+                let frame = NSRect(x: x, y: y, width: widths[c], height: heights[r]).insetBy(dx: pad.width, dy: pad.height)
+                if let view = views.next() as? NSTextView {
+                    view.frame = frame
+                    view.textContainer?.size = NSSize(width: frame.width, height: .greatestFiniteMagnitude)
+                }
                 x += widths[c] + Self.gap
             }
             y += heights[r] + Self.gap

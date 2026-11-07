@@ -108,6 +108,9 @@ final class ClosureButton: NSButton {
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 
     @objc private func fire() { handler() }
+
+    /// For a button made before the `self` its action needs exists.
+    func setAction(_ action: @escaping () -> Void) { handler = action }
 }
 
 // MARK: - Rows
@@ -229,47 +232,63 @@ private final class AgentReply: NSView {
 private final class Expandable: NSView {
     private let body: NSTextField
     private let lines: Int
+    private let font: NSFont
     private var open = false
-    private var toggle: ClosureButton?
+    private let toggle: ClosureButton
+    private var measuredWidth: CGFloat = -1
 
     init(text: String, font: NSFont, lines: Int, colour: NSColor, insets: NSEdgeInsets? = nil) {
         // Selectable from the start: opening it used to be a click on the
         // text itself, which left nothing in it to select until it was open.
         body = ChatRowViews.label(text, font: font, colour: colour)
         self.lines = lines
+        self.font = font
+        toggle = ClosureButton(title: "Show all") {}
         super.init(frame: .zero)
         body.maximumNumberOfLines = lines
         body.lineBreakMode = .byTruncatingTail
-        let total = text.split(separator: "\n", omittingEmptySubsequences: false).count
-        guard total > lines else {
-            ChatRowViews.pin(body, in: self, insets: insets ?? NSEdgeInsets(top: 0, left: 18, bottom: 0, right: 24))
-            return
-        }
-        // So the whole thing opens with a button of its own.
-        let button = ClosureButton(title: "Show all \(total) lines") { [weak self] in self?.flip() }
-        button.isBordered = false
-        button.contentTintColor = ChromeTheme.current.accent
-        button.font = .systemFont(ofSize: max(10, font.pointSize - 0.5))
-        let column = NSStackView(views: [body, button])
+        toggle.isBordered = false
+        toggle.contentTintColor = ChromeTheme.current.accent
+        toggle.font = .systemFont(ofSize: max(10, font.pointSize - 0.5))
+        toggle.setAction { [weak self] in self?.flip() }
+        // Hidden until a width says the text is cut: counting newlines missed
+        // one long line wrapped past the limit, which was then cut with no
+        // way to open it.
+        toggle.isHidden = true
+        let column = NSStackView(views: [body, toggle])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 4
         body.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         ChatRowViews.pin(column, in: self, insets: insets ?? NSEdgeInsets(top: 0, left: 18, bottom: 0, right: 24))
-        toggle = button
-        self.total = total
     }
-
-    private var total = 0
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 
+    override func layout() {
+        super.layout()
+        let width = body.bounds.width
+        guard width > 0, width != measuredWidth else { return }
+        measuredWidth = width
+        let full = (body.stringValue as NSString).boundingRect(
+            with: NSSize(width: width - 4, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font]).height
+        let limit = ceil(font.ascender - font.descender + font.leading) * CGFloat(lines)
+        let cut = full > limit + 1
+        if toggle.isHidden == (cut || open) { toggle.isHidden = !(cut || open) }
+    }
+
     private func flip() {
+        // What was opened stays where it is: the page would otherwise follow
+        // its bottom past the start of it.
+        var ancestor = superview
+        while let view = ancestor, !(view is ChatPaneView) { ancestor = view.superview }
+        (ancestor as? ChatPaneView)?.holdPosition()
         open.toggle()
         body.maximumNumberOfLines = open ? 0 : lines
         body.lineBreakMode = open ? .byWordWrapping : .byTruncatingTail
-        toggle?.title = open ? "Show less" : "Show all \(total) lines"
+        toggle.title = open ? "Show less" : "Show all"
         needsLayout = true
     }
 }
@@ -1178,6 +1197,9 @@ final class ChatComposer: NSView {
     private let hint = NSTextField(labelWithString: "")
     private lazy var send = SendButton { [weak self] in self?.submit() }
     private var height: NSLayoutConstraint?
+    /// Placed by the one-line height, which moves with the text size.
+    private var hintCentre: NSLayoutConstraint?
+    private var sendCentre: NSLayoutConstraint?
 
     var placeholder: String {
         get { hint.stringValue }
@@ -1221,6 +1243,10 @@ final class ChatComposer: NSView {
         }
         let height = scroll.heightAnchor.constraint(equalToConstant: Self.minHeight)
         self.height = height
+        let hintCentre = hint.centerYAnchor.constraint(equalTo: scroll.topAnchor, constant: Self.minHeight / 2)
+        let sendCentre = send.centerYAnchor.constraint(equalTo: box.bottomAnchor, constant: -Self.minHeight / 2)
+        self.hintCentre = hintCentre
+        self.sendCentre = sendCentre
         // The send button sits inside the field, at its right end, level
         // with the last line.
         NSLayoutConstraint.activate([
@@ -1236,9 +1262,9 @@ final class ChatComposer: NSView {
             // Where the text view draws its first line: the field's inset,
             // the container inset and the line fragment padding.
             hint.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: Self.textInset + 5),
-            hint.centerYAnchor.constraint(equalTo: scroll.topAnchor, constant: Self.minHeight / 2),
+            hintCentre,
             send.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -6),
-            send.centerYAnchor.constraint(equalTo: box.bottomAnchor, constant: -Self.minHeight / 2),
+            sendCentre,
         ])
         applyChromeTheme()
     }
@@ -1262,6 +1288,11 @@ final class ChatComposer: NSView {
         textView.insertionPointColor = theme.text
         hint.font = .systemFont(ofSize: ChatRowViews.size)
         hint.textColor = theme.faintText
+        // A new text size is a new one-line height: the box, the hint and
+        // the send button are placed by it.
+        hintCentre?.constant = Self.minHeight / 2
+        sendCentre?.constant = -Self.minHeight / 2
+        textChanged()
     }
 
     private func textChanged() {

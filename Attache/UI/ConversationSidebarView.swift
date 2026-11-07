@@ -1081,6 +1081,9 @@ private final class StickyHeaderView: NSView {
     func applyChromeTheme() {
         let theme = ChromeTheme.current
         backing.layer?.backgroundColor = Self.fill(theme)
+        // The size too: it has to match the prompt heads it stands in for,
+        // and the text size is a setting.
+        label.font = .systemFont(ofSize: AppSettings.conversationFontSize, weight: .medium)
         label.textColor = theme.text
         chevron.textColor = theme.accent
         count.textColor = theme.mutedText
