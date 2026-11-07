@@ -73,11 +73,14 @@ final class AgentChatModel {
     private var watch: AttacheCliStream?
     private var follow: AttacheCliStream?
     private var followedPath: String?
+    /// Files the followed conversation went on from (`switched`). The agent
+    /// list can still name one for a moment afterwards — it is read on its
+    /// own clock, and falls back to the pane's own session once a runner
+    /// exits — and that is not another conversation to go back to.
+    private var continuedFrom: Set<String> = []
     private var historyStart: Int?
     private var before: Int?
     private var freshRead = true
-    private var carryOver: [ChatRow] = []
-    private var lastSlash: (command: String, at: Date)?
     private var nextPendingID = 1
     private var stopped = false
     /// Which stream is the current one. A cancelled stream still ends, and
@@ -190,17 +193,28 @@ final class AgentChatModel {
     private func followTranscript(_ path: String, kind: String) {
         guard Self.isFollowable(path), kind == "claude" || kind == "agy" else { return }
         guard path != followedPath || follow == nil else { return }
-        // A `/clear` starts a new, empty file; the conversation just watched
-        // stays above it with a divider.
-        if let old = followedPath, old != path, let slash = lastSlash,
-           slash.command == "/clear", Date().timeIntervalSince(slash.at) < 120, !rows.isEmpty {
-            carryOver = rows + [.note(key: "clear-\(path)", text: "New conversation (/clear)")]
-        } else if followedPath != path {
-            carryOver = []
-        }
+        guard !continuedFrom.contains(path) else { return }
+        let another = followedPath != nil && followedPath != path
         followedPath = path
         before = nil
+        guard another else { return startFollow(path: path, kind: kind) }
+        // Another conversation in the same pane — a `/clear` starts a new
+        // file — shows only itself: the one before it is gone from the page
+        // at once, not left up until the new file's first rows arrive, and so
+        // is everything about it: its history to page back through and the
+        // status above it.
+        continuedFrom = []
+        rows = []
+        historyStart = nil
+        earlierNotLoaded = false
+        loadingEarlier = false
+        status = nil
+        transcriptState = .loading
         startFollow(path: path, kind: kind)
+        // After the new follow is started and the old one cancelled: a page
+        // that redraws here and finds itself short asks for earlier rows,
+        // and must ask the new file.
+        onChange?()
     }
 
     private func startFollow(path: String, kind: String) {
@@ -218,7 +232,10 @@ final class AgentChatModel {
             case "switched":
                 // attache-cli follows the conversation into its new file and
                 // says so with a fresh `hello`; a restart must start there.
-                if let moved = event["path"] as? String, Self.isFollowable(moved) { self.followedPath = moved }
+                if let moved = event["path"] as? String, Self.isFollowable(moved) {
+                    if let from = self.followedPath { self.continuedFrom.insert(from) }
+                    self.followedPath = moved
+                }
             case "waiting":
                 if self.rows.isEmpty { self.transcriptState = .loading; self.onChange?() }
             case "hello":
@@ -250,7 +267,7 @@ final class AgentChatModel {
     }
 
     private func publish(_ followed: [ChatRow]) {
-        rows = carryOver + followed
+        rows = followed
         transcriptState = .live
         earlierNotLoaded = (historyStart ?? 0) > 0
         // A sent message is confirmed once the agent has written it down.
@@ -292,9 +309,6 @@ final class AgentChatModel {
             notice = panel != nil ? "Close the panel first" : "The agent is not there to take it"
             onChange?()
             return
-        }
-        if words.hasPrefix("/") {
-            lastSlash = (String(words.prefix { $0 != " " }), Date())
         }
         let message = PendingMessage(id: nextPendingID, text: words, sentAt: Date(),
                                      anchorKey: rows.last?.key)
