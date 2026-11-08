@@ -69,14 +69,15 @@ final class EmbeddedSessionViewController: NSViewController {
     /// window's backing store masks the overhang.
     ///
     /// Read from tmux rather than assumed to be 1, because `status` can be
-    /// `off`, `on`, or a count up to 5.
-    private let statusRows: Int
+    /// `off`, `on`, or a count up to 5. Defaulted to 1 and fetched off the
+    /// main thread so a slow or wedged ssh mux socket never blocks UI creation.
+    private var statusRows: Int = 1
 
     /// Whether those rows sit above the window instead of below it, which
     /// shifts every pane down the screen by that many rows. `cell(at:)` needs
     /// it to turn a click into a cell, and the pane cards to know what the top
     /// row of cards sits against.
-    private let statusAtTop: Bool
+    private var statusAtTop: Bool = false
 
     /// The machine this session lives on: its transport built the attach
     /// command above, and its helper is what a ⌘-click's existence checks go
@@ -167,12 +168,6 @@ final class EmbeddedSessionViewController: NSViewController {
         self.host = host
         let transport = host.transport
         let connection = model.connection
-        statusRows = TmuxStatusOption.lines(
-            transport: transport, sessionID: connection.sessionID
-        )
-        statusAtTop = TmuxStatusOption.isAtTop(
-            transport: transport, sessionID: connection.sessionID
-        )
 
         let base = TerminalConfiguration(startingFrom: .default) { builder in
             builder.withBackgroundOpacity(0)
@@ -213,6 +208,32 @@ final class EmbeddedSessionViewController: NSViewController {
         )
         terminalView = TmuxTerminalView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
         super.init(nibName: nil, bundle: nil)
+        refreshStatusOptions()
+    }
+
+    /// Query `status` and `status-position` off the main thread so a remote
+    /// host whose SSH ControlMaster socket is slow or wedged after sleep can
+    /// never freeze the main thread during controller construction.
+    private func refreshStatusOptions() {
+        let transport = host.transport
+        let sessionID = model.connection.sessionID
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let rows = TmuxStatusOption.lines(transport: transport, sessionID: sessionID)
+            let atTop = TmuxStatusOption.isAtTop(transport: transport, sessionID: sessionID)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.statusRows != rows || self.statusAtTop != atTop else { return }
+                self.statusRows = rows
+                self.statusAtTop = atTop
+                if self.cellHeight > 0 {
+                    let hidden = Self.hidesStatusRow ? rows : 0
+                    self.statusOverhang = self.cellHeight * CGFloat(hidden)
+                }
+                if self.isViewLoaded {
+                    self.refreshPaneCards()
+                }
+            }
+        }
     }
 
     @available(*, unavailable)

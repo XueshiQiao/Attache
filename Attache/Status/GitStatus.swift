@@ -396,6 +396,12 @@ enum GitStatus {
             throw Failure.unavailable
         }
 
+        // Prevent a wedged network mount or hung filesystem after sleep from
+        // permanently starving one of the 4 git worker slots.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
+            if process.isRunning { process.terminate() }
+        }
+
         // Both pipes, concurrently, and only then wait.
         //
         // Reading before waiting is necessary — a pipe holds 64KB and

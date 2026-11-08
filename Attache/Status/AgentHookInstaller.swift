@@ -72,9 +72,22 @@ enum AgentHookInstaller {
 
     // MARK: - Inspecting installed state
 
-    static func providerStatuses(
-        home: URL = FileManager.default.homeDirectoryForCurrentUser,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+    private static let statusCacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedStatuses: [ProviderStatus]?
+    nonisolated(unsafe) private static var cachedStatusesAt: Date = .distantPast
+    nonisolated(unsafe) private static var statusRefreshInFlight = false
+    private static let statusCacheTTL: TimeInterval = 15
+
+    static func invalidateStatusCache() {
+        statusCacheLock.lock()
+        cachedStatuses = nil
+        cachedStatusesAt = .distantPast
+        statusCacheLock.unlock()
+    }
+
+    private static func computeProviderStatuses(
+        home: URL,
+        environment: [String: String]
     ) -> [ProviderStatus] {
         let hubPath = AgentHubConstants.installedExecutablePath(home: home.path)
         return AgentHookCatalog.providers.map { provider in
@@ -91,6 +104,43 @@ enum AgentHookInstaller {
                 isUpToDate: current
             )
         }
+    }
+
+    static func providerStatuses(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [ProviderStatus] {
+        let defaultHome = FileManager.default.homeDirectoryForCurrentUser
+        guard home == defaultHome else {
+            return computeProviderStatuses(home: home, environment: environment)
+        }
+        let now = Date()
+        statusCacheLock.lock()
+        if let cached = cachedStatuses {
+            let expired = now.timeIntervalSince(cachedStatusesAt) >= statusCacheTTL
+            let shouldRefresh = expired && !statusRefreshInFlight
+            if shouldRefresh { statusRefreshInFlight = true }
+            statusCacheLock.unlock()
+            if shouldRefresh {
+                DispatchQueue.global(qos: .utility).async {
+                    let fresh = computeProviderStatuses(home: home, environment: environment)
+                    statusCacheLock.lock()
+                    cachedStatuses = fresh
+                    cachedStatusesAt = Date()
+                    statusRefreshInFlight = false
+                    statusCacheLock.unlock()
+                }
+            }
+            return cached
+        }
+        statusCacheLock.unlock()
+
+        let computed = computeProviderStatuses(home: home, environment: environment)
+        statusCacheLock.lock()
+        cachedStatuses = computed
+        cachedStatusesAt = Date()
+        statusCacheLock.unlock()
+        return computed
     }
 
     /// Providers that belong on this machine: every agent detected on disk or
@@ -242,6 +292,7 @@ enum AgentHookInstaller {
             )
             TmuxLog.destructive("installed \(item.provider.kind.rawValue) hooks into \(item.url.path)")
         }
+        invalidateStatusCache()
         return backups
     }
 
@@ -291,6 +342,7 @@ enum AgentHookInstaller {
             )
             TmuxLog.destructive("removed \(item.provider.kind.rawValue) hooks from \(item.url.path)")
         }
+        invalidateStatusCache()
         return backups
     }
 

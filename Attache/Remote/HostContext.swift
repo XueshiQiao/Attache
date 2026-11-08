@@ -364,26 +364,38 @@ final class HostContext {
         let serverArgv = transport.oneShotArgv(TmuxVersion.serverQuery)
         let binaryArgv = transport.oneShotArgv(["-V"])
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            func ask(_ argv: [String]) -> (status: Int32, answer: String, problem: String) {
+            func ask(_ argv: [String]) -> (status: Int32, answer: String, problem: String, timedOut: Bool) {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: argv[0])
                 process.arguments = Array(argv.dropFirst())
                 let out = Pipe(), err = Pipe()
+                process.standardInput = FileHandle.nullDevice
                 process.standardOutput = out
                 process.standardError = err
-                guard (try? process.run()) != nil else { return (-1, "", "") }
-                // The same deadline the Test Connection probe keeps: a remote
-                // shell that hangs after auth must not hold this thread and
-                // the child for ever.
-                DispatchQueue.global().asyncAfter(deadline: .now() + 20) {
-                    if process.isRunning { process.terminate() }
+                guard (try? process.run()) != nil else { return (-1, "", "", false) }
+                // A remote shell or half-open ssh mux socket that hangs after
+                // sleep/wake must not hold this thread and the child forever.
+                final class TimeoutFlag: @unchecked Sendable { var value = false }
+                let flag = TimeoutFlag()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 8) {
+                    if process.isRunning {
+                        flag.value = true
+                        process.terminate()
+                    }
                 }
-                let answer = String(decoding: out.fileHandleForReading.readDataToEndOfFile(),
-                                    as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                let problem = String(decoding: err.fileHandleForReading.readDataToEndOfFile(),
-                                     as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                let group = DispatchGroup()
+                let drain = DispatchQueue(label: "attache.probe.drain", attributes: .concurrent)
+                nonisolated(unsafe) var outData = Data()
+                nonisolated(unsafe) var errData = Data()
+                drain.async(group: group) { outData = out.fileHandleForReading.readDataToEndOfFile() }
+                drain.async(group: group) { errData = err.fileHandleForReading.readDataToEndOfFile() }
+                group.wait()
                 process.waitUntilExit()
-                return (process.terminationStatus, answer, problem)
+                let answer = String(decoding: outData, as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let problem = String(decoding: errData, as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return (process.terminationStatus, answer, problem, flag.value)
             }
             // The running server first — see `TmuxVersion` for why `-V` is
             // the wrong question while one exists. No server (`no server
@@ -396,10 +408,11 @@ final class HostContext {
             // `-V` too, whenever it can answer: the binary has to *match* the
             // server, and `TmuxServer` makes no control connection while it
             // does not (see `TmuxVersion`).
-            let binary = TmuxVersion.binaryMightAnswer(afterServerQueryExited: server.status)
+            let binary = (!server.timedOut && TmuxVersion.binaryMightAnswer(afterServerQueryExited: server.status))
                 ? ask(binaryArgv) : nil
             let reply = fromServer != nil ? server : binary ?? server
             let binaryText = binary.flatMap { $0.status == 0 ? TmuxVersion.bareText($0.answer) : nil }
+            let transportWedged = server.timedOut || binary?.timedOut == true || reply.status == 255
             TmuxLog.lifecycle(
                 "tmux server: \(fromServer != nil ? server.answer : "not answering (\(server.problem))")"
                     + " — binary: \(binary?.answer ?? "not asked")"
@@ -410,7 +423,7 @@ final class HostContext {
                     generation: generation, status: reply.status, version: reply.answer,
                     problem: reply.problem, fromServer: fromServer, binaryText: binaryText,
                     serverText: fromServer != nil ? TmuxVersion.bareText(server.answer) : nil,
-                    incompatible: incompatible
+                    incompatible: incompatible, transportWedged: transportWedged
                 )
             }
         }
@@ -418,13 +431,20 @@ final class HostContext {
 
     private func probeAnswered(
         generation: Int, status: Int32, version: String, problem: String,
-        fromServer: TmuxVersion?, binaryText: String?, serverText: String?, incompatible: Bool
+        fromServer: TmuxVersion?, binaryText: String?, serverText: String?,
+        incompatible: Bool, transportWedged: Bool = false
     ) {
         guard !retired, generation == probeGeneration, case .connecting = state else { return }
         // Belt to the generation's braces: a remote host's result only
         // counts while the master it rode is still up. The local host has
         // no pre-flight and no such condition.
         if let preflight, preflight.state != .up { return }
+        if transportWedged, let preflight {
+            preflight.cycleWedgedMaster(
+                reason: problem.isEmpty ? "tmux probe timed out over ssh" : problem
+            )
+            return
+        }
         guard status == 0,
               let parsed = fromServer ?? TmuxVersion.parse(version) ?? TmuxVersion.unnumbered(version)
         else {

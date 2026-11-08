@@ -533,6 +533,9 @@ final class RemoteAgentSetup {
             }
             return
         }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 15) {
+            if process.isRunning { process.terminate() }
+        }
         DispatchQueue.global(qos: .utility).async {
             let handle = input.fileHandleForWriting
             if let stdin { try? handle.write(contentsOf: stdin) }

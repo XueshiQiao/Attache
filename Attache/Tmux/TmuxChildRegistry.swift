@@ -75,6 +75,10 @@ nonisolated enum TmuxChildRegistry {
         .appendingPathComponent("control-clients")
 
     private static let lock = NSLock()
+    /// Serial background queue for `record` and `forget` so spawning two `ps`
+    /// children and acquiring `flock(LOCK_EX)` never runs synchronously on
+    /// `@MainActor` when sessions or SSH ControlMasters start/stop.
+    private static let registryQueue = DispatchQueue(label: "attache.child-registry", qos: .utility)
 
     /// Hold the file across a read-modify-write, against every other writer —
     /// including the ones in other processes.
@@ -114,37 +118,40 @@ nonisolated enum TmuxChildRegistry {
 
     /// Note a child immediately after `Process.run()` returns.
     ///
-    /// Written synchronously, for the same reason `TmuxLog` is: the interesting
-    /// case is always the run that never gets to flush anything.
+    /// Dispatched onto `registryQueue` so the two `ps` spawns (~330ms each on
+    /// a busy system) and the `flock` never block `@MainActor`.
     static func record(childPID: Int32, sessionID: String) {
-        // The start time is read here rather than derived, because it has to be
-        // the value a later `ps` will report for the same process — see
-        // `TmuxChildRecord.startedAt`. If it cannot be read there is nothing
-        // safe to write: a record without one can never be acted on.
-        guard let started = startTime(of: childPID) else {
-            TmuxLog.lifecycle(
-                "could not read the start time of pid \(childPID); it will not be"
-                    + " recorded, so a crash could leave it behind",
-                session: sessionID
+        let ownerPID = ProcessInfo.processInfo.processIdentifier
+        registryQueue.async {
+            // The start time is read here rather than derived, because it has to be
+            // the value a later `ps` will report for the same process — see
+            // `TmuxChildRecord.startedAt`. If it cannot be read there is nothing
+            // safe to write: a record without one can never be acted on.
+            guard let started = startTime(of: childPID) else {
+                TmuxLog.lifecycle(
+                    "could not read the start time of pid \(childPID); it will not be"
+                        + " recorded, so a crash could leave it behind",
+                    session: sessionID
+                )
+                return
+            }
+            // The command line as `ps` prints it, read now so a later sweep can
+            // compare bytes — the only match that survives the ssh transports.
+            // Unreadable is recorded as absent and the sweep falls back to the
+            // old shape test, which is only right for local children.
+            let command = ps(["-o", "command=", "-p", "\(childPID)"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let record = TmuxChildRecord(
+                ownerPID: ownerPID,
+                childPID: childPID, startedAt: started, sessionID: sessionID,
+                commandLine: (command?.isEmpty == false) ? command : nil
             )
-            return
-        }
-        // The command line as `ps` prints it, read now so a later sweep can
-        // compare bytes — the only match that survives the ssh transports.
-        // Unreadable is recorded as absent and the sweep falls back to the
-        // old shape test, which is only right for local children.
-        let command = ps(["-o", "command=", "-p", "\(childPID)"])?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let record = TmuxChildRecord(
-            ownerPID: ProcessInfo.processInfo.processIdentifier,
-            childPID: childPID, startedAt: started, sessionID: sessionID,
-            commandLine: (command?.isEmpty == false) ? command : nil
-        )
-        withFileLock {
-            var records = read()
-            records.removeAll { $0.childPID == childPID }
-            records.append(record)
-            write(records)
+            withFileLock {
+                var records = read()
+                records.removeAll { $0.childPID == childPID }
+                records.append(record)
+                write(records)
+            }
         }
     }
 
@@ -152,10 +159,12 @@ nonisolated enum TmuxChildRegistry {
     /// is correct without it — but a file that stays short is a file somebody
     /// will still be willing to read in six months.
     static func forget(childPID: Int32) {
-        withFileLock {
-            var records = read()
-            records.removeAll { $0.childPID == childPID }
-            write(records)
+        registryQueue.async {
+            withFileLock {
+                var records = read()
+                records.removeAll { $0.childPID == childPID }
+                write(records)
+            }
         }
     }
 
@@ -298,11 +307,16 @@ nonisolated enum TmuxChildRegistry {
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
         process.arguments = arguments
         let pipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return nil }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+            if process.isRunning { process.terminate() }
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
         let text = String(decoding: data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text

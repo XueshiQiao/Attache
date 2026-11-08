@@ -54,10 +54,28 @@ struct ClaudeCodeConversationProvider: AgentConversationProvider {
     private let transcriptExists: (String) -> Bool
     private let sourceFactory: (String) -> AgentConversationSource
 
-    /// The local machine's provider — the shape this file always had.
+    /// The local machine's provider — memoises existence checks per path for
+    /// 5 seconds so `locate` (which runs on `@MainActor` on every tmux
+    /// notification) does not repeatedly `stat` the same transcript file.
+    private static let existenceLock = NSLock()
+    nonisolated(unsafe) private static var existenceCache = [String: (exists: Bool, at: Date)]()
+
     init() {
         hostPrefix = ""
-        transcriptExists = { FileManager.default.fileExists(atPath: $0) }
+        transcriptExists = { path in
+            let now = Date()
+            Self.existenceLock.lock()
+            if let cached = Self.existenceCache[path], now.timeIntervalSince(cached.at) < 5 {
+                Self.existenceLock.unlock()
+                return cached.exists
+            }
+            Self.existenceLock.unlock()
+            let exists = FileManager.default.fileExists(atPath: path)
+            Self.existenceLock.lock()
+            Self.existenceCache[path] = (exists, now)
+            Self.existenceLock.unlock()
+            return exists
+        }
         sourceFactory = { ClaudeCodeConversationSource(path: $0) }
     }
 

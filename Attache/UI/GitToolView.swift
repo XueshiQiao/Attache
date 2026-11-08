@@ -613,14 +613,18 @@ final class GitToolView: NSView {
         return parts.count > 1 ? "\(quoted) \(parts[1])" : quoted
     }
 
+    private static var locatedCache = [String: String?]()
+
     /// The same walk `TmuxControlClient.locateTmux` does, for the same reason.
     private static func locate(_ program: String) -> String? {
+        if let cached = locatedCache[program] { return cached }
         let candidates = [
             "/opt/homebrew/bin/\(program)",
             "/usr/local/bin/\(program)",
             "/usr/bin/\(program)",
         ]
         for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            locatedCache[program] = path
             return path
         }
 
@@ -629,14 +633,24 @@ final class GitToolView: NSView {
         let quoted = "'" + program.replacingOccurrences(of: "'", with: "'\\''") + "'"
         which.arguments = ["-lc", "command -v \(quoted)"]
         let pipe = Pipe()
+        which.standardInput = FileHandle.nullDevice
         which.standardOutput = pipe
         which.standardError = FileHandle.nullDevice
         guard (try? which.run()) != nil else { return nil }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+            if which.isRunning { which.terminate() }
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         which.waitUntilExit()
+        guard which.terminationStatus == 0 else {
+            locatedCache[program] = .some(nil)
+            return nil
+        }
         let path = String(decoding: data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return path.isEmpty ? nil : path
+        let resolved = path.isEmpty ? nil : path
+        locatedCache[program] = .some(resolved)
+        return resolved
     }
 
     /// libghostty holds its delegate unowned-unsafe, so the conformance lives

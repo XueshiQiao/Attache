@@ -712,29 +712,43 @@ final class TmuxSessionConnection {
         // Permissions at creation rather than afterwards: setting them as a
         // second step leaves the text world-readable for the moment in
         // between, and leaves a file behind if that step is the one that fails.
-        guard FileManager.default.createFile(
-            atPath: path, contents: Data(text.utf8),
-            attributes: [.posixPermissions: 0o600]
-        ) else { return false }
-        pasteFilesInFlight.insert(url)
-
+        // Written on a background queue so a multi-megabyte paste never blocks
+        // `@MainActor` on disk creation.
+        let payload = Data(text.utf8)
         let buffer = "attache-paste-\(token)"
-        client.run("load-buffer -b \(buffer) '\(path)'") { [weak self] _, failed in
-            // Deleted whatever happened. tmux has finished with the file by the
-            // time it answers, and a paste that failed is not a reason to leave
-            // the user's clipboard sitting in the temporary directory.
-            self?.discardPasteFile(url)
-            guard let self, !failed else { return }
-            self.client.run("paste-buffer -p -d -b \(buffer) -t \(paneID)") { [weak self] _, failed in
-                guard failed else { return }
-                // `-d` deletes the buffer *as part of pasting*, so a paste that
-                // never happened is also a buffer that was never deleted — the
-                // user's clipboard left sitting in the tmux server, readable by
-                // anything that can reach it, for as long as the server lives.
-                // The pane really can be gone by now: naming it and pasting to
-                // it are a round trip apart, and a drop names a pane the
-                // pointer was over rather than one anybody is typing in.
-                self?.client.send("delete-buffer -b \(buffer)")
+        pasteFilesInFlight.insert(url)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let created = FileManager.default.createFile(
+                atPath: path, contents: payload,
+                attributes: [.posixPermissions: 0o600]
+            )
+            DispatchQueue.main.async {
+                guard let self else {
+                    try? FileManager.default.removeItem(at: url)
+                    return
+                }
+                guard created else {
+                    self.pasteFilesInFlight.remove(url)
+                    return
+                }
+                self.client.run("load-buffer -b \(buffer) '\(path)'") { [weak self] _, failed in
+                    // Deleted whatever happened. tmux has finished with the file by the
+                    // time it answers, and a paste that failed is not a reason to leave
+                    // the user's clipboard sitting in the temporary directory.
+                    self?.discardPasteFile(url)
+                    guard let self, !failed else { return }
+                    self.client.run("paste-buffer -p -d -b \(buffer) -t \(paneID)") { [weak self] _, failed in
+                        guard failed else { return }
+                        // `-d` deletes the buffer *as part of pasting*, so a paste that
+                        // never happened is also a buffer that was never deleted — the
+                        // user's clipboard left sitting in the tmux server, readable by
+                        // anything that can reach it, for as long as the server lives.
+                        // The pane really can be gone by now: naming it and pasting to
+                        // it are a round trip apart, and a drop names a pane the
+                        // pointer was over rather than one anybody is typing in.
+                        self?.client.send("delete-buffer -b \(buffer)")
+                    }
+                }
             }
         }
         return true
@@ -742,7 +756,9 @@ final class TmuxSessionConnection {
 
     private func discardPasteFile(_ url: URL) {
         pasteFilesInFlight.remove(url)
-        try? FileManager.default.removeItem(at: url)
+        DispatchQueue.global(qos: .utility).async {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     /// The clipboard never touches a disk on either machine when the paste
@@ -817,6 +833,9 @@ final class TmuxSessionConnection {
         } catch {
             showStatusMessage("Attaché: paste failed — ssh would not start")
             return true
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
+            if process.isRunning { process.terminate() }
         }
         // Written after run, on a utility queue: a pipe's buffer is 64KB and
         // a larger clipboard would deadlock a synchronous write against a

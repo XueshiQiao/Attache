@@ -79,6 +79,7 @@ nonisolated final class RemoteHelper {
     private var buffer = Data()
     private var stderrTail = Data()
     private var helloSeen = false
+    private let stateLock = NSLock()
     private var up = false
     private var shouldRun = false
     private var restartDelay: TimeInterval = 1
@@ -394,6 +395,13 @@ nonisolated final class RemoteHelper {
         // The script itself is 4KB of the argv; log the transport half only.
         let shown = argv.prefix { !$0.contains("PROTO=") }.joined(separator: " ")
         TmuxLog.lifecycle("helper channel spawning: \(shown) <script>", session: label)
+        // If the SSH mux channel connects into a half-open pre-sleep TCP
+        // stream and never delivers `HELLO`, tear down after 10s so the
+        // helper does not sit silently half-spawned forever.
+        queue.asyncAfter(deadline: .now() + 10) { [weak self, weak child] in
+            guard let self, let child, self.process === child, !self.helloSeen else { return }
+            self.channelFailed("helper did not send HELLO within 10s")
+        }
     }
 
     /// Every failure funnels here: fail everything in flight, tell the owner,
@@ -430,22 +438,30 @@ nonisolated final class RemoteHelper {
 
     private func setUp(_ nowUp: Bool) {
         dispatchPrecondition(condition: .onQueue(queue))
-        guard up != nowUp else { return }
+        stateLock.lock()
+        let changed = (up != nowUp)
         up = nowUp
+        stateLock.unlock()
+        guard changed else { return }
         let callback = onStateChange
         DispatchQueue.main.async { callback?(nowUp) }
     }
 
-    /// True while the channel has a live, HELLO-verified process. Answered on
-    /// the helper's own queue, so cheap enough to ask per request.
+    /// True while the channel has a live, HELLO-verified process. Read under
+    /// `stateLock` rather than `queue.sync` so UI callers on `@MainActor`
+    /// never block behind a pipe write on `queue`.
     var isUp: Bool {
-        queue.sync { up }
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return up
     }
 
     /// Why the channel will not come back, when it will not. `nil` while
     /// restarting is still worth trying.
     var wedged: String? {
-        queue.sync { wedgedReason }
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return wedgedReason
     }
 
     // MARK: - Request plumbing
@@ -544,10 +560,13 @@ nonisolated final class RemoteHelper {
             guard line.hasPrefix("HELLO ") else { return }
             let version = Int(line.dropFirst("HELLO ".count)) ?? -1
             guard version == RemoteHelperScript.protocolVersion else {
-                wedgedReason = "helper protocol \(version), this build speaks"
+                let reason = "helper protocol \(version), this build speaks"
                     + " \(RemoteHelperScript.protocolVersion) — is another build of this"
                     + " app sharing the host?"
-                tearDown(reason: wedgedReason!)
+                stateLock.lock()
+                wedgedReason = reason
+                stateLock.unlock()
+                tearDown(reason: reason)
                 return
             }
             helloSeen = true

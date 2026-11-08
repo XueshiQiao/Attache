@@ -170,8 +170,39 @@ final class SettingsFile {
     /// it rather than replace it.
     private var lines: [String] = []
     private var loaded = false
+    /// Modification date of `Self.url` at our last read or write, plus the wall
+    /// clock time we last checked, so continuous slider drags do not re-read
+    /// and re-parse `~/.config/attache.toml` on the main thread 120 times/sec.
+    private var lastKnownMtime: Date?
+    private var lastDiskCheckAt: Date = .distantPast
+    /// Serial background queue for coalesced non-blocking scalar setting writes.
+    private static let diskQueue = DispatchQueue(label: "attache.settings-disk", qos: .utility)
+    private var pendingAsyncWriteGeneration = 0
 
     // MARK: - Reading
+
+    private static func diskMtime(of url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
+
+    private func reloadIfExternallyModified() {
+        // Under an env override (`HostBlocksCheck`), always reload synchronously
+        // so synthetic test writes that share a 1s mtime quantum are seen.
+        guard Self.overrideURL == nil else {
+            reload()
+            return
+        }
+        // If an async write of our own is still in flight on `diskQueue`, our
+        // in-memory `lines` are newer than the disk; do not clobber them.
+        guard pendingAsyncWriteGeneration == 0 else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastDiskCheckAt) >= 1.0 else { return }
+        lastDiskCheckAt = now
+        let currentMtime = Self.diskMtime(of: Self.url)
+        if currentMtime != lastKnownMtime {
+            reload()
+        }
+    }
 
     private func loadIfNeeded() {
         guard !loaded else { return }
@@ -236,6 +267,8 @@ final class SettingsFile {
             lines = text.components(separatedBy: "\n")
             parse()
             activeFileHasExisted = true
+            lastKnownMtime = Self.diskMtime(of: Self.url)
+            lastDiskCheckAt = Date()
             return .ok
         } catch let error as NSError
             where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError
@@ -390,9 +423,9 @@ final class SettingsFile {
 
     func set(_ value: Any?, forKey key: String) {
         loadIfNeeded()
-        // Whatever is on disk right now, including anything edited by hand
-        // since this app read it. See `reload`.
-        reload()
+        // Pick up any external hand-edit since our last read/write without
+        // re-reading the file on every frame of a 120 Hz slider drag.
+        reloadIfExternallyModified()
         guard let value else {
             values.removeValue(forKey: key)
             writeLine(nil, forKey: key)
@@ -423,7 +456,7 @@ final class SettingsFile {
 
     func setQuickActions(_ actions: [QuickAction]) {
         loadIfNeeded()
-        reload()
+        reloadIfExternallyModified()
         quickActions = actions
         set(true, forKey: "quick_actions_edited")
         rewriteQuickActionBlocks()
@@ -663,7 +696,7 @@ final class SettingsFile {
     /// reconnects, and the disk still holds yesterday's block, so the whole
     /// change silently reverses on the next launch.
     private func flushHostEdit(rollbackTo snapshot: [String]) -> String? {
-        if let failure = flush() {
+        if let failure = flush(synchronously: true) {
             lines = snapshot
             parse()
             return "could not write \(Self.url.path): \(failure)"
@@ -805,22 +838,49 @@ final class SettingsFile {
     /// The scalar-setting writers keep their old fire-and-forget shape — the
     /// log line was always their only witness — so the result is discardable.
     @discardableResult
-    private func flush() -> String? {
+    private func flush(synchronously: Bool = false) -> String? {
         let text = lines.joined(separator: "\n")
         let url = Self.url
-        do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            try text.write(to: url, atomically: true, encoding: .utf8)
-            // The write is how the file first comes to exist on a fresh
-            // install, and existence is what retires legacy adoption.
-            activeFileHasExisted = true
-            return nil
-        } catch {
-            TmuxLog.lifecycle("could not write \(url.path): \(error)")
-            return error.localizedDescription
+        activeFileHasExisted = true
+        if synchronously || Self.overrideURL != nil {
+            var writeError: String?
+            Self.diskQueue.sync {
+                do {
+                    try FileManager.default.createDirectory(
+                        at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                    )
+                    try text.write(to: url, atomically: true, encoding: .utf8)
+                } catch {
+                    TmuxLog.lifecycle("could not write \(url.path): \(error)")
+                    writeError = error.localizedDescription
+                }
+            }
+            pendingAsyncWriteGeneration = 0
+            lastKnownMtime = Self.diskMtime(of: url)
+            lastDiskCheckAt = Date()
+            return writeError
         }
+
+        pendingAsyncWriteGeneration &+= 1
+        let gen = pendingAsyncWriteGeneration
+        Self.diskQueue.async { [weak self] in
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                try text.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                TmuxLog.lifecycle("could not write \(url.path): \(error)")
+            }
+            let mtime = Self.diskMtime(of: url)
+            DispatchQueue.main.async {
+                guard let self, self.pendingAsyncWriteGeneration == gen else { return }
+                self.pendingAsyncWriteGeneration = 0
+                self.lastKnownMtime = mtime
+                self.lastDiskCheckAt = Date()
+            }
+        }
+        return nil
     }
 
     // MARK: - Migration

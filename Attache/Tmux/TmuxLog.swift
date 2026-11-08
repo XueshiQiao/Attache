@@ -150,6 +150,9 @@ enum TmuxLog {
     // MARK: - Writing
 
     private static let lock = NSLock()
+    /// Serial background queue so stdout/file writes and log rotation never
+    /// block `@MainActor` when tmux commands or UI lifecycle events fire.
+    private static let writeQueue = DispatchQueue(label: "attache.tmux-log", qos: .utility)
     private static var handle: FileHandle?
     private static var bytesWritten: UInt64 = 0
 
@@ -185,31 +188,34 @@ enum TmuxLog {
     }()
 
     private static func emit(_ kind: Kind, session: String, caller: String, text: String) {
-        let line = "[\(stamp.string(from: Date()))] [\(kind.rawValue)] "
-            + "[\(session)] \(caller) — \(text)\n"
+        let now = Date()
+        writeQueue.async {
+            let line = "[\(stamp.string(from: now))] [\(kind.rawValue)] "
+                + "[\(session)] \(caller) — \(text)\n"
 
-        // stdout too: CLAUDE.md's documented way to run this app is the binary
-        // directly, with stdout attached, and that is where anyone watching a
-        // live repro is already looking.
-        //
-        // `try?` and not the older `write(_:)`, which raises. And the raise was
-        // not even the dangerous half: a closed reader delivers SIGPIPE, which
-        // kills the process before any error can be returned, so
-        // `Attache | head -1` — a completely ordinary thing to type — took the
-        // whole app down at the second log line. `ignoreBrokenPipes` is what
-        // actually fixes that; this call just stops the leftover EPIPE from
-        // becoming an exception.
-        Self.ignoreBrokenPipes()
-        try? FileHandle.standardOutput.write(contentsOf: Data(line.utf8))
+            // stdout too: CLAUDE.md's documented way to run this app is the binary
+            // directly, with stdout attached, and that is where anyone watching a
+            // live repro is already looking.
+            //
+            // `try?` and not the older `write(_:)`, which raises. And the raise was
+            // not even the dangerous half: a closed reader delivers SIGPIPE, which
+            // kills the process before any error can be returned, so
+            // `Attache | head -1` — a completely ordinary thing to type — took the
+            // whole app down at the second log line. `ignoreBrokenPipes` is what
+            // actually fixes that; this call just stops the leftover EPIPE from
+            // becoming an exception.
+            Self.ignoreBrokenPipes()
+            let data = Data(line.utf8)
+            try? FileHandle.standardOutput.write(contentsOf: data)
 
-        lock.lock()
-        defer { lock.unlock() }
-        guard let handle = openedHandle() else { return }
-        let data = Data(line.utf8)
-        // Logging must never be the reason the app fails.
-        try? handle.write(contentsOf: data)
-        bytesWritten += UInt64(data.count)
-        if bytesWritten > sizeLimit { rotate() }
+            lock.lock()
+            defer { lock.unlock() }
+            guard let handle = openedHandle() else { return }
+            // Logging must never be the reason the app fails.
+            try? handle.write(contentsOf: data)
+            bytesWritten += UInt64(data.count)
+            if bytesWritten > sizeLimit { rotate() }
+        }
     }
 
     /// Caller holds `lock`.

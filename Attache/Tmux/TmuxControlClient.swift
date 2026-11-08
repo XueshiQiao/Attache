@@ -647,19 +647,50 @@ final class TmuxControlClient {
     /// or nil when it did not answer. Asked again whenever a control
     /// connection is about to be made, because the binary can be replaced
     /// under a running app (`brew upgrade`) while the server stays.
-    nonisolated static func binaryVersion(transport: TmuxTransport) -> String? {
-        let argv = transport.oneShotArgv(["-V"])
+    /// Run a one-shot command with a strict deadline and concurrent pipe drain
+    /// so a wedged SSH ControlMaster or stalled shell can never hang the caller
+    /// or permanently lock `TmuxServer.listingInFlight`.
+    nonisolated private static func runOneShot(
+        argv: [String], timeout: TimeInterval
+    ) -> (status: Int32, stdout: Data, stderr: Data, launchError: Error?, timedOut: Bool) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: argv[0])
         process.arguments = Array(argv.dropFirst())
         let pipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.standardError = errorPipe
+        do {
+            try process.run()
+        } catch {
+            return (-1, Data(), Data(), error, false)
+        }
+        final class TimeoutFlag: @unchecked Sendable { var value = false }
+        let flag = TimeoutFlag()
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+            if process.isRunning {
+                flag.value = true
+                process.terminate()
+            }
+        }
+        let group = DispatchGroup()
+        let drain = DispatchQueue(label: "attache.oneshot.drain", attributes: .concurrent)
+        nonisolated(unsafe) var data = Data()
+        nonisolated(unsafe) var errorData = Data()
+        drain.async(group: group) { data = pipe.fileHandleForReading.readDataToEndOfFile() }
+        drain.async(group: group) { errorData = errorPipe.fileHandleForReading.readDataToEndOfFile() }
+        group.wait()
         process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        let text = TmuxVersion.bareText(String(decoding: data, as: UTF8.self))
+        return (process.terminationStatus, data, errorData, nil, flag.value)
+    }
+
+    nonisolated static func binaryVersion(transport: TmuxTransport) -> String? {
+        let argv = transport.oneShotArgv(["-V"])
+        let timeout: TimeInterval = transport.pathsAreLocal ? 2.5 : 5.0
+        let result = runOneShot(argv: argv, timeout: timeout)
+        guard result.launchError == nil, result.status == 0 else { return nil }
+        let text = TmuxVersion.bareText(String(decoding: result.stdout, as: UTF8.self))
         return text.isEmpty ? nil : text
     }
 
@@ -668,33 +699,20 @@ final class TmuxControlClient {
     /// different problem, reported elsewhere.
     nonisolated static func serverDiffersFromBinary(transport: TmuxTransport) -> Bool {
         let argv = transport.oneShotArgv(TmuxVersion.serverQuery)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: argv[0])
-        process.arguments = Array(argv.dropFirst())
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return false }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let answer = String(decoding: data, as: UTF8.self)
-        guard process.terminationStatus == 0, TmuxVersion.parseServerAnswer(answer) != nil,
+        let timeout: TimeInterval = transport.pathsAreLocal ? 2.5 : 5.0
+        let result = runOneShot(argv: argv, timeout: timeout)
+        let answer = String(decoding: result.stdout, as: UTF8.self)
+        guard result.launchError == nil, result.status == 0,
+              TmuxVersion.parseServerAnswer(answer) != nil,
               let binary = binaryVersion(transport: transport) else { return false }
         return TmuxVersion.serverDiffers(serverText: TmuxVersion.bareText(answer), binaryText: binary)
     }
 
     nonisolated static func listSessions(transport: TmuxTransport) -> SessionListResult {
         let argv = transport.oneShotArgv(["list-sessions", "-F", TmuxSessionListing.format])
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: argv[0])
-        process.arguments = Array(argv.dropFirst())
-        let pipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = errorPipe
-        do {
-            try process.run()
-        } catch {
+        let timeout: TimeInterval = transport.pathsAreLocal ? 2.5 : 6.0
+        let result = runOneShot(argv: argv, timeout: timeout)
+        if let error = result.launchError {
             // The system's reason rides along, verbatim. A bare "would not
             // start" once cost a whole afternoon: the launch that hit it on
             // an overloaded machine (2026-08-26) left nothing to say whether
@@ -703,12 +721,12 @@ final class TmuxControlClient {
             // moment had passed.
             return .failed("\(argv[0]) would not start: \(error.localizedDescription)")
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        if result.timedOut {
+            return .failed("\(argv[0]) timed out after \(Int(timeout))s")
+        }
 
-        if process.terminationStatus != 0 {
-            let message = String(decoding: errorData, as: UTF8.self)
+        if result.status != 0 {
+            let message = String(decoding: result.stderr, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             // Anchored to the two complete connection-error forms tmux
             // prints, not substring-matched. An unanchored ENOENT test
@@ -724,7 +742,7 @@ final class TmuxControlClient {
             // stderr says, "the host is unreachable" must never be read as
             // "the server has no sessions", because `.noServer` is the answer
             // that tears down every connection.
-            if process.terminationStatus != 255,
+            if result.status != 255,
                message.hasPrefix("no server running on")
                || (message.hasPrefix("error connecting to")
                    && message.contains("No such file or directory"))
@@ -733,11 +751,11 @@ final class TmuxControlClient {
             }
             return .failed(
                 message.isEmpty
-                    ? "\(argv[0]) exited with status \(process.terminationStatus)" : message
+                    ? "\(argv[0]) exited with status \(result.status)" : message
             )
         }
 
-        let sessions = TmuxSessionListing.parse(listOutput: String(decoding: data, as: UTF8.self))
+        let sessions = TmuxSessionListing.parse(listOutput: String(decoding: result.stdout, as: UTF8.self))
         return .sessions(Self.ordered(sessions))
     }
 
@@ -772,25 +790,20 @@ final class TmuxControlClient {
         var words = ["new-session", "-d"]
         if let name { words += ["-s", name] }
         let argv = transport.oneShotArgv(words)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: argv[0])
-        process.arguments = Array(argv.dropFirst())
-        let errorPipe = Pipe()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errorPipe
-        do {
-            try process.run()
-        } catch {
+        let timeout: TimeInterval = transport.pathsAreLocal ? 2.5 : 6.0
+        let result = runOneShot(argv: argv, timeout: timeout)
+        if let error = result.launchError {
             // Same rule as `listSessions`: the system's reason survives.
             return "\(argv[0]) would not start: \(error.localizedDescription)"
         }
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus != 0 else { return nil }
-        let message = String(decoding: errorData, as: UTF8.self)
+        if result.timedOut {
+            return "\(argv[0]) timed out after \(Int(timeout))s"
+        }
+        guard result.status != 0 else { return nil }
+        let message = String(decoding: result.stderr, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return message.isEmpty
-            ? "\(argv[0]) exited with status \(process.terminationStatus)" : message
+            ? "\(argv[0]) exited with status \(result.status)" : message
     }
 
     /// Locate tmux. `Process` does not consult PATH, and a GUI app launched
@@ -807,16 +820,10 @@ final class TmuxControlClient {
             return path
         }
 
-        let which = Process()
-        which.executableURL = URL(fileURLWithPath: "/bin/sh")
-        which.arguments = ["-lc", "command -v tmux"]
-        let pipe = Pipe()
-        which.standardOutput = pipe
-        which.standardError = FileHandle.nullDevice
-        guard (try? which.run()) != nil else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        which.waitUntilExit()
-        let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = runOneShot(argv: ["/bin/sh", "-lc", "command -v tmux"], timeout: 2.5)
+        guard result.launchError == nil, result.status == 0 else { return nil }
+        let path = String(decoding: result.stdout, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return path.isEmpty ? nil : path
     }
 }

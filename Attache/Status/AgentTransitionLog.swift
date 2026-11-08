@@ -127,23 +127,27 @@ enum AgentTransitionLog {
         lastStateByPane.removeValue(forKey: paneID)
     }
 
-    private static func append(_ data: Data, to url: URL) {
-        let manager = FileManager.default
-        do {
-            try manager.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-        } catch { return }
+    private static let writeQueue = DispatchQueue(label: "attache.transition-log", qos: .utility)
 
-        if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            // Appending by seeking rather than reading and rewriting: these
-            // files are meant to be tailed while the app runs, and a rewrite
-            // would break anything watching.
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-        } else {
-            try? data.write(to: url, options: [.atomic])
+    private static func append(_ data: Data, to url: URL) {
+        writeQueue.async {
+            let manager = FileManager.default
+            do {
+                try manager.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+            } catch { return }
+
+            if let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                // Appending by seeking rather than reading and rewriting: these
+                // files are meant to be tailed while the app runs, and a rewrite
+                // would break anything watching.
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: url, options: [.atomic])
+            }
         }
     }
 }

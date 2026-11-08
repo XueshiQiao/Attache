@@ -63,11 +63,12 @@ enum TmuxStatusOption {
         return run(transport.oneShotArgv(["show-options", "-gv", option]))
     }
 
-    private static func run(_ argv: [String]) -> String {
+    private static func run(_ argv: [String], timeout: TimeInterval = 2.5) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: argv[0])
         process.arguments = Array(argv.dropFirst())
         let pipe = Pipe()
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         do {
@@ -75,8 +76,12 @@ enum TmuxStatusOption {
         } catch {
             return ""
         }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+            if process.isRunning { process.terminate() }
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return "" }
         return String(decoding: data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }

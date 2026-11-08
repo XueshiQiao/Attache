@@ -219,6 +219,8 @@ enum GhosttyTerminfo {
             }
         )
         launchDecision = decision
+        cachedMachineTerm = decision.term ?? decideForThisMachine(entryExists: entryExists).term
+        hasCachedMachineTerm = true
         return decision
     }
 
@@ -232,6 +234,8 @@ enum GhosttyTerminfo {
     ///
     /// Written once, before the first surface, and only read afterwards.
     nonisolated(unsafe) private(set) static var launchDecision = Decision.leaveAlone
+    nonisolated(unsafe) private static var cachedMachineTerm: String?
+    nonisolated(unsafe) private static var hasCachedMachineTerm = false
 
     // MARK: - The guard
 
@@ -276,11 +280,17 @@ enum GhosttyTerminfo {
     /// rather than cached because it is a handful of `access` calls and the
     /// next pane should get the current truth.
     static func termForSurface(
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        entryExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+        environment: [String: String]? = nil,
+        entryExists: ((String) -> Bool)? = nil
     ) -> String? {
         if let pinned = launchDecision.term { return pinned }
-        return decideForThisMachine(environment: environment, entryExists: entryExists).term
+        if environment == nil, entryExists == nil, hasCachedMachineTerm {
+            return cachedMachineTerm
+        }
+        return decideForThisMachine(
+            environment: environment ?? ProcessInfo.processInfo.environment,
+            entryExists: entryExists ?? { FileManager.default.fileExists(atPath: $0) }
+        ).term
     }
 
     /// The same decision against the machine this is running on.

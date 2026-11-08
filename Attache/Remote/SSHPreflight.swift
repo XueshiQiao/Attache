@@ -3,6 +3,7 @@
 //  Attache
 //
 
+import AppKit
 import Foundation
 
 /// The one ssh connection per host that authenticates: a `-N` ControlMaster
@@ -79,6 +80,11 @@ final class SSHPreflight {
     private var retryDelay: TimeInterval = 1
     private var retriesRemaining = SSHPreflight.automaticRetries
     private var checkTimer: Timer?
+    private var checkInFlight = false
+    private var wakeObserver: NSObjectProtocol?
+    /// Incremented whenever the current connection attempt or wake cycle
+    /// invalidates in-flight `-O check` callbacks.
+    private var generation = 0
     /// Written from the pipe's own reader queue, read on the main actor when
     /// the master exits — the lock is the synchronisation, so these two step
     /// outside the class's isolation on purpose.
@@ -88,6 +94,13 @@ final class SSHPreflight {
     init(target: SSHTarget, label: String) {
         self.target = target
         self.label = label
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleWake()
+            }
+        }
     }
 
     func start() {
@@ -103,20 +116,64 @@ final class SSHPreflight {
         retainCount = max(0, retainCount - 1)
         guard retainCount == 0 else { return }
         shouldRun = false
+        generation &+= 1
         checkTimer?.invalidate()
         checkTimer = nil
-        if let master, master.isRunning, !adopted {
-            TmuxChildRegistry.forget(childPID: master.processIdentifier)
-            master.terminate()
-        }
-        master = nil
+        checkInFlight = false
+        tearDownMaster(includeAdopted: false)
         state = .idle
+    }
+
+    /// Tear down our master process (or ask an adopted one to exit when
+    /// cycling a wedged socket) and unlink the ControlPath so subsequent
+    /// commands never ride a half-open pre-sleep TCP blackhole.
+    private func tearDownMaster(includeAdopted: Bool) {
+        let wasAdopted = adopted
+        adopted = false
+        if let child = master {
+            master = nil
+            let pid = child.processIdentifier
+            TmuxChildRegistry.forget(childPID: pid)
+            if child.isRunning {
+                child.terminate()
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) {
+                    if kill(pid, 0) == 0 {
+                        kill(pid, SIGKILL)
+                    }
+                }
+            }
+        } else if wasAdopted && includeAdopted {
+            let argv = [
+                target.sshPath,
+                "-o", "ControlPath=\(target.controlPath)",
+                "-O", "exit", "--", target.destination,
+            ]
+            DispatchQueue.global(qos: .utility).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: argv[0])
+                process.arguments = Array(argv.dropFirst())
+                process.standardInput = FileHandle.nullDevice
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                if (try? process.run()) != nil {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
+                        if process.isRunning { process.terminate() }
+                    }
+                    process.waitUntilExit()
+                }
+            }
+        }
+        if !wasAdopted || includeAdopted {
+            unlink(target.controlPath)
+        }
     }
 
     /// Ask ssh whether the master answers, off the main thread; `-O check`
     /// only touches the local socket, but a synchronous `Process` wait on the
-    /// main thread is a habit this codebase does not want.
+    /// main thread is a habit this codebase does not want — and a wedged master
+    /// socket after sleep can stall `-O check`, so a 2.5s timeout terminates it.
     private func check(_ completion: @escaping @MainActor (Bool) -> Void) {
+        let expectedGeneration = generation
         let argv = [
             target.sshPath,
             "-o", "ControlPath=\(target.controlPath)",
@@ -126,13 +183,23 @@ final class SSHPreflight {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: argv[0])
             process.arguments = Array(argv.dropFirst())
+            process.standardInput = FileHandle.nullDevice
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
-            let alive = (try? process.run()) != nil && {
+            let alive: Bool
+            if (try? process.run()) != nil {
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2.5) {
+                    if process.isRunning { process.terminate() }
+                }
                 process.waitUntilExit()
-                return process.terminationStatus == 0
-            }()
-            DispatchQueue.main.async { completion(alive) }
+                alive = process.terminationStatus == 0
+            } else {
+                alive = false
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation == expectedGeneration else { return }
+                completion(alive)
+            }
         }
     }
 
@@ -225,7 +292,7 @@ final class SSHPreflight {
             guard let self, self.shouldRun else { return }
             if ready { return self.becameReady() }
             guard Date() < deadline else {
-                self.master?.terminate()
+                self.tearDownMaster(includeAdopted: true)
                 return self.failed("ssh master did not become ready in 15s")
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
@@ -247,12 +314,19 @@ final class SSHPreflight {
         // honest; 10s is far inside the keepalive window the master itself
         // uses to notice a dead peer.
         checkTimer?.invalidate()
+        checkInFlight = false
         checkTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.state == .up else { return }
+                guard let self, self.state == .up, !self.checkInFlight else { return }
+                self.checkInFlight = true
                 self.check { [weak self] alive in
-                    guard let self, self.state == .up else { return }
-                    if !alive { self.failed("ssh master stopped answering") }
+                    guard let self else { return }
+                    self.checkInFlight = false
+                    guard self.state == .up else { return }
+                    if !alive {
+                        self.tearDownMaster(includeAdopted: true)
+                        self.failed("ssh master stopped answering")
+                    }
                 }
             }
         }
@@ -306,9 +380,51 @@ final class SSHPreflight {
     /// the person saying "the machine should be back", and that claim earns
     /// a fresh round of patience.
     func retryNow() {
-        guard shouldRun, case .down = state else { return }
+        guard shouldRun else { return }
+        switch state {
+        case .down:
+            retryDelay = 1
+            retriesRemaining = Self.automaticRetries
+            connect()
+        case .connecting, .up, .idle:
+            break
+        }
+    }
+
+    /// Called when a multiplexed command over a supposedly `.up` master fails at
+    /// the ssh transport layer (timeout or exit 255), or when the user chooses
+    /// Reconnect. `-O check` only touches the local Unix socket, so a half-open
+    /// TCP connection after sleep/reboot looks `.up` locally until the master
+    /// is cycled.
+    func cycleWedgedMaster(reason: String) {
+        guard shouldRun else { return }
+        TmuxLog.lifecycle("cycling wedged ssh master (\(reason))", session: label)
+        generation &+= 1
+        checkTimer?.invalidate()
+        checkTimer = nil
+        checkInFlight = false
+        tearDownMaster(includeAdopted: true)
         retryDelay = 1
         retriesRemaining = Self.automaticRetries
         connect()
+    }
+
+    private func handleWake() {
+        guard shouldRun else { return }
+        TmuxLog.lifecycle("mac woke from sleep — cycling ssh master", session: label)
+        generation &+= 1
+        checkTimer?.invalidate()
+        checkTimer = nil
+        checkInFlight = false
+        retryScheduled = false
+        tearDownMaster(includeAdopted: true)
+        retryDelay = 1
+        retriesRemaining = Self.automaticRetries
+        state = .connecting
+        let wakeGeneration = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self, self.shouldRun, self.generation == wakeGeneration else { return }
+            self.connect()
+        }
     }
 }

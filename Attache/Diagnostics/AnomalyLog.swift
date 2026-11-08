@@ -26,6 +26,9 @@ enum AnomalyLog {
     static let snapshotCap = 20
 
     private static let lock = NSLock()
+    /// Serial background queue so anomaly file writes, JSON snapshot writes,
+    /// and directory pruning never block `@MainActor`.
+    private static let writeQueue = DispatchQueue(label: "attache.anomaly-log", qos: .utility)
     private static var handle: FileHandle?
     private static var bytesWritten: UInt64 = 0
 
@@ -54,17 +57,20 @@ enum AnomalyLog {
     /// what keeps the first line greppable while still carrying the
     /// disagreement and the snapshot name.
     static func record(kind: String, session: String, line: String, detail: String) {
-        let text = "[\(stamp.string(from: Date()))] [\(kind)] [\(session)] \(line)\n"
-            + "    \(detail)\n"
-        lock.lock()
-        defer { lock.unlock() }
-        guard let handle = openedHandle() else { return }
-        // Logging must never be the reason the app fails — same stance as
-        // `TmuxLog`, same `try?`.
-        let data = Data(text.utf8)
-        try? handle.write(contentsOf: data)
-        bytesWritten += UInt64(data.count)
-        if bytesWritten > sizeLimit { rotate() }
+        let now = Date()
+        writeQueue.async {
+            let text = "[\(stamp.string(from: now))] [\(kind)] [\(session)] \(line)\n"
+                + "    \(detail)\n"
+            lock.lock()
+            defer { lock.unlock() }
+            guard let handle = openedHandle() else { return }
+            // Logging must never be the reason the app fails — same stance as
+            // `TmuxLog`, same `try?`.
+            let data = Data(text.utf8)
+            try? handle.write(contentsOf: data)
+            bytesWritten += UInt64(data.count)
+            if bytesWritten > sizeLimit { rotate() }
+        }
     }
 
     /// Caller holds `lock`. Mirrors `TmuxLog.rotate`, one generation kept.
@@ -91,23 +97,33 @@ enum AnomalyLog {
     }
 
     /// Write one snapshot under a name from `snapshotName(kind:)`, enforcing
-    /// the cap. Safe off the main queue; nothing here touches shared state.
+    /// the cap. Dispatched onto `writeQueue` so file I/O and directory pruning
+    /// never touch the main thread.
     static func writeSnapshot(named name: String, payload: [String: Any]) {
-        let url = snapshotDirectory.appendingPathComponent(name)
-        try? FileManager.default.createDirectory(
-            at: snapshotDirectory, withIntermediateDirectories: true
-        )
-        if let data = try? JSONSerialization.data(
+        let data = try? JSONSerialization.data(
             withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]
-        ) {
-            try? data.write(to: url)
+        )
+        writeQueue.async {
+            let url = snapshotDirectory.appendingPathComponent(name)
+            try? FileManager.default.createDirectory(
+                at: snapshotDirectory, withIntermediateDirectories: true
+            )
+            if let data {
+                try? data.write(to: url)
+            }
+            pruneOnQueue()
         }
-        prune()
     }
 
     /// Drop everything beyond the newest `snapshotCap`. Run at every write and
     /// once at launch, so a crash mid-storm still gets cleaned up next start.
     static func prune() {
+        writeQueue.async {
+            pruneOnQueue()
+        }
+    }
+
+    private static func pruneOnQueue() {
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: snapshotDirectory, includingPropertiesForKeys: [.contentModificationDateKey]
         ) else { return }
