@@ -449,3 +449,43 @@ fn a_question_whose_cursor_did_not_arrive_gets_no_enter() {
     refused(&s.json(&["input", &pane, "--choose", "2", "--if", &cond]), "question_gone");
     assert_eq!(s.keys(), "");
 }
+
+/// `rename` makes the name the pane's own title, which the program in the
+/// pane then cannot write over, and a reset gives the title back to it. The
+/// pane here writes a title five times a second, as Claude's spinner does.
+#[test]
+fn a_rename_is_the_pane_title_and_outlasts_the_program_writing_its_own() {
+    let Some(tmux) = tmux_bin() else { return };
+    let s = Server::start(tmux, "rename");
+    let pane = s.pane();
+    s.tmux(&["respawn-pane", "-k", "-t", &pane, "while :; do printf '\\033]2;prog title\\007'; sleep 0.2; done"]);
+    std::thread::sleep(Duration::from_millis(600));
+    let title = || s.tmux(&["display-message", "-p", "-t", &pane, "#{pane_title}"]).trim().to_owned();
+    let marker = || s.tmux(&["display-message", "-p", "-t", &pane, "#{@attache_renamed}"]).trim().to_owned();
+    assert_eq!(title(), "prog title");
+
+    // `#{…}` and `#(…)` are tmux format syntax; the name must come out as
+    // typed, and the command in it must not run.
+    let flag = s.home.path().join("ran");
+    let name = format!("我的 #{{pane_id}} #(touch {}) 名字", flag.display());
+    let v = s.json(&["rename", &pane, "--name", &b64(&name)]);
+    assert_eq!(v["renamed"], true, "{v}");
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(title(), name);
+    assert_eq!(marker(), "1");
+    assert!(!flag.exists(), "a #(…) in the name was run");
+
+    let v = s.json(&["rename", &pane, "--name", "="]);
+    assert_eq!(v["name"], Value::Null, "{v}");
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(title(), "prog title");
+    assert_eq!(marker(), "");
+
+    // A pane nobody renamed is left as it is; a pane that is not there is refused.
+    s.tmux(&["select-pane", "-t", &pane, "-T", "untouched"]);
+    s.tmux(&["respawn-pane", "-k", "-t", &pane, "cat"]);
+    s.tmux(&["select-pane", "-t", &pane, "-T", "untouched"]);
+    assert_eq!(s.json(&["rename", &pane, "--name", "="])["renamed"], true);
+    assert_eq!(title(), "untouched");
+    assert_eq!(s.json(&["rename", "%999", "--name", &b64("x")])["renamed"], false);
+}

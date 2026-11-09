@@ -23,6 +23,9 @@ pub struct Pane {
     /// its process after its version (`2.1.311`).
     pub command: String,
     pub path: String,
+    /// The person renamed the pane (`attache-cli rename`): its title is
+    /// theirs, and the program in it can no longer change it.
+    pub renamed: bool,
     pub title: String,
 }
 
@@ -63,14 +66,15 @@ impl Host for RealHost {
             "#{window_name}",
             "#{pane_current_command}",
             "#{pane_current_path}",
+            "#{@attache_renamed}",
             "#{pane_title}",
         ]
         .join(&SEP.to_string());
         tmux::lines(&["list-panes", "-a", "-F", &format])
             .iter()
             .filter_map(|line| {
-                let f: Vec<&str> = line.splitn(9, SEP).collect();
-                if f.len() != 9 || !f[0].starts_with('%') {
+                let f: Vec<&str> = line.splitn(10, SEP).collect();
+                if f.len() != 10 || !f[0].starts_with('%') {
                     return None;
                 }
                 Some(Pane {
@@ -82,7 +86,8 @@ impl Host for RealHost {
                     window_name: f[5].into(),
                     command: f[6].into(),
                     path: f[7].into(),
-                    title: f[8].into(),
+                    renamed: !f[8].is_empty(),
+                    title: f[9].into(),
                 })
             })
             .collect()

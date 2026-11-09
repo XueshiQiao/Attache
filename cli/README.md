@@ -10,8 +10,8 @@ screen. Nothing else on the host has to be installed or running.
 
 ## Commands
 
-Each runs as its own short process, except `follow` and `agents --watch`,
-which run until the client that started them goes.
+Each runs as its own short process, except `follow`, `agents --watch` and
+`usage --watch`, which run until the client that started them goes.
 
 | Command | Called by | Does |
 |---|---|---|
@@ -21,8 +21,11 @@ which run until the client that started them goes.
 | `agents --watch [--pane %N]` | clients | the same, pushed whenever it changes; with `--pane`, that pane's `screen` too |
 | `screen <%pane>` | clients | what Claude has on screen that a client may act on: its input box, a permission menu, a panel, the working line |
 | `seen <kind> <conversation>` | clients | the person looked at it: Done becomes Idle |
+| `rename <%pane> --name <base64>` | clients | makes the name the pane's title, which the program in it can then no longer change; an empty name gives the title back |
 | `follow <claude\|agy> <transcript> [--before <offset>]` | clients | a conversation as rows, then every change |
 | `input <%pane> --text <base64> [--enter]` / `--key <name> --if <condition>` | clients | types into an agent, one message at a time per pane, only after reading the screen again itself |
+| `usage` | clients | the AI subscriptions' usage (Claude, Antigravity, Grok), refreshed by the desktop app on request |
+| `usage --watch` | clients | the same, pushed whenever it changes; asks the desktop app every 5 minutes |
 | `statusline claude` | Claude Code | keeps the status line snapshot, draws the old status line |
 | `send <file>...` (also as `attache-send`) | people, agents | hands files to the phone's inbox |
 
@@ -35,11 +38,34 @@ are only ever added within one protocol.
 `agents`: `pane`, `pid`, `session`, `window`, `window_index`, `window_name`,
 `command`, `path`, `title`, `kind` (`claude`, `agy`, `codex`, `grok`,
 `gemini`), `state` (`working`, `needs_you`, `done`, `idle`, `unknown`),
-`since`, `conversation`, `transcript`, `cwd`, `model`.
+`since`, `conversation`, `transcript`, `cwd`, `model`, `name` (the pane's
+title when the person renamed it with `rename`, else null).
 
 `agents --watch`: `{"t":"agents","agents":[…]}` (the rows above) and, with
 `--pane`, `{"t":"screen",…}` (what `screen` prints), each sent at once and
 then whenever it changed.
+
+`usage` and `usage --watch`: `{"t":"usage_desktop","state","why"}`
+(`state` is `ok`, `not_running` when the desktop app is not listening,
+`failed` with `why`, or `unsupported` off macOS), and one
+`{"t":"usage","provider",…}` per provider whose file holds an answer or a
+failure; under `--watch` each is sent again when it changes, in no fixed
+order between the two kinds. A `usage` line has `plan`, `source`,
+`fetched_at`, `stored_at` and `windows` of `id`, `title`, `group`, `kind`
+(`session`, `weekly`, `other`), `used_percent`, `resets_at`,
+`window_seconds`, all present only once an ask has succeeded; `error`
+(`failed`, `timeout`, `busy`) and `failed_at` when the last ask failed,
+beside the last good numbers if there are any. Times are epoch seconds.
+
+Nothing in it is worked out or asked here. AIUsageKit
+(github.com/XueshiQiao/AIUsageKit) asks each provider's own CLI and keeps
+the answers in `~/Library/Caches/AIUsageKit/v1/`; the desktop app does the
+asking, on request: `usage` calls the app's `usage.refresh` over the Unix
+socket `~/.local/state/attache/desktop.sock` (one line of JSON each way)
+and passes the files on. It cannot ask itself, because Claude keeps its
+login in the macOS login keychain and a process that came in over SSH
+cannot read it (XueshiQiao/Attache#39). Usage is the one thing the phone
+may depend on the desktop app for; its core never does.
 
 `screen`: `pane`, `kind`, `prompt` (Claude's input box is showing),
 `approval` (`subject`, `question`, `options` of `number`, `label`, `risk`,
@@ -51,6 +77,13 @@ on the last tab, `options` of `number`, `label`, `description`, `typed`,
 `checked`, plus `cursor` (an option's number, 0 for Submit), `submit_row`,
 and `fingerprint`, which leaves the cursor and the hint line out), `activity` (`verb`, `detail`).
 Only Claude's screen is read; on another agent all of them are empty.
+
+`rename` sets the pane's `allow-set-title` off, marks it `@attache_renamed`
+and sets its title, every `#` doubled because `select-pane -T` expands
+formats and `#(…)` in a format runs a command; a reset unsets both and puts
+back Claude's own title (its transcript's last `ai-title`) or an empty
+one. It prints `{"renamed":true,"pane","name"}` or
+`{"renamed":false,"why"}`.
 
 `input` prints `{"sent":true}` or `{"sent":false,"why":…}`. **No key and no
 message is sent on the strength of what a client was shown**: a key
@@ -99,7 +132,12 @@ Under `~/.local/state/attache/` (`$XDG_STATE_HOME/attache`):
 `<kind>/<conversation>/seen.json`, `claude/context-windows.json`,
 `claude/statusline.json` (the status line `setup` replaced), and lock files.
 `send` keeps `~/.local/share/attache/outbox.queue`, where `attache-send`
-kept it.
+kept it. `usage` reads, never writes, AIUsageKit's
+`~/Library/Caches/AIUsageKit/v1/`, and logs to `usage/usage.log` under the
+state folder: every watch's start and end with where it came from, and
+every call to the desktop app with each provider's answer, errors word for
+word. The app logs its side of each call to
+`~/Library/Logs/Attache/desktop-calls.log`.
 
 Processes never talk to each other, only through these files: each is
 replaced by rename, never edited in place, and every read-modify-write takes

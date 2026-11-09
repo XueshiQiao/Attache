@@ -61,6 +61,9 @@ pub struct Agent {
     /// When its last turn ended, if it has finished one: the half of Done
     /// that comes from the agent.
     pub turn_ended: Option<u64>,
+    /// The pane's title when the person renamed it (`rename`), so a client
+    /// knows the title is theirs and can offer to give it back.
+    pub name: Option<String>,
 }
 
 impl Agent {
@@ -76,6 +79,7 @@ impl Agent {
             cwd: None,
             model: None,
             turn_ended: None,
+            name: None,
         }
     }
 
@@ -97,6 +101,7 @@ impl Agent {
             "transcript": self.transcript,
             "cwd": self.cwd,
             "model": self.model,
+            "name": self.name,
         })
     }
 }
@@ -224,6 +229,7 @@ pub fn discover(host: &dyn Host, only: Option<&str>) -> Vec<Agent> {
         .map(|(pane, provider, pid)| {
             let mut agent = provider.describe(&pane, pid, &mut ctx);
             settle_done(&mut agent);
+            agent.name = agent.pane.renamed.then(|| agent.pane.title.clone());
             agent
         })
         .collect()
@@ -261,6 +267,159 @@ pub fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// The longest name kept, in characters: a list row shows a line of it.
+const NAME_MAX: usize = 200;
+
+/// `attache-cli rename <%pane> --name <base64>`: names the pane, and so
+/// the agent in it, everywhere at once — the phone, the desktop, every
+/// terminal attached to tmux — by making the name the pane's own title.
+/// An empty name gives the title back to the program in the pane.
+///
+/// The title is otherwise the program's: Claude writes "✳ <its title for
+/// the conversation>" there and keeps rewriting the glyph as it works, so a
+/// plain `select-pane -T` would last seconds. Turning the pane's
+/// `allow-set-title` off first stops that (measured on tmux 3.6a: with it
+/// off, a program's title escape no longer changes the title, and unset, it
+/// does again). What it costs is only the glyph: Claude names a conversation
+/// once and never again — across all 153 titled conversations on the
+/// owner's Mac (2026-11-08) not one had a second title. `@attache_renamed`
+/// marks the panes this program renamed, so `agents` can say which titles
+/// are the person's, and a reset touches only those.
+///
+/// The name comes base64-encoded, as `input`'s text does, because it
+/// arrives on an SSH command line. Prints `{"renamed":true,"pane","name"}`
+/// (`name` null after a reset) or `{"renamed":false,"why"}`.
+pub fn run_rename(args: &[String]) -> i32 {
+    let usage = || {
+        eprintln!("Usage: attache-cli rename <%pane> --name <base64>");
+        2
+    };
+    let [pane, flag, b64] = args else {
+        return usage();
+    };
+    if flag != "--name" || !crate::screen::is_pane(pane) {
+        return usage();
+    }
+    let Some(name) = crate::input::decode(b64).and_then(|b| String::from_utf8(b).ok()) else {
+        eprintln!("attache-cli rename: the name is not base64 of UTF-8 text");
+        return 2;
+    };
+    let name = tidy_name(&name);
+    let answer = if name.is_empty() {
+        reset_title(pane)
+    } else {
+        set_title(pane, &name)
+    };
+    let ok = answer.is_ok();
+    println!(
+        "{}",
+        match answer {
+            Ok(()) => json!({ "renamed": true, "pane": pane, "name": (!name.is_empty()).then_some(&name) }),
+            Err(why) => json!({ "renamed": false, "pane": pane, "why": why }),
+        }
+    );
+    if ok {
+        0
+    } else {
+        1
+    }
+}
+
+/// One line, without the control characters a terminal would act on, and
+/// no longer than [`NAME_MAX`].
+fn tidy_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(NAME_MAX)
+        .collect()
+}
+
+/// `select-pane -T` expands its argument as a tmux format, and in a format
+/// `#(…)` runs a shell command: measured on 3.6a, a title of
+/// `#{pane_id}` came out as `%0` and `#(echo hi)` was run. `##` is a
+/// literal `#`, so doubling every one makes any name come out as typed —
+/// including `#(touch …)`, which then runs nothing.
+fn tmux_literal(text: &str) -> String {
+    text.replace('#', "##")
+}
+
+/// The three steps go to tmux as one command line (`;` between them), which
+/// tmux runs in order with nothing else in between: run one by one, an
+/// `agents --watch` could read the marker before the title and take the old
+/// title for the person's, and a step that failed half way would leave the
+/// pane locked with no marker for a reset to find. With `allow-set-title`
+/// first, a tmux without it (an option this program learned on 3.6a, said
+/// to have arrived in 3.3) fails the line before anything changes.
+fn set_title(pane: &str, name: &str) -> Result<(), &'static str> {
+    let title = tmux_literal(name);
+    crate::tmux::run(&[
+        "set-option", "-p", "-t", pane, "allow-set-title", "off", ";",
+        "set-option", "-p", "-t", pane, "@attache_renamed", "1", ";",
+        "select-pane", "-t", pane, "-T", &title,
+    ])
+    .map(|_| ())
+    .ok_or("tmux refused it (no allow-set-title before 3.3, or no such pane)")
+}
+
+/// Gives the title back. Claude would only write its own again at its next
+/// state change, so its title for the conversation (the last `ai-title` in
+/// its transcript) is put back at once; anything else gets an empty title,
+/// which clients show as the window's name until the program writes one.
+fn reset_title(pane: &str) -> Result<(), &'static str> {
+    // Asked of tmux itself, not of `agents`: a pane can be renamed with no
+    // agent found in it (one that has exited, or a plain shell).
+    let marker = crate::tmux::run(&["display-message", "-p", "-t", pane, "#{@attache_renamed}"])
+        .ok_or("no such pane")?;
+    // A pane this program did not rename keeps whatever it has.
+    if String::from_utf8_lossy(&marker.stdout).trim().is_empty() {
+        return Ok(());
+    }
+    let agent = discover(&crate::host::RealHost, Some(pane)).into_iter().next();
+    let own = agent
+        .as_ref()
+        .filter(|a| a.kind == "claude")
+        .and_then(|a| a.transcript.as_deref())
+        .and_then(claude_ai_title)
+        .map(|t| format!("\u{2733} {t}"))
+        .unwrap_or_default();
+    // The title first and the lock last, in one line: unlocked first, the
+    // program could write its own title and then have it overwritten here.
+    let title = tmux_literal(&own);
+    crate::tmux::run(&[
+        "select-pane", "-t", pane, "-T", &title, ";",
+        "set-option", "-p", "-t", pane, "-u", "@attache_renamed", ";",
+        "set-option", "-p", "-t", pane, "-u", "allow-set-title",
+    ])
+    .map(|_| ())
+    .ok_or("tmux")
+}
+
+/// The last title Claude gave the conversation, from its transcript's
+/// `ai-title` records, read a line at a time: a long transcript runs to
+/// tens of megabytes.
+fn claude_ai_title(transcript: &str) -> Option<String> {
+    use std::io::BufRead;
+    let file = fs::File::open(transcript).ok()?;
+    let mut last = None;
+    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+        if !line.contains("\"ai-title\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        if v.get("type").and_then(Value::as_str) == Some("ai-title") {
+            if let Some(t) = v.get("aiTitle").and_then(Value::as_str).filter(|t| !t.trim().is_empty()) {
+                last = Some(t.to_owned());
+            }
+        }
+    }
+    last
 }
 
 /// `attache-cli seen <kind> <conversation>`: the person has looked at it.
@@ -727,6 +886,7 @@ mod tests {
                 window_name: "w".into(),
                 command: command.into(),
                 path: "/w".into(),
+                renamed: false,
                 title: "t".into(),
             });
         }
@@ -1056,5 +1216,19 @@ mod tests {
             assert!(seen_at("claude", "s").unwrap() >= now() + 999);
             assert_eq!(run_seen(&["claude".into(), "../x".into()]), 2);
         })
+    }
+
+    #[test]
+    fn a_name_is_one_tidy_line_that_tmux_takes_literally() {
+        // "\t你好\t world\n": control characters and runs of space go.
+        assert_eq!(tidy_name("\t你好\t world\n"), "你好 world");
+        assert_eq!(tidy_name("   "), "");
+        assert_eq!(tidy_name(&"x".repeat(500)).chars().count(), NAME_MAX);
+        // Every # doubled: no format, no #(command), survives.
+        assert_eq!(tmux_literal("a #{pane_id} #(touch x) ##"), "a ##{pane_id} ##(touch x) ####");
+        // Refused before tmux is asked anything.
+        assert_eq!(run_rename(&["%1".into(), "--name".into(), "a b".into()]), 2);
+        assert_eq!(run_rename(&["1".into(), "--name".into(), "YQ==".into()]), 2);
+        assert_eq!(run_rename(&["%1".into(), "--title".into(), "YQ==".into()]), 2);
     }
 }

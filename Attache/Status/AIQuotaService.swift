@@ -125,6 +125,32 @@ final class AIQuotaService {
         }
     }
 
+    /// The phone's `usage.refresh` (through `DesktopCallServer`): the same
+    /// coordinated fetch as the timer's — a young enough shared cache answers
+    /// at once, otherwise the providers' CLIs run, at most one process on the
+    /// Mac at a time — but on request, and also while this app's own polling
+    /// is paused for a locked screen. That is the point of the call: the
+    /// rail stops spending CLI runs when nobody looks at the Mac, and the
+    /// phone still gets numbers the moment it asks. Claude reads fine with the
+    /// screen locked from this login (measured 2026-11-08).
+    ///
+    /// The numbers go to AIUsageKit's cache files, which attache-cli passes
+    /// on; the answer only says what happened, per provider, errors word for
+    /// word, for the logs on both sides.
+    nonisolated static func refreshOnDemand(maxAge: TimeInterval) async -> [String: Any] {
+        let results = await AIUsage.fetchAll([.claude, .antigravity, .grok], maxAge: maxAge)
+        var providers: [String: String] = [:]
+        for (provider, result) in results {
+            switch result {
+            case let .success(usage):
+                providers[provider.rawValue] = "ok via \(usage.source)"
+            case let .failure(error):
+                providers[provider.rawValue] = "error: \(error.message)"
+            }
+        }
+        return ["ok": true, "providers": providers]
+    }
+
     /// Maps a `ProviderUsage` from `AIUsageKit` into Attaché's `AccountUsage`. Claude's replaces the stored value; the others merge into it.
     /// - Returns: `true` if the stored `AccountUsage` for that provider changed.
     @discardableResult

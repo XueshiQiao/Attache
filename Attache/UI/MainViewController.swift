@@ -205,6 +205,7 @@ final class MainViewController: NSSplitViewController {
     private var occlusionObserver: NSObjectProtocol?
     private var appearanceObservation: NSKeyValueObservation?
     private let aiQuotaService = AIQuotaService()
+    private let desktopCalls = DesktopCallServer()
 
     var onStatusChange: ((String) -> Void)?
 
@@ -562,6 +563,17 @@ final class MainViewController: NSSplitViewController {
             self?.refreshSidebar()
         }
         aiQuotaService.start()
+
+        // What a client that came in over SSH may ask of this app; see
+        // DesktopCallServer for why it has to be asked at all.
+        desktopCalls.register("usage.refresh") { request in
+            let maxAge = (request["max_age"] as? Double) ?? 240
+            return await AIQuotaService.refreshOnDemand(maxAge: maxAge)
+        }
+        desktopCalls.register("ping") { _ in
+            ["ok": true, "app": "Attache", "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"]
+        }
+        desktopCalls.start()
     }
 
     // MARK: - Host management
@@ -1983,6 +1995,7 @@ final class MainViewController: NSSplitViewController {
     /// nobody can reason about.
     func stop() {
         aiQuotaService.stop()
+        desktopCalls.stop()
         for controller in embedded.values { controller.detach() }
         for host in hosts { host.stop() }
     }
