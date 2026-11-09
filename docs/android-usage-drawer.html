@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Android usage in the drawer</title>
+<style>
+  /* Colours and sizes read off a screenshot of the real drawer (2026-11-08,
+     1080x2376 at 3x, so 360dp wide; the owner's font scale is large). */
+  :root {
+    --page: #e8e8ed;
+    --content: #1f232b; --sheet: #3b4251; --pill: #56637a; --divider: rgba(255,255,255,.12);
+    --on: #e7e9ef; --muted: #aab1bf; --faint: #8c93a1; --track: rgba(255,255,255,.14);
+    --red: #E5484D; --orange: #F5A524; --green: #30A46C; --grey: #9a9fa8;
+    --claude: #D97857; --gemini: #669EF5; --grok: #D1D6E0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--page); font-family: Roboto, "Google Sans", -apple-system, "PingFang SC", sans-serif; color: #222; }
+  .wrap { display: flex; gap: 36px; padding: 28px; align-items: flex-start; flex-wrap: wrap; }
+
+  /* ---------- phone, 360dp wide ---------- */
+  .phone { width: 380px; height: 812px; flex: none; background: var(--content); color: var(--on); border-radius: 34px; border: 10px solid #0b0b0d; position: relative; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.25); user-select: none; }
+  .status { height: 30px; font-size: 14px; font-weight: 500; padding: 8px 20px; display: flex; justify-content: space-between; color: var(--on); }
+  .appbar { height: 64px; display: flex; align-items: center; padding: 0 4px; }
+  .ib { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 20px; }
+  .ttl { flex: 1; min-width: 0; cursor: pointer; }
+  .ttl b { font-size: 19px; font-weight: 400; }
+  .ttl .sub { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+  .chat { position: absolute; top: 94px; bottom: 76px; left: 0; right: 0; overflow-y: auto; padding: 8px 16px 16px; }
+  .msg { font-size: 16px; line-height: 1.55; margin: 10px 0; }
+  .me { margin-left: 48px; background: #2e3442; border-radius: 16px; padding: 10px 14px; }
+  .tool { font-size: 13px; color: var(--muted); margin: 6px 0; }
+  .composer { position: absolute; left: 12px; right: 12px; bottom: 16px; height: 50px; border-radius: 25px; background: #2a2f3a; color: var(--faint); display: flex; align-items: center; padding: 0 18px; font-size: 16px; }
+
+  /* ---------- ModalNavigationDrawer ---------- */
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.32); opacity: 0; pointer-events: none; transition: opacity .25s; }
+  .drawer { position: absolute; top: 0; bottom: 0; left: 0; width: 320px; background: var(--sheet); border-radius: 0 16px 16px 0; transform: translateX(-100%); transition: transform .3s cubic-bezier(.2,0,0,1); display: flex; flex-direction: column; }
+  .open .scrim { opacity: 1; pointer-events: auto; }
+  .open .drawer { transform: translateX(0); }
+  .dragging .drawer, .dragging .scrim { transition: none; }
+  .agents { flex: 1; min-height: 0; overflow-y: auto; padding: 42px 0 8px; }
+  .agents h3 { font-size: 21px; font-weight: 400; padding: 10px 20px 14px; }
+  .grp { font-size: 14.5px; font-weight: 500; color: var(--muted); padding: 14px 20px 6px; letter-spacing: .1px; }
+  /* NavigationDrawerItem: 56dp, a full pill when selected. */
+  .item { margin: 0 12px; height: 56px; border-radius: 28px; display: flex; align-items: center; gap: 14px; padding: 0 16px; cursor: pointer; }
+  .item.sel { background: var(--pill); }
+  .item .t { flex: 1; min-width: 0; }
+  .item .t div { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.25; }
+  .item .t small { font-size: 14px; color: var(--muted); }
+  .item .age { font-size: 14px; color: var(--muted); }
+
+  /* ---------- the usage section at the bottom of the sheet ---------- */
+  .usage { flex: none; padding-bottom: 20px; cursor: pointer; position: relative; }
+  .drawer[data-look="line"] .usage { border-top: 1px solid var(--divider); }
+  .drawer[data-look="tone"] .usage { background: #454d5f; border-radius: 22px 22px 0 16px; }
+  .drawer[data-look="card"] .usage { background: #454d5f; border-radius: 20px; margin: 4px 12px 16px; padding-bottom: 8px; }
+  .drawer[data-look="card"] .usage .row, .drawer[data-look="card"] .usage .ptitle { padding-left: 16px; padding-right: 16px; }
+  .drawer[data-look="card"] .usage .uhead { padding-left: 16px; padding-right: 10px; }
+  .drawer[data-look="fade"] .agents { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 44px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 44px), transparent); }
+  .drawer[data-look="shadow"] .usage { box-shadow: 0 -10px 14px -10px rgba(0,0,0,.55); background: var(--sheet); }
+  .drawer[data-look="none"] .usage .uhead { padding-top: 18px; }
+  .looks { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
+  .looks button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 16px; border: 1px solid #bbb; background: #fff; cursor: pointer; }
+  .looks button.on { background: #2f3a52; color: #fff; border-color: #2f3a52; }
+  .ubody { overflow: hidden; transition: max-height .3s cubic-bezier(.2,0,0,1); }
+  .uscroll { max-height: 46vh; overflow-y: auto; }
+  .uhead { font-size: 14.5px; font-weight: 500; color: var(--muted); padding: 12px 20px 2px 20px; display: flex; align-items: center; }
+  .uhead .expand { margin-left: auto; }
+  .ptitle { display: flex; align-items: center; gap: 10px; padding: 10px 28px 0; font-size: 15px; font-weight: 500; }
+  .ptitle small { font-size: 13px; color: var(--muted); font-weight: 400; }
+  /* One window: name and figures, then a Material 3 linear progress
+     indicator with the clock's tick on it. */
+  .row { padding: 6px 28px 7px; }
+  .rl { display: flex; align-items: center; gap: 10px; }
+  .rl .n { flex: 1; font-size: 15px; display: flex; align-items: center; }
+  .rl .n small { color: var(--muted); font-size: 14px; margin-left: 8px; }
+  .rl .v { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .bar { position: relative; height: 4px; margin-top: 7px; }
+  .bar .seg { position: absolute; top: 0; bottom: 0; border-radius: 2px; background-repeat: no-repeat; }
+  .expand { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; color: var(--muted); transition: transform .3s; font-size: 18px; }
+  .usage.expanded .expand { transform: rotate(180deg); }
+
+  /* ---------- notes ---------- */
+  .notes { width: 560px; font-size: 15px; line-height: 1.65; }
+  .notes h2 { font-size: 20px; margin-bottom: 8px; }
+  .notes h3 { font-size: 16px; margin: 18px 0 6px; }
+  .notes p, .notes li { margin-bottom: 6px; }
+  .notes ul { padding-left: 20px; }
+  .notes pre { background: #fff; border-radius: 8px; padding: 12px 14px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; border: 1px solid #ddd; }
+  .btns { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+  .btns button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; border: 1px solid #bbb; background: #fff; cursor: pointer; }
+  @media (max-width: 1000px) { .notes { width: 100%; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="phone" id="phone">
+  <div class="status"><span>20:35</span><span>5G ▮▮▮ 32</span></div>
+  <div class="appbar">
+    <div class="ib">←</div>
+    <div class="ttl" id="title">
+      <b>Herdr 手机端通信与显示 ▾</b>
+      <div class="sub"><span class="dot" style="background:var(--orange)"></span>Opus 5.5 · ctx 29% · cache 59m</div>
+    </div>
+    <div class="ib">⌨</div>
+  </div>
+  <div class="chat" id="chat"></div>
+  <div class="composer">Message Claude</div>
+
+  <div class="scrim" id="scrim"></div>
+  <div class="drawer" id="drawer" data-look="line">
+    <div class="agents" id="agents"></div>
+    <div class="usage" id="usage"><div class="ubody" id="ubody"></div></div>
+  </div>
+</div>
+
+<div class="notes">
+  <h2>用量放在对话页侧边栏的最下面（第四版）</h2>
+  <p>位置和交互照 Mac，样子照安卓的侧边栏。<b>点标题打开侧边栏，或者从屏幕左边缘往右拖</b>；点侧边栏外面关上；agent 列表可以滚动；<b>点最下面的用量区</b>可以展开和收起。</p>
+  <div class="btns">
+    <button onclick="setOpen(true)">打开侧边栏</button>
+    <button onclick="setOpen(false)">关上侧边栏</button>
+    <button onclick="setExpanded(!expanded)">展开 / 收起用量</button>
+  </div>
+  <h3 style="font-size:16px;margin:16px 0 4px">用量区和 agent 列表之间怎么分开（点一下切换）</h3>
+  <div class="looks" id="looks">
+    <button data-look="line" class="on">一条分隔线</button>
+    <button data-look="none">什么都不加</button>
+    <button data-look="fade">列表渐隐</button>
+    <button data-look="shadow">阴影</button>
+    <button data-look="tone">浅色底块</button>
+    <button data-look="card">圆角卡片</button>
+  </div>
+  <ul id="lookNote" style="margin:4px 0 12px 20px"></ul>
+<pre>对话页的侧边栏：
+  上面：agent 列表，和现在一模一样，可以滚动
+  最下面：用量区，固定在侧边栏底部，不跟着 agent 列表滚动
+    和 agent 列表之间怎么分开：见上面几种样式，你选一种
+    默认（收起）：每家一行，有几家显示几行，每一行只显示这一家的周用量
+      例如：● Claude  Weekly      30% · 3d 8h
+            ● Gemini  Weekly       5% · 5d 13h
+            ● Grok    Weekly     100% · 1d 14h
+      每一行下面一根进度条：有颜色的部分是用掉的，接着是灰色的部分，中间不断开；
+      在这一周的时间走到的位置，把整根条断开一个小口（代替原来的竖线）
+      某一家在这台主机上从来没查到过数据：不显示这一行
+    如果点了用量区：
+      往上展开，顶上出现「Usage」小标题和收起箭头
+      每家一个小标题（圆点 + 名字 + 套餐），下面列出这一家的全部窗口
+      agent 列表能看到的区域变短，列表本身不动，还能滚动
+      窗口太多时，用量区自己可以滚动
+    如果展开着再点「Usage」那一行：收起，回到每家一行
+
+进入聊天模式后的第一页（agent 列表页）：
+  把上次加的底部用量条去掉，那里什么都不放</pre>
+  <p>用量数字是这台 MacBook 现在的真实数据，倒计时按真实时间走；agent 列表和对话内容是照你的截图编的。</p>
+</div>
+</div>
+
+<script>
+const USAGE = [{"provider":"claude","plan":"Max","windows":[{"id":"claude.session","title":"5-hour","kind":"session","used_percent":5,"resets_at":1794149400,"window_seconds":18000},{"id":"claude.weekly","title":"Weekly","kind":"weekly","used_percent":30,"resets_at":1794430800,"window_seconds":604800},{"id":"claude.weekly.fable","title":"Fable only","kind":"weekly","used_percent":2,"resets_at":1794430800,"window_seconds":604800}]},{"provider":"antigravity","plan":null,"windows":[{"id":"antigravity.gemini-5h","title":"Gemini 5-hour","kind":"session","used_percent":0,"resets_at":1794158279,"window_seconds":18000},{"id":"antigravity.gemini-weekly","title":"Gemini weekly","kind":"weekly","used_percent":4.56,"resets_at":1794620314,"window_seconds":604800},{"id":"antigravity.3p-5h","title":"Claude/GPT 5-hour","kind":"session","used_percent":0,"resets_at":1794159163,"window_seconds":18000},{"id":"antigravity.3p-weekly","title":"Claude/GPT weekly","kind":"weekly","used_percent":0,"resets_at":1794745963,"window_seconds":604800}]},{"provider":"grok","plan":"SuperGrok","windows":[{"id":"grok.weekly","title":"Weekly","kind":"weekly","used_percent":100,"resets_at":1794278507,"window_seconds":604800}]}];
+const NAME = { claude: "Claude", antigravity: "Gemini", grok: "Grok" };
+const COLOR = { claude: "var(--claude)", antigravity: "var(--gemini)", grok: "var(--grok)" };
+
+const now = () => Date.now() / 1000;
+function countdown(s) {
+  s = Math.max(0, Math.floor(s));
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+function used(w) { return w.resets_at <= now() ? 0 : w.used_percent; }
+// A provider's own week: the first weekly window it reports, which is the
+// whole account's (Claude's "Weekly", Gemini's "Gemini weekly").
+function weekly(p) { return p.windows.find(w => w.kind === "weekly"); }
+// The bar: the used part in the provider's colour running straight into
+// the grey track, and the whole bar cut by a small gap where the clock is.
+// Past the gap is time not yet come; colour past it is spending ahead of
+// the clock.
+const BAR_W = 264, GAP = 3;
+function bar(w, color) {
+  const fx = Math.min(1, used(w) / 100) * BAR_W;
+  const ex = Math.min(1, Math.max(0, (now() - (w.resets_at - w.window_seconds)) / w.window_seconds)) * BAR_W;
+  const cuts = [[0, ex - GAP / 2], [ex + GAP / 2, BAR_W]].filter(([l, r]) => r - l > 1);
+  const bg = `linear-gradient(90deg, ${color} ${fx}px, var(--track) ${fx}px)`;
+  return `<div class="bar">` + cuts.map(([l, r]) =>
+    `<div class="seg" style="left:${l}px;width:${r - l}px;background-image:${bg};background-size:${BAR_W}px 4px;background-position:${-l}px 0"></div>`).join("") + `</div>`;
+}
+function row(name, w, color) {
+  return `<div class="row"><div class="rl"><span class="n">${name}</span><span class="v">${Math.round(used(w))}% · ${countdown(w.resets_at - now())}</span></div>${bar(w, color)}</div>`;
+}
+let expanded = false;
+function render() {
+  const u = document.getElementById("usage"), body = document.getElementById("ubody");
+  u.classList.toggle("expanded", expanded);
+  const shown = USAGE.filter(p => p.windows.length);
+  if (!expanded) {
+    body.innerHTML = `<div class="uhead">Usage<span class="expand">⌃</span></div>` + shown.filter(weekly).map(p =>
+      row(`<span class="dot" style="background:${COLOR[p.provider]};margin-right:10px"></span>${NAME[p.provider]}<small>Weekly</small>`, weekly(p), COLOR[p.provider])).join("");
+  } else {
+    body.innerHTML = `<div class="uhead">Usage<span class="expand">⌃</span></div><div class="uscroll">` +
+      shown.map(p => `<div class="ptitle"><span class="dot" style="background:${COLOR[p.provider]}"></span>${NAME[p.provider]}${p.plan ? `<small>${p.plan}</small>` : ""}</div>${p.windows.map(w => row(w.title, w, COLOR[p.provider])).join("")}`).join("") + `</div>`;
+  }
+}
+function setExpanded(v) {
+  const body = document.getElementById("ubody");
+  const from = body.getBoundingClientRect().height;
+  expanded = v;
+  body.style.maxHeight = "none";
+  render();
+  const to = body.getBoundingClientRect().height;
+  body.style.maxHeight = from + "px";
+  requestAnimationFrame(() => requestAnimationFrame(() => { body.style.maxHeight = to + "px"; }));
+}
+document.getElementById("usage").addEventListener("click", e => {
+  // Expanded, only the heading folds it back, so touching the rows while
+  // scrolling them never closes it by accident.
+  if (expanded && !e.target.closest(".uhead")) return;
+  setExpanded(!expanded);
+});
+document.getElementById("ubody").addEventListener("transitionend", e => { if (e.target === e.currentTarget) e.currentTarget.style.maxHeight = "none"; });
+
+const AGENTS = [
+  ["Working", [["Herdr 手机端通信与显示", "Dev · Attaché", "3m", "var(--orange)", true]]],
+  ["Idle", [["DeepSeek Super Agent 视频脚本", "Video · deepseek", "20h"], ["Windows Server 与 MacPorts", "Daily · maintenance", "20h"], ["幻想图分支", "Dev · Flowy", "21h"], ["鼠标侧键长按移动窗口", "Dev · AnyDrag", "22h"], ["App 确认流程中的 ID 验证", "Dev · VaultPaw", "23h"], ["PastePawX", "Dev · PastePawX", "1d"], ["winget-pkgs PR 467920 评论", "Dev · pastepaw-win", "1d"], ["CPU 占用 Issue", "Dev · CCSwitcher", "1d"], ["Brew 中 Claude 的最新版本", "Dev · claude", "1d"], ["KV cache 科普视频大纲", "Video · 029-kvcache", "2d"], ["匪夷所思玩法", "Video · 匪夷所思", "2d"], ["video-shotcraft", "Daily · video-shotcraft", "3d"]]],
+];
+document.getElementById("agents").innerHTML = '<h3>Agents</h3>' + AGENTS.map(([g, list]) =>
+  `<div class="grp">${g}&nbsp;&nbsp;${g === "Idle" ? 27 : list.length}</div>` + list.map(([t, sub, age, c, sel]) =>
+    `<div class="item${sel ? " sel" : ""}"><span class="dot" style="background:${c || "var(--grey)"}"></span><div class="t"><div>${t}</div><small>${sub}</small></div><span class="age">${age}</span></div>`).join("")).join("");
+document.querySelectorAll(".item").forEach(el => el.addEventListener("click", () => setOpen(false)));
+
+const CHAT = [
+  ["me", "收起的时候每家一行，只显示周用量"],
+  ["tool", "Edit  AiUsage.kt"],
+  ["", "好的：收起时 Claude、Gemini、Grok 各一行周用量，点开看全部窗口。"],
+  ["me", "好，我看看"],
+];
+document.getElementById("chat").innerHTML = CHAT.map(([k, t]) => `<div class="${k === "tool" ? "tool" : "msg" + (k === "me" ? " me" : "")}">${k === "tool" ? "▸ " : ""}${t}</div>`).join("");
+
+const phone = document.getElementById("phone"), drawer = document.getElementById("drawer"), scrim = document.getElementById("scrim");
+function setOpen(v) { phone.classList.toggle("open", v); drawer.style.transform = ""; scrim.style.opacity = ""; scrim.style.pointerEvents = ""; }
+document.getElementById("title").addEventListener("click", () => setOpen(true));
+scrim.addEventListener("click", () => setOpen(false));
+let drag = null;
+phone.addEventListener("pointerdown", e => {
+  const x = e.clientX - phone.getBoundingClientRect().left - 10;
+  const open = phone.classList.contains("open");
+  if ((!open && x < 28) || (open && x > 320)) drag = { x0: e.clientX, open, moved: false };
+});
+window.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x0;
+  if (Math.abs(dx) > 4) drag.moved = true;
+  if (!drag.moved) return;
+  phone.classList.add("dragging");
+  const pos = Math.min(0, Math.max(-320, (drag.open ? 0 : -320) + dx));
+  drawer.style.transform = `translateX(${pos}px)`;
+  scrim.style.opacity = String(1 + pos / 320);
+  scrim.style.pointerEvents = "auto";
+});
+window.addEventListener("pointerup", e => {
+  if (!drag) return;
+  phone.classList.remove("dragging");
+  if (drag.moved) { const dx = e.clientX - drag.x0; setOpen(drag.open ? dx > -100 : dx > 100); }
+  drag = null;
+});
+
+const LOOKS = {
+  line: "全宽的一条细线，就是 Material 3 的分隔线（现在的样子）。",
+  none: "不加任何东西，只靠「Usage」这个小标题和上面多一点的空白分开，和「Working」「Idle」这些分组标题是一个写法。",
+  fade: "不加线。agent 列表在快到用量区的地方慢慢变淡，看起来像是滚到用量区下面去了。",
+  shadow: "不加线。用量区的上边缘有一层很淡的阴影，像是用量区浮在列表上面。",
+  tone: "不加线。用量区的底色比侧边栏亮一点，上面两个角是圆角，像侧边栏底部托着的一块。",
+  card: "不加线。用量区是一张左右和底下都留了边距的圆角卡片（Material 3 的填充卡片）。",
+};
+function setLook(k) {
+  document.getElementById("drawer").dataset.look = k;
+  document.querySelectorAll("#looks button").forEach(b => b.classList.toggle("on", b.dataset.look === k));
+  document.getElementById("lookNote").innerHTML = `<li>${LOOKS[k]}</li>`;
+}
+document.querySelectorAll("#looks button").forEach(b => b.addEventListener("click", () => setLook(b.dataset.look)));
+setLook(location.hash.startsWith("#look=") ? location.hash.slice(6) : "line");
+
+render();
+setInterval(render, 30000);
+setOpen(true);
+if (location.hash === "#expanded") { expanded = true; render(); }
+</script>
+</body>
+</html>
