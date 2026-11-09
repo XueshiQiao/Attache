@@ -688,7 +688,7 @@ impl Agy {
             let pids: Vec<u32> = ctx
                 .names
                 .iter()
-                .filter(|(_, n)| n.as_str() == "agy")
+                .filter(|(_, n)| matches!(n.as_str(), "agy" | "antigravity"))
                 .map(|(p, _)| *p)
                 .collect();
             let mut locks: HashMap<u32, Vec<String>> = HashMap::new();
@@ -751,11 +751,22 @@ impl Provider for Agy {
             if let [conversation] = held[..] {
                 let transcript = agy_transcript(conversation);
                 if agent.state == State::Idle {
+                    // As for Claude: a conversation that has never had a turn
+                    // has nothing to be Done with.
                     agent.turn_ended = fs::metadata(&transcript)
-                        .and_then(|m| m.modified())
                         .ok()
+                        .filter(|m| m.len() > 0)
+                        .and_then(|m| m.modified().ok())
                         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                         .map(|d| d.as_secs());
+                    // Idle began when the turn ended, as Claude's `since`
+                    // says. Without it every agy sorted below every Claude
+                    // in the idle group, however recently it was used.
+                    // Unlike Claude's transcript, agy's gets no records
+                    // while idle: measured 2026-11-09 on 13 idle agy panes,
+                    // its mtime was within a minute of the last
+                    // `created_at` in it.
+                    agent.since = agent.turn_ended;
                 }
                 agent.transcript = Some(transcript.to_string_lossy().into_owned());
                 agent.conversation = Some(conversation.clone());
@@ -1071,7 +1082,10 @@ mod tests {
             m.files.push((401, format!("/x/presence/{UUID}.lock")));
             m.screens.insert("%110".into(), vec!["done.".into()]);
             transcript(&agy_transcript(UUID), "{}\n");
-            assert_eq!(discover(&m, None)[0].state, State::Done);
+            let found = discover(&m, None);
+            assert_eq!(found[0].state, State::Done);
+            assert!(found[0].since.is_some());
+            assert_eq!(found[0].since, found[0].turn_ended);
             seen("agy", UUID, now() + 5);
             assert_eq!(discover(&m, None)[0].state, State::Idle);
         })
