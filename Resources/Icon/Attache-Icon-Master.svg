@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1024 1024" width="1024" height="1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0%" stop-color="#80D6FF"/>
+      <stop offset="55%" stop-color="#3BA0FF"/>
+      <stop offset="100%" stop-color="#1C68FF"/>
+    </linearGradient>
+    <linearGradient id="bagBody" x1="0.2" y1="0" x2="0.85" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="52%" stop-color="#F4F8FF"/>
+      <stop offset="100%" stop-color="#DCEAFE"/>
+    </linearGradient>
+    <linearGradient id="bagFlap" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#EEF5FF"/>
+    </linearGradient>
+    <radialGradient id="floorGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="rgba(8, 47, 135, 0.32)"/>
+      <stop offset="60%" stop-color="rgba(56, 189, 248, 0.08)"/>
+      <stop offset="100%" stop-color="rgba(0,0,0,0)"/>
+    </radialGradient>
+    <filter id="bagDrop" x="-30%" y="-25%" width="160%" height="165%">
+      <feDropShadow dx="0" dy="26" stdDeviation="22" flood-color="#09358A" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <ellipse cx="520" cy="902" rx="370" ry="72" fill="url(#floorGlow)"/>
+
+  <g transform="translate(512, 550) scale(1.15) rotate(-7)" filter="url(#bagDrop)">
+    <path d="M -136,-236 L -136,-282 C -136,-326 -96,-344 0,-344 C 96,-344 136,-326 136,-282 L 136,-236"
+      fill="none" stroke="#D4E7FF" stroke-width="54" stroke-linecap="round"/>
+    <path d="M -136,-244 L -136,-282 C -136,-326 -96,-344 0,-344 C 96,-344 136,-326 136,-282 L 136,-244"
+      fill="none" stroke="#FFFFFF" stroke-width="15" stroke-linecap="round" opacity="0.72"/>
+
+    <rect x="-348" y="-256" width="696" height="528" rx="142" fill="url(#bagBody)"/>
+
+    <path d="M -344,-112 C -344,-204 -272,-254 -192,-254 L 192,-254 C 272,-254 344,-204 344,-112 L 344,-58 Q 0,14 -344,-58 Z"
+      fill="url(#bagFlap)" opacity="0.72"/>
+    <path d="M -342,-56 Q 0,16 342,-56" fill="none" stroke="rgba(148,163,184,0.22)" stroke-width="5"/>
+
+    <rect x="-54" y="-82" width="108" height="44" rx="22" fill="#FFB938"/>
+    <rect x="-340" y="-248" width="680" height="512" rx="134" fill="none" stroke="rgba(255,255,255,0.94)" stroke-width="8"/>
+
+    <path d="M -146,16 L -38,94 L -146,172" fill="none" stroke="#1E293B" stroke-width="54" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="18" y="144" width="134" height="52" rx="26" fill="#1FC788"/>
+  </g>
+</svg>
