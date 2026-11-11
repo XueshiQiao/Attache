@@ -410,6 +410,9 @@ final class MainViewController: NSSplitViewController {
                 forName: name, object: nil, queue: .main
             ) { [weak self] _ in
                 self?.setNeedsWindowSizeReclaim()
+                // A workspace saved on the phone, or by hand, while the app
+                // was in the background: read before a menu asks.
+                if let session = self?.currentSessionID { _ = self?.savedWorkspaces(forSession: session) }
             })
         }
     }
@@ -557,6 +560,19 @@ final class MainViewController: NSSplitViewController {
         }
         sidebar.onRestoreHidden = { [weak self] session in
             self?.inSession(session) { $0.restoreHiddenWindows() }
+        }
+        sidebar.workspaces = { [weak self] session in self?.savedWorkspaces(forSession: session) ?? [] }
+        sidebar.onSaveWindowAsWorkspace = { [weak self] session, window in
+            self?.saveWindowAsWorkspace(windowID: window, inSession: session)
+        }
+        sidebar.onOpenWorkspace = { [weak self] session, id in
+            self?.openWorkspace(id: id, inSession: session)
+        }
+        sidebar.onEditWorkspace = { [weak self] session, id in
+            self?.editWorkspace(id: id, inSession: session)
+        }
+        sidebar.onRemoveWorkspace = { [weak self] session, id in
+            self?.removeWorkspace(id: id, inSession: session)
         }
 
         aiQuotaService.onChange = { [weak self] in
@@ -780,6 +796,134 @@ final class MainViewController: NSSplitViewController {
             return
         }
         action(controller)
+    }
+
+    // MARK: - Saved workspaces
+
+    private func workspaceStore(forSession session: String) -> HostWorkspaces? {
+        host(ofComposite: session).map { HostWorkspaces.shared(for: $0.transport) }
+    }
+
+    /// The list a menu is built from: what was last read, with a fresh read
+    /// started for the next menu. See `HostWorkspaces`.
+    func savedWorkspaces(forSession session: String) -> [SavedWorkspace] {
+        guard let store = workspaceStore(forSession: session) else { return [] }
+        store.refresh()
+        return store.workspaces
+    }
+
+    /// The session a menu-bar item means: the one on screen.
+    var currentSessionForWorkspaces: String? { currentSessionID }
+
+    func openWorkspace(id: String, inSession session: String) {
+        guard let key = SessionKey(composite: session),
+              let store = workspaceStore(forSession: session) else { return }
+        cancelStartupTargeting()   // opening a window is choosing one
+        store.open(id: id, session: key.session) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                if currentSessionID != session { show(sessionID: session) }
+            case .failure(let failure):
+                showStatus("Workspace not opened", detail: failure.message)
+            }
+        }
+    }
+
+    /// The menu bar's "Save Current Window": the active window of the session
+    /// on screen.
+    func saveCurrentWindowAsWorkspace() {
+        guard let session = currentSessionID,
+              let window = connection(id: session)?.windows.first(where: \.isActive) else {
+            showStatus("No window", detail: "There is no window on screen to save")
+            return
+        }
+        saveWindowAsWorkspace(windowID: window.id, inSession: session)
+    }
+
+    private func saveWindowAsWorkspace(windowID: String, inSession session: String) {
+        guard let store = workspaceStore(forSession: session) else { return }
+        store.draft(window: windowID) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let draft):
+                askForWorkspace(draft, id: nil, killing: windowID, inSession: session)
+            case .failure(let failure):
+                showStatus("Workspace not saved", detail: failure.message)
+            }
+        }
+    }
+
+    func editWorkspace(id: String, inSession session: String) {
+        guard let saved = workspaceStore(forSession: session)?.workspaces.first(where: { $0.id == id })
+        else { return }
+        askForWorkspace(
+            WorkspaceDraft(name: saved.name, path: saved.path, command: saved.command),
+            id: id, killing: nil, inSession: session
+        )
+    }
+
+    /// Shows the form, saves, and — only when the person chose the button
+    /// that says so, and only after attache-cli confirmed the save — kills
+    /// the window. A refused save puts the form back with what was typed, so
+    /// nothing is lost to a mistyped folder.
+    private func askForWorkspace(_ draft: WorkspaceDraft, id: String?, killing windowID: String?,
+                                 inSession session: String) {
+        guard let store = workspaceStore(forSession: session) else { return }
+        let connection = connection(id: session)
+        let window = windowID.flatMap { id in connection?.windows.first { $0.id == id } }
+        let label = window.map { "\($0.index):\($0.name)" }
+        let outcome = WorkspaceForm.run(
+            title: id == nil ? "Save as Workspace" : "Edit Workspace", draft: draft, killing: label
+        )
+        let entered: WorkspaceDraft
+        let kill: Bool
+        switch outcome {
+        case .cancel: return
+        case .save(let draft): (entered, kill) = (draft, false)
+        case .saveAndKill(let draft): (entered, kill) = (draft, true)
+        }
+        if kill, let window {
+            TmuxLog.destructive(
+                "save-and-kill chosen for \(window.id) (\(window.index):\(window.name))",
+                session: connection?.sessionName ?? session
+            )
+        }
+        store.save(id: id, entered) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let failure):
+                let alert = NSAlert()
+                alert.messageText = "The workspace was not saved"
+                alert.informativeText = failure.message + (kill ? "\nThe window was not killed." : "")
+                alert.runModal()
+                askForWorkspace(entered, id: id, killing: windowID, inSession: session)
+            case .success:
+                guard kill, let window, let connection else { return }
+                TmuxLog.destructive(
+                    "kill after saving workspace for \(window.id) (\(window.index):\(window.name))"
+                        + " — every process in it ends",
+                    session: connection.sessionName
+                )
+                connection.killWindow(id: window.id)
+            }
+        }
+    }
+
+    func removeWorkspace(id: String, inSession session: String) {
+        guard let store = workspaceStore(forSession: session),
+              let saved = store.workspaces.first(where: { $0.id == id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Remove the workspace “\(saved.name)”?"
+        alert.informativeText = "Only the saved entry goes. The folder, and any window opened from it, stay."
+        alert.addButton(withTitle: "Remove").hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        store.remove(id: id) { [weak self] result in
+            if case .failure(let failure) = result {
+                self?.showStatus("Workspace not removed", detail: failure.message)
+            }
+        }
     }
 
     private func openWorkingDirectory(windowID: String, inSession session: String) {

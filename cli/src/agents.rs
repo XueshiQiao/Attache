@@ -329,7 +329,7 @@ pub fn run_rename(args: &[String]) -> i32 {
 
 /// One line, without the control characters a terminal would act on, and
 /// no longer than [`NAME_MAX`].
-fn tidy_name(name: &str) -> String {
+pub fn tidy_name(name: &str) -> String {
     name.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect::<String>()
@@ -346,7 +346,7 @@ fn tidy_name(name: &str) -> String {
 /// `#{pane_id}` came out as `%0` and `#(echo hi)` was run. `##` is a
 /// literal `#`, so doubling every one makes any name come out as typed —
 /// including `#(touch …)`, which then runs nothing.
-fn tmux_literal(text: &str) -> String {
+pub fn tmux_literal(text: &str) -> String {
     text.replace('#', "##")
 }
 

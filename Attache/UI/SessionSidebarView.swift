@@ -78,6 +78,17 @@ final class SessionSidebarView: NSView {
     var onKillWindow: ((String, String) -> Void)?
     var onOpenWindowPath: ((String, String) -> Void)?
     var onCopyWindowPath: ((String, String) -> Void)?
+    /// Saved workspaces (a folder and the command to start in it, kept on
+    /// the host by attache-cli). The rail draws none of them: they exist here
+    /// only as menu items, so all it needs is the list for a session's host
+    /// at the moment a menu is built, and somewhere to send the click. Each
+    /// callback carries the session the menu was opened on and a window id or
+    /// a workspace id.
+    var workspaces: ((String) -> [SavedWorkspace])?
+    var onSaveWindowAsWorkspace: ((String, String) -> Void)?
+    var onOpenWorkspace: ((String, String) -> Void)?
+    var onEditWorkspace: ((String, String) -> Void)?
+    var onRemoveWorkspace: ((String, String) -> Void)?
     var onRestoreHidden: ((String) -> Void)?
     /// A down host's row was clicked: try its connection again now.
     var onHostRetry: ((String) -> Void)?
@@ -1019,6 +1030,17 @@ final class SessionSidebarView: NSView {
         menu.addItem(copyPath)
         menu.addItem(.separator())
 
+        // Saving is what makes killing the window safe to do, so it sits
+        // above the two ways of getting rid of one. The kill it can lead to
+        // is offered inside the form, named as a kill.
+        let save = NSMenuItem(
+            title: "Save as Workspace…", action: #selector(saveAsWorkspaceFromMenu(_:)), keyEquivalent: ""
+        )
+        save.target = self
+        save.representedObject = target
+        menu.addItem(save)
+        menu.addItem(.separator())
+
         let hide = NSMenuItem(
             title: "Hide From The Sidebar", action: #selector(hideFromMenu(_:)), keyEquivalent: ""
         )
@@ -1089,7 +1111,76 @@ final class SessionSidebarView: NSView {
         newWindow.representedObject = id
         menu.addItem(newWindow)
 
+        let open = NSMenuItem(title: "Open Workspace", action: nil, keyEquivalent: "")
+        open.submenu = workspacesMenu(forSession: id)
+        menu.addItem(open)
+
         menu.popUp(positioning: nil, at: point, in: row)
+    }
+
+    /// The saved workspaces of this session's host: one row each, leading to
+    /// what can be done with it — open, edit, remove. Removing forgets the
+    /// saved entry and nothing else, and the receiver asks first anyway.
+    ///
+    /// A workspace whose folder is gone stays listed with only its Open
+    /// disabled: it can still be edited to point somewhere real.
+    private func workspacesMenu(forSession session: String) -> NSMenu {
+        let menu = NSMenu()
+        let saved = workspaces?(session) ?? []
+        guard !saved.isEmpty else {
+            let empty = NSMenuItem(title: "No Saved Workspaces", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+            let hint = NSMenuItem(
+                title: "Right-click a window and choose Save as Workspace…", action: nil, keyEquivalent: ""
+            )
+            hint.isEnabled = false
+            menu.addItem(hint)
+            return menu
+        }
+        for workspace in saved {
+            let row = NSMenuItem(title: workspace.name, action: nil, keyEquivalent: "")
+            let command = workspace.command.isEmpty ? "plain shell" : workspace.command
+            let folder = workspace.exists ? workspace.path : "\(workspace.path) — folder missing"
+            if #available(macOS 14.4, *) {
+                row.subtitle = "\(folder)  ·  \(command)"
+            }
+            let actions = NSMenu()
+            actions.autoenablesItems = false
+            for (title, action) in [("Open", #selector(openWorkspaceFromMenu(_:))),
+                                    ("Edit…", #selector(editWorkspaceFromMenu(_:))),
+                                    ("Remove…", #selector(removeWorkspaceFromMenu(_:)))] {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                item.target = self
+                item.representedObject = WindowTarget(session: session, id: workspace.id)
+                if action == #selector(openWorkspaceFromMenu(_:)) { item.isEnabled = workspace.exists }
+                if action == #selector(removeWorkspaceFromMenu(_:)) { actions.addItem(.separator()) }
+                actions.addItem(item)
+            }
+            row.submenu = actions
+            menu.addItem(row)
+        }
+        return menu
+    }
+
+    @objc private func saveAsWorkspaceFromMenu(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? WindowTarget else { return }
+        onSaveWindowAsWorkspace?(target.session, target.id)
+    }
+
+    @objc private func openWorkspaceFromMenu(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? WindowTarget else { return }
+        onOpenWorkspace?(target.session, target.id)
+    }
+
+    @objc private func editWorkspaceFromMenu(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? WindowTarget else { return }
+        onEditWorkspace?(target.session, target.id)
+    }
+
+    @objc private func removeWorkspaceFromMenu(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? WindowTarget else { return }
+        onRemoveWorkspace?(target.session, target.id)
     }
 
     @objc private func renameSessionFromMenu(_ sender: NSMenuItem) {

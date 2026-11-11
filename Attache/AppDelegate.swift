@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
     /// Held so `menuNeedsUpdate` can tell this menu from any other the app
     /// delegate might end up the delegate of.
     private var quickActionsMenu: NSMenu?
+    private var workspacesMenu: NSMenu?
     #if DEBUG
         private var inspectorMenuItem: NSMenuItem?
     #endif
@@ -458,6 +459,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         mainMenu.addItem(makePaneMenuItem())
         mainMenu.addItem(makeWindowMenuItem())
         mainMenu.addItem(makeSessionMenuItem())
+        mainMenu.addItem(makeWorkspacesMenuItem())
         mainMenu.addItem(makeQuickActionsMenuItem())
 
         #if DEBUG
@@ -716,7 +718,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         return item
     }
 
+    /// The saved workspaces of the host whose session is on screen, as a
+    /// menu of their own: they are what a window is made *from*, which is
+    /// neither a window nor a session. Rebuilt each time it opens, like
+    /// Quick Actions. A workspace's row carries its folder and command under
+    /// the name, so the settings are read without opening anything, and
+    /// leads to what can be done with it: open, edit, remove.
+    private func makeWorkspacesMenuItem() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "Workspaces")
+        menu.delegate = self
+        item.submenu = menu
+        workspacesMenu = menu
+        return item
+    }
+
+    private func rebuildWorkspacesMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        menu.autoenablesItems = false
+        let session = main?.currentSessionForWorkspaces
+        let saved = session.flatMap { main?.savedWorkspaces(forSession: $0) } ?? []
+
+        // One row per workspace, and everything that can be done to it one
+        // level in: the thing first, then the verbs. Two more lists of the
+        // same names under "Edit" and "Remove" made the person find the
+        // workspace twice.
+        for workspace in saved {
+            let command = workspace.command.isEmpty ? "plain shell" : workspace.command
+            let folder = workspace.exists ? workspace.path : "\(workspace.path) — folder missing"
+            let row = NSMenuItem(title: workspace.name, action: nil, keyEquivalent: "")
+            if #available(macOS 14.4, *) {
+                row.subtitle = "\(folder)  ·  \(command)"
+            }
+            let actions = NSMenu()
+            actions.autoenablesItems = false
+            for (title, action) in [("Open", #selector(openWorkspace(_:))),
+                                    ("Edit…", #selector(editWorkspace(_:))),
+                                    ("Remove…", #selector(removeWorkspace(_:)))] {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                item.target = self
+                item.representedObject = workspace.id
+                if action == #selector(openWorkspace(_:)) { item.isEnabled = workspace.exists }
+                if action == #selector(removeWorkspace(_:)) { actions.addItem(.separator()) }
+                actions.addItem(item)
+            }
+            row.submenu = actions
+            menu.addItem(row)
+        }
+        if saved.isEmpty {
+            let empty = NSMenuItem(title: "No Saved Workspaces", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        }
+        menu.addItem(.separator())
+        let save = NSMenuItem(
+            title: "Save Current Window as Workspace…", action: #selector(saveCurrentWindowAsWorkspace),
+            keyEquivalent: ""
+        )
+        save.target = self
+        save.isEnabled = session != nil
+        menu.addItem(save)
+    }
+
+    @objc private func openWorkspace(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let session = main?.currentSessionForWorkspaces else { return }
+        main?.openWorkspace(id: id, inSession: session)
+    }
+
+    @objc private func editWorkspace(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let session = main?.currentSessionForWorkspaces else { return }
+        main?.editWorkspace(id: id, inSession: session)
+    }
+
+    @objc private func removeWorkspace(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let session = main?.currentSessionForWorkspaces else { return }
+        main?.removeWorkspace(id: id, inSession: session)
+    }
+
+    @objc private func saveCurrentWindowAsWorkspace() {
+        main?.saveCurrentWindowAsWorkspace()
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === workspacesMenu { return rebuildWorkspacesMenu(menu) }
         guard menu === quickActionsMenu else { return }
         menu.removeAllItems()
         let actions = AppSettings.quickActions.filter(\.isRunnable)

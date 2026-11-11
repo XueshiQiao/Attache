@@ -115,6 +115,50 @@ MainActor.assumeIsolated {
     check(lines.feed(bytes.prefix(cut)).isEmpty, "half a line is no line")
     check(lines.feed(bytes.suffix(from: cut)) == ["{\"t\":\"items\",\"text\":\"中文\"}", "{\"t\":\"status\"}"],
           "the rest arrives whole")
+
+    // Workspaces. Only ids reach a command line as themselves; the folder
+    // and the command, which are free text, go base64-encoded.
+    let draft = WorkspaceDraft(name: "it's", path: "~/Code/x y", command: "cyolo; echo '$1'")
+    check(WorkspaceCommands.save(id: nil, draft)
+            == ["workspace", "save", "--name", "aXQncw==", "--path", "fi9Db2RlL3ggeQ==",
+                "--command", "Y3lvbG87IGVjaG8gJyQxJw=="], "a save carries text as base64")
+    check(WorkspaceCommands.save(id: nil, WorkspaceDraft(name: "n", path: "/p", command: ""))?.last == "=",
+          "an empty command is still a word: ssh would drop an empty one")
+    check(WorkspaceCommands.save(id: "3f9a1c0e", draft)?.prefix(4) == ["workspace", "save", "--id", "3f9a1c0e"],
+          "an edit names the workspace")
+    check(WorkspaceCommands.save(id: "a b", draft) == nil && WorkspaceCommands.remove(id: "x;rm") == nil,
+          "an id that is not one never reaches a command line")
+    check(WorkspaceCommands.open(id: "3f9a1c0e", session: "$12") == ["workspace", "open", "3f9a1c0e", "--session", "$12"],
+          "open names the session by id")
+    check(WorkspaceCommands.open(id: "3f9a1c0e", session: "Dev") == nil
+            && WorkspaceCommands.open(id: "3f9a1c0e", session: "$1 ") == nil
+            && WorkspaceCommands.open(id: "3f9a1c0e", session: "@1") == nil, "and by nothing else")
+    check(WorkspaceCommands.draft(window: "@7") == ["workspace", "draft", "@7"]
+            && WorkspaceCommands.draft(window: "$7") == nil, "a draft names a window by id")
+
+    let listed = SavedWorkspace.parse([
+        #"{"id":"3f9a1c0e","name":"Paw","path":"~/p","command":"cyolo","exists":true}"#,
+        #"{"id":"x0123","name":"Gone","path":"/gone","command":"","exists":false}"#,
+        #"{"id":"bad id","name":"N","path":"/p"}"#, "not json",
+    ])
+    check(listed.map(\.id) == ["3f9a1c0e", "x0123"] && listed[0].command == "cyolo" && !listed[1].exists,
+          "the list reads, and a row with an unusable id is left out")
+
+    // A save is followed by a kill when the person asked for one, so only an
+    // answer that says it happened counts as one.
+    func saved(_ lines: [String]?) -> Bool {
+        if case .success = WorkspaceCommands.answer(lines, flag: "saved") { return true }
+        return false
+    }
+    check(saved([#"{"id":"a","saved":true}"#]), "saved")
+    check(!saved([#"{"saved":false,"why":"the name is empty"}"#]), "refused")
+    check(!saved(nil) && !saved([]) && !saved(["Usage:"]) && !saved([#"{"removed":true}"#]),
+          "no answer, an older attache-cli, and another command's answer are not a save")
+    if case .failure(let failure) = WorkspaceCommands.answer([#"{"saved":false,"why":"the name is empty"}"#], flag: "saved") {
+        check(failure.message == "the name is empty", "the reason is attache-cli's own")
+    } else {
+        check(false, "a refusal carries its reason")
+    }
 }
 
 print(failures == 0 ? "\(cases) cases, all pass" : "\(failures) of \(cases) cases fail")

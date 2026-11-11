@@ -26,6 +26,11 @@ Each runs as its own short process, except `follow`, `agents --watch` and
 | `input <%pane> --text <base64> [--enter]` / `--key <name> --if <condition>` | clients | types into an agent, one message at a time per pane, only after reading the screen again itself |
 | `usage` | clients | the AI subscriptions' usage (Claude, Antigravity, Grok), refreshed by the desktop app on request |
 | `usage --watch` | clients | the same, pushed whenever it changes; asks the desktop app every 5 minutes |
+| `workspaces` | clients | the saved workspaces, one JSON object a line |
+| `workspace save [--id <id>] --name <base64> --path <base64> --command <base64>` | clients | keeps a workspace (a folder and the command to start in it); with `--id`, changes that one |
+| `workspace remove <id>` | clients | forgets it |
+| `workspace open <id> --session <$N>` | clients | a new window in that session, in the folder, running the command in the person's own shell |
+| `workspace draft <@window>` | clients | what saving that window would start from: its name, its folder, how its agent was started |
 | `statusline claude` | Claude Code | keeps the status line snapshot, draws the old status line |
 | `send <file>...` (also as `attache-send`) | people, agents | hands files to the phone's inbox |
 
@@ -56,6 +61,14 @@ order between the two kinds. A `usage` line has `plan`, `source`,
 `window_seconds`, all present only once an ask has succeeded; `error`
 (`failed`, `timeout`, `busy`) and `failed_at` when the last ask failed,
 beside the last good numbers if there are any. Times are epoch seconds.
+
+`workspaces`: `id`, `name`, `path` (as written: `~/…` is the home folder
+of whoever runs it), `command` (empty for a plain shell), `exists` (the
+folder is there now). `workspace save` answers the same object with
+`"saved":true`, or `{"saved":false,"why"}`; `remove` answers
+`{"removed":true,"id"}`, `open` `{"opened":true,"id","window","pane"}`,
+`draft` `{"draft":true,"name","path","command"}`, each with `false` and a
+`why` when it did not happen. Opening one twice makes two windows.
 
 Nothing in it is worked out or asked here. AIUsageKit
 (github.com/XueshiQiao/AIUsageKit) asks each provider's own CLI and keeps
@@ -138,6 +151,13 @@ state folder: every watch's start and end with where it came from, and
 every call to the desktop app with each provider's answer, errors word for
 word. The app logs its side of each call to
 `~/Library/Logs/Attache/desktop-calls.log`.
+
+Workspaces are the person's own and live with their settings, not here:
+`~/.config/attache-workspaces.toml`, one `[[workspace]]` block each (`id`,
+`name`, `path`, `command`). It is theirs to edit by hand: this program
+rewrites only the values of those four keys in the block it is changing,
+writes through a link to the file it points at, and a block written
+without an `id` works as it is.
 
 Processes never talk to each other, only through these files: each is
 replaced by rename, never edited in place, and every read-modify-write takes

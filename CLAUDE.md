@@ -122,6 +122,17 @@ on (`AttacheCliInstaller`, `~/.local/bin/attache-cli`, never over a newer
 one), from the builds `cli/build-all.sh` puts in `cli/dist/`, which the
 bundle carries as `dist/` — so run that script before building the app.
 
+**Saved workspaces are attache-cli's too, and they live on the host.** A
+workspace is a folder and the command to start in it, kept in the host's
+`~/.config/attache-workspaces.toml` so a window can be closed and made again
+from either client. That file is the one preference that is *not* in
+`SettingsFile`, on purpose: the folder is a folder on that machine, and the
+phone has to read the same list. The app names a workspace by id and nothing
+else — the folder and the command are the person's free text, and only
+attache-cli, on the host, hands them to tmux (`workspace open`). The menus
+are built from `HostWorkspaces`, a cache of the last read; nothing about a
+workspace is authored or kept here.
+
 **No key reaches an agent on the strength of what this app was shown.** Every
 key and message goes through `attache-cli input`, which names the screen it is
 for (`--if approval:<fp>`, `--if panel[:<fp>]`, `--if working`) and reads the
@@ -497,6 +508,7 @@ touching `Attache/Agents/`:
 swiftc -O -o /tmp/attachecliccheck Attache/Agents/AttacheCliProtocol.swift \
   Attache/Agents/AgentChatModel.swift Attache/Agents/AttacheCliLink.swift \
   Attache/Agents/HostAgents.swift Attache/Agents/AttacheCliInstaller.swift \
+  Attache/Agents/Workspaces.swift \
   Attache/Tmux/TmuxTransport.swift Attache/Tmux/TmuxSocket.swift \
   Attache/Tmux/PipeRead.swift Tools/AttacheCliCheck/main.swift
 /tmp/attachecliccheck

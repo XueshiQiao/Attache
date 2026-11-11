@@ -21,6 +21,7 @@ mod statusline;
 mod time;
 mod tmux;
 mod usage;
+mod workspaces;
 
 use serde_json::json;
 
@@ -72,11 +73,13 @@ fn dispatch(args: &[String]) -> i32 {
         "screen" => screen::run(rest),
         "statusline" => statusline::run(rest),
         "usage" => usage::run(rest),
+        "workspaces" => workspaces::run_list(rest),
+        "workspace" => workspaces::run(rest),
         "setup" => setup::run_setup(),
         "uninstall" => setup::run_uninstall(),
         _ => {
             eprintln!(
-                "attache-cli {}\n\nUsage:\n  attache-cli version\n  attache-cli send <file>...\n  attache-cli agents [--pane %N]\n  attache-cli seen <kind> <conversation>\n  attache-cli rename <%pane> --name <base64>\n  attache-cli follow <claude|agy> <transcript> [--before <offset>]\n  attache-cli input <%pane> --text <base64> [--enter] | --key <name> --if <approval:<fingerprint>|panel|working>\n  attache-cli screen <%pane>\n  attache-cli usage [--watch]\n  attache-cli setup | uninstall\n  attache-cli statusline claude   (run by Claude Code)",
+                "attache-cli {}\n\nUsage:\n  attache-cli version\n  attache-cli send <file>...\n  attache-cli agents [--pane %N]\n  attache-cli seen <kind> <conversation>\n  attache-cli rename <%pane> --name <base64>\n  attache-cli follow <claude|agy> <transcript> [--before <offset>]\n  attache-cli input <%pane> --text <base64> [--enter] | --key <name> --if <approval:<fingerprint>|panel|working>\n  attache-cli screen <%pane>\n  attache-cli usage [--watch]\n  attache-cli workspaces\n  attache-cli workspace save [--id <id>] --name <base64> --path <base64> --command <base64>\n  attache-cli workspace remove <id>\n  attache-cli workspace open <id> --session <$N>\n  attache-cli workspace draft <@window>\n  attache-cli setup | uninstall\n  attache-cli statusline claude   (run by Claude Code)",
                 env!("CARGO_PKG_VERSION")
             );
             if cmd == "help" || cmd == "--help" {
