@@ -26,11 +26,12 @@ Each runs as its own short process, except `follow`, `agents --watch` and
 | `input <%pane> --text <base64> [--enter]` / `--key <name> --if <condition>` | clients | types into an agent, one message at a time per pane, only after reading the screen again itself |
 | `usage` | clients | the AI subscriptions' usage (Claude, Antigravity, Grok), refreshed by the desktop app on request |
 | `usage --watch` | clients | the same, pushed whenever it changes; asks the desktop app every 5 minutes |
-| `workspaces` | clients | the saved workspaces, one JSON object a line |
-| `workspace save [--id <id>] --name <base64> --path <base64> --command <base64>` | clients | keeps a workspace (a folder and the command to start in it); with `--id`, changes that one |
-| `workspace remove <id>` | clients | forgets it |
-| `workspace open <id> --session <$N>` | clients | a new window in that session, in the folder, running the command in the person's own shell |
-| `workspace draft <@window>` | clients | what saving that window would start from: its name, its folder, how its agent was started |
+| `projects` | clients | the saved projects, one JSON object a line |
+| `project save [--id <id>] --name <base64> --path <base64> --command <base64>` | clients | keeps a project (a folder and the command to start in it); with `--id`, changes that one |
+| `project remove <id>` | clients | forgets it |
+| `project open <id> --session <$N>` | clients | a new window in that session, in the folder, running the command in the person's own shell |
+| `project draft <@window>` | clients | what saving that window would start from: its name, its folder, how its agent was started |
+| `project commands [--set <base64>]` | clients | the person's often-used commands, offered when a project is saved; `--set` replaces the list (one command a line) |
 | `statusline claude` | Claude Code | keeps the status line snapshot, draws the old status line |
 | `send <file>...` (also as `attache-send`) | people, agents | hands files to the phone's inbox |
 
@@ -62,13 +63,20 @@ order between the two kinds. A `usage` line has `plan`, `source`,
 (`failed`, `timeout`, `busy`) and `failed_at` when the last ask failed,
 beside the last good numbers if there are any. Times are epoch seconds.
 
-`workspaces`: `id`, `name`, `path` (as written: `~/…` is the home folder
+`projects`: `id`, `name`, `path` (as written: `~/…` is the home folder
 of whoever runs it), `command` (empty for a plain shell), `exists` (the
-folder is there now). `workspace save` answers the same object with
+folder is there now). `project save` answers the same object with
 `"saved":true`, or `{"saved":false,"why"}`; `remove` answers
 `{"removed":true,"id"}`, `open` `{"opened":true,"id","window","pane"}`,
 `draft` `{"draft":true,"name","path","command"}`, each with `false` and a
 `why` when it did not happen. Opening one twice makes two windows.
+`projects` ends with `{"commands":[…]}`, which is also what `project
+commands` prints: the commands a client offers in its save form. Opening
+never consults it; a project runs the command in its own block. Until the
+person has written a list, it is the commands their saved projects run.
+That line is always the last, so an answer without it was cut short; it
+carries `commands_why` when the list in the file cannot be edited from a
+client (written over several lines).
 
 Nothing in it is worked out or asked here. AIUsageKit
 (github.com/XueshiQiao/AIUsageKit) asks each provider's own CLI and keeps
@@ -152,9 +160,13 @@ every call to the desktop app with each provider's answer, errors word for
 word. The app logs its side of each call to
 `~/Library/Logs/Attache/desktop-calls.log`.
 
-Workspaces are the person's own and live with their settings, not here:
-`~/.config/attache-workspaces.toml`, one `[[workspace]]` block each (`id`,
-`name`, `path`, `command`). It is theirs to edit by hand: this program
+Projects are the person's own and live with their settings, not here:
+`~/.config/attache-projects.toml`, one `[[project]]` block each (`id`,
+`name`, `path`, `command`), and above them `commands = ["cyolo", …]`. A
+file from 0.3.9/0.3.10, `attache-workspaces.toml` with `[[workspace]]`
+blocks, is read as it is and moved to the new name by the first change
+(beside its target, behind a new link, when it was a link into a dotfiles
+folder; left alone when a new file is already there). It is theirs to edit by hand: this program
 rewrites only the values of those four keys in the block it is changing,
 writes through a link to the file it points at, and a block written
 without an `id` works as it is.

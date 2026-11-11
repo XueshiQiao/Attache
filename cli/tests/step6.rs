@@ -1,4 +1,4 @@
-//! `workspace`: saved, listed, opened and removed against a real tmux server
+//! `project`: saved, listed, opened and removed against a real tmux server
 //! of its own (`-L` on every command) and a home folder of its own. The
 //! server's shell is bash with a startup file that defines an alias, because
 //! an alias is the thing a saved command most often is.
@@ -79,18 +79,19 @@ impl Server {
     }
 
     fn save(&self, name: &str, path: &str, command: &str) -> Value {
-        self.json(&["workspace", "save", "--name", &b64(name), "--path", &b64(path), "--command", &b64(command)])
+        self.json(&["project", "save", "--name", &b64(name), "--path", &b64(path), "--command", &b64(command)])
     }
 
     fn list(&self) -> Vec<Value> {
-        String::from_utf8_lossy(&self.cli(&["workspaces"]).stdout)
+        String::from_utf8_lossy(&self.cli(&["projects"]).stdout)
             .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|v| v.get("id").is_some())
             .collect()
     }
 
     fn file(&self) -> String {
-        fs::read_to_string(self.home.path().join(".config/attache-workspaces.toml")).unwrap()
+        fs::read_to_string(self.home.path().join(".config/attache-projects.toml")).unwrap()
     }
 
     fn session(&self) -> String {
@@ -114,7 +115,7 @@ impl Drop for Server {
 }
 
 #[test]
-fn a_workspace_is_saved_listed_edited_and_removed() {
+fn a_project_is_saved_listed_edited_and_removed() {
     let Some(tmux) = tmux_bin() else { return };
     let s = Server::start(tmux, "file");
     assert!(s.list().is_empty());
@@ -130,8 +131,8 @@ fn a_workspace_is_saved_listed_edited_and_removed() {
 
     // What the person adds by hand stays through an edit.
     let by_hand = s.file().replace("command = \"cyolo\"", "command = \"cyolo\"  # my alias\ncolour = \"red\"");
-    fs::write(s.home.path().join(".config/attache-workspaces.toml"), &by_hand).unwrap();
-    let e = s.json(&["workspace", "save", "--id", ida, "--name", &b64("Paw"), "--path", &b64("~/code"), "--command", &b64("claude -c")]);
+    fs::write(s.home.path().join(".config/attache-projects.toml"), &by_hand).unwrap();
+    let e = s.json(&["project", "save", "--id", ida, "--name", &b64("Paw"), "--path", &b64("~/code"), "--command", &b64("claude -c")]);
     assert_eq!(e["id"], ida);
     assert_eq!(s.file(), by_hand.replace("\"Paste Paw\"", "\"Paw\"").replace("\"cyolo\"", "\"claude -c\""));
 
@@ -141,8 +142,8 @@ fn a_workspace_is_saved_listed_edited_and_removed() {
     }
     assert_eq!(s.list().len(), 2);
 
-    assert_eq!(s.json(&["workspace", "remove", ida])["removed"], true);
-    assert_eq!(s.json(&["workspace", "remove", ida])["removed"], false);
+    assert_eq!(s.json(&["project", "remove", ida])["removed"], true);
+    assert_eq!(s.json(&["project", "remove", ida])["removed"], false);
     assert_eq!(s.list().len(), 1);
     assert!(s.file().contains("colour = \"red\"") == false && s.file().contains("name = \"B\""));
 }
@@ -151,10 +152,10 @@ fn a_workspace_is_saved_listed_edited_and_removed() {
 fn a_link_to_a_dotfiles_copy_stays_a_link() {
     let Some(tmux) = tmux_bin() else { return };
     let s = Server::start(tmux, "link");
-    let real = s.home.path().join("dotfiles/workspaces.toml");
+    let real = s.home.path().join("dotfiles/projects.toml");
     fs::create_dir_all(real.parent().unwrap()).unwrap();
     fs::write(&real, "").unwrap();
-    let link = s.home.path().join(".config/attache-workspaces.toml");
+    let link = s.home.path().join(".config/attache-projects.toml");
     fs::create_dir_all(link.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&real, &link).unwrap();
     assert_eq!(s.save("A", "/tmp", "")["saved"], true);
@@ -175,7 +176,7 @@ fn opening_makes_a_window_in_the_folder_running_the_command() {
 
     // The command is an alias, with an argument that needs its quotes.
     let id = s.save("W #{pane_id}", path, "wsalias 'ran here'")["id"].as_str().unwrap().to_owned();
-    let o = s.json(&["workspace", "open", &id, "--session", &session]);
+    let o = s.json(&["project", "open", &id, "--session", &session]);
     assert_eq!(o["opened"], true, "{o}");
     let (window, pane) = (o["window"].as_str().unwrap(), o["pane"].as_str().unwrap());
     s.wait(pane, || dir.join("ran here").exists());
@@ -186,29 +187,29 @@ fn opening_makes_a_window_in_the_folder_running_the_command() {
     assert_eq!(s.tmux(&["display-message", "-p", "-t", pane, "#{pane_dead}|#{pane_current_path}"]), format!("0|{path}"));
 
     // Opened again, it is another window.
-    let again = s.json(&["workspace", "open", &id, "--session", &session]);
+    let again = s.json(&["project", "open", &id, "--session", &session]);
     assert_ne!(again["window"], o["window"]);
 
     // A command the shell cannot parse still leaves a shell to read why.
     let broken = s.save("Broken", path, "if then (")["id"].as_str().unwrap().to_owned();
-    let o = s.json(&["workspace", "open", &broken, "--session", &session]);
+    let o = s.json(&["project", "open", &broken, "--session", &session]);
     let pane = o["pane"].as_str().unwrap().to_owned();
     s.wait(&pane, || s.tmux(&["capture-pane", "-p", "-t", &pane]).contains("ready>"));
     assert!(s.tmux(&["capture-pane", "-p", "-t", &pane]).contains("syntax error"));
 
     // No command: tmux's own new window, nothing run in it.
     let plain = s.save("Plain", path, "")["id"].as_str().unwrap().to_owned();
-    let o = s.json(&["workspace", "open", &plain, "--session", &session]);
+    let o = s.json(&["project", "open", &plain, "--session", &session]);
     let pane = o["pane"].as_str().unwrap().to_owned();
     s.wait(&pane, || s.tmux(&["display-message", "-p", "-t", &pane, "#{pane_current_path}"]) == path);
 
-    // A folder that is gone, a workspace that is gone, a session that is gone.
+    // A folder that is gone, a project that is gone, a session that is gone.
     let gone = s.save("Gone", "/nonexistent/attache", "")["id"].as_str().unwrap().to_owned();
     let before = s.tmux(&["list-windows", "-a"]).lines().count();
     for args in [
-        vec!["workspace", "open", gone.as_str(), "--session", session.as_str()],
-        vec!["workspace", "open", "nosuchid", "--session", session.as_str()],
-        vec!["workspace", "open", plain.as_str(), "--session", "$999"],
+        vec!["project", "open", gone.as_str(), "--session", session.as_str()],
+        vec!["project", "open", "nosuchid", "--session", session.as_str()],
+        vec!["project", "open", plain.as_str(), "--session", "$999"],
     ] {
         let o = s.json(&args);
         assert_eq!(o["opened"], false, "{args:?}");
@@ -216,7 +217,7 @@ fn opening_makes_a_window_in_the_folder_running_the_command() {
     }
     assert_eq!(s.tmux(&["list-windows", "-a"]).lines().count(), before);
     // Anything that is not a session id is refused before tmux sees it.
-    assert_eq!(s.cli(&["workspace", "open", &plain, "--session", "probe"]).status.code(), Some(2));
+    assert_eq!(s.cli(&["project", "open", &plain, "--session", "probe"]).status.code(), Some(2));
 }
 
 #[test]
@@ -225,10 +226,97 @@ fn a_draft_is_the_windows_name_and_folder() {
     let s = Server::start(tmux, "draft");
     let dir = fs::canonicalize(s.home.path()).unwrap();
     let window = s.tmux(&["new-window", "-P", "-F", "#{window_id}", "-t", "probe:", "-n", "notes", "-c", dir.to_str().unwrap(), "cat"]);
-    let d = s.json(&["workspace", "draft", &window]);
+    let d = s.json(&["project", "draft", &window]);
     assert_eq!(d["draft"], true);
     assert_eq!(d["name"], "notes");
     assert_eq!(d["path"], dir.to_str().unwrap());
     assert_eq!(d["command"], "");
-    assert_eq!(s.json(&["workspace", "draft", "@999"])["draft"], false);
+    assert_eq!(s.json(&["project", "draft", "@999"])["draft"], false);
+}
+
+#[test]
+fn the_commands_list_is_set_and_read_and_comes_with_the_projects() {
+    let Some(tmux) = tmux_bin() else { return };
+    let s = Server::start(tmux, "commands");
+    assert_eq!(s.json(&["project", "commands"])["commands"], serde_json::json!([]));
+    assert_eq!(s.save("A", "/tmp", "cyolo")["saved"], true);
+    // No list written yet: the commands the saved projects run.
+    assert_eq!(s.json(&["project", "commands"])["commands"], serde_json::json!(["cyolo"]));
+    let set = s.json(&["project", "commands", "--set", &b64("cyolo\n gemini \n\ncyolo\nclaude --model 'x y'\n")]);
+    assert_eq!(set["commands"], serde_json::json!(["cyolo", "gemini", "claude --model 'x y'"]));
+    assert_eq!(s.json(&["project", "commands"])["commands"], set["commands"]);
+    // The project saved before the list was there is still there.
+    assert_eq!(s.list().len(), 1);
+    let all = String::from_utf8_lossy(&s.cli(&["projects"]).stdout).into_owned();
+    let last: Value = serde_json::from_str(all.lines().last().unwrap()).unwrap();
+    assert_eq!(last["commands"], set["commands"]);
+    // Written over several lines by hand: said, so a client does not offer
+    // to edit what it would be refused for.
+    let path = s.home.path().join(".config/attache-projects.toml");
+    let by_hand = s.file().replace("commands = [\"cyolo\", \"gemini\", \"claude --model 'x y'\"]", "commands = [\n  \"cyolo\",\n]");
+    fs::write(&path, &by_hand).unwrap();
+    let all = String::from_utf8_lossy(&s.cli(&["projects"]).stdout).into_owned();
+    let last: Value = serde_json::from_str(all.lines().last().unwrap()).unwrap();
+    assert!(last["commands_why"].as_str().is_some_and(|w| !w.is_empty()));
+    assert_eq!(s.json(&["project", "commands", "--set", &b64("x")])["commands"], false);
+    assert_eq!(s.file(), by_hand);
+    fs::write(&path, by_hand.replace("commands = [\n  \"cyolo\",\n]", "commands = [\"cyolo\"]")).unwrap();
+    // Emptied again.
+    assert_eq!(s.json(&["project", "commands", "--set", "="])["commands"], serde_json::json!([]));
+}
+
+#[test]
+fn the_file_from_before_the_rename_is_read_and_then_moved() {
+    let Some(tmux) = tmux_bin() else { return };
+    let s = Server::start(tmux, "rename");
+    let config = s.home.path().join(".config");
+    fs::create_dir_all(&config).unwrap();
+    let old = config.join("attache-workspaces.toml");
+    fs::write(&old, "# mine\n[[workspace]]\nid = \"abcd1234\"\nname = \"Old\"\npath = \"/tmp\"\ncommand = \"cyolo\"\n").unwrap();
+    // Reading shows it and moves nothing.
+    assert_eq!(s.list()[0]["name"], "Old");
+    assert!(old.exists() && !config.join("attache-projects.toml").exists());
+    // The first change writes the new file, with the old one's contents, and
+    // the old one goes.
+    assert_eq!(s.save("New", "/tmp", "")["saved"], true);
+    assert!(!old.exists());
+    assert!(s.file().starts_with("# mine\n[[project]]\nid = \"abcd1234\"\nname = \"Old\""));
+    assert_eq!(s.list().len(), 2);
+
+    // An old file that turns up beside the new one was never read, so it
+    // is not this program's to delete.
+    fs::write(&old, "[[workspace]]\npath = \"/kept\"\n").unwrap();
+    assert_eq!(s.save("Third", "/tmp", "")["saved"], true);
+    assert!(old.exists());
+    assert_eq!(s.list().len(), 3);
+}
+
+#[test]
+fn an_old_file_linked_into_dotfiles_moves_inside_the_dotfiles() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(tmux) = tmux_bin() else { return };
+    let s = Server::start(tmux, "relink");
+    let config = s.home.path().join(".config");
+    let dotfiles = s.home.path().join("dotfiles");
+    fs::create_dir_all(&config).unwrap();
+    fs::create_dir_all(&dotfiles).unwrap();
+    let real_old = dotfiles.join("attache-workspaces.toml");
+    fs::write(&real_old, "[[workspace]]\nid = \"abcd1234\"\npath = \"/tmp\"\n").unwrap();
+    fs::set_permissions(&real_old, fs::Permissions::from_mode(0o600)).unwrap();
+    std::os::unix::fs::symlink(&real_old, config.join("attache-workspaces.toml")).unwrap();
+
+    assert_eq!(s.save("New", "/tmp", "")["saved"], true);
+    // The new file is in the dotfiles folder, private as the old one was,
+    // with a link to it where the program looks.
+    let real_new = dotfiles.join("attache-projects.toml");
+    assert!(fs::read_to_string(&real_new).unwrap().contains("name = \"New\""));
+    assert_eq!(fs::metadata(&real_new).unwrap().permissions().mode() & 0o777, 0o600);
+    assert!(fs::symlink_metadata(config.join("attache-projects.toml")).unwrap().file_type().is_symlink());
+    // The link is gone; the file in the person's repository is untouched.
+    assert!(fs::symlink_metadata(config.join("attache-workspaces.toml")).is_err());
+    assert!(real_old.exists());
+    assert_eq!(s.list().len(), 2);
+    // And the next change goes through the link.
+    assert_eq!(s.save("Again", "/tmp", "")["saved"], true);
+    assert!(fs::read_to_string(&real_new).unwrap().contains("name = \"Again\""));
 }

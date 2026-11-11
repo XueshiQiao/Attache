@@ -4,6 +4,7 @@
 //   swiftc -O -o /tmp/attachecliccheck Attache/Agents/AttacheCliProtocol.swift \
 //     Attache/Agents/AgentChatModel.swift Attache/Agents/AttacheCliLink.swift \
 //     Attache/Agents/HostAgents.swift Attache/Agents/AttacheCliInstaller.swift \
+//     Attache/Agents/Projects.swift \
 //     Attache/Tmux/TmuxTransport.swift Attache/Tmux/TmuxSocket.swift \
 //     Attache/Tmux/PipeRead.swift Tools/AttacheCliCheck/main.swift
 //   /tmp/attachecliccheck
@@ -116,27 +117,27 @@ MainActor.assumeIsolated {
     check(lines.feed(bytes.suffix(from: cut)) == ["{\"t\":\"items\",\"text\":\"中文\"}", "{\"t\":\"status\"}"],
           "the rest arrives whole")
 
-    // Workspaces. Only ids reach a command line as themselves; the folder
+    // Projects. Only ids reach a command line as themselves; the folder
     // and the command, which are free text, go base64-encoded.
-    let draft = WorkspaceDraft(name: "it's", path: "~/Code/x y", command: "cyolo; echo '$1'")
-    check(WorkspaceCommands.save(id: nil, draft)
-            == ["workspace", "save", "--name", "aXQncw==", "--path", "fi9Db2RlL3ggeQ==",
+    let draft = ProjectDraft(name: "it's", path: "~/Code/x y", command: "cyolo; echo '$1'")
+    check(ProjectCommands.save(id: nil, draft)
+            == ["project", "save", "--name", "aXQncw==", "--path", "fi9Db2RlL3ggeQ==",
                 "--command", "Y3lvbG87IGVjaG8gJyQxJw=="], "a save carries text as base64")
-    check(WorkspaceCommands.save(id: nil, WorkspaceDraft(name: "n", path: "/p", command: ""))?.last == "=",
+    check(ProjectCommands.save(id: nil, ProjectDraft(name: "n", path: "/p", command: ""))?.last == "=",
           "an empty command is still a word: ssh would drop an empty one")
-    check(WorkspaceCommands.save(id: "3f9a1c0e", draft)?.prefix(4) == ["workspace", "save", "--id", "3f9a1c0e"],
-          "an edit names the workspace")
-    check(WorkspaceCommands.save(id: "a b", draft) == nil && WorkspaceCommands.remove(id: "x;rm") == nil,
+    check(ProjectCommands.save(id: "3f9a1c0e", draft)?.prefix(4) == ["project", "save", "--id", "3f9a1c0e"],
+          "an edit names the project")
+    check(ProjectCommands.save(id: "a b", draft) == nil && ProjectCommands.remove(id: "x;rm") == nil,
           "an id that is not one never reaches a command line")
-    check(WorkspaceCommands.open(id: "3f9a1c0e", session: "$12") == ["workspace", "open", "3f9a1c0e", "--session", "$12"],
+    check(ProjectCommands.open(id: "3f9a1c0e", session: "$12") == ["project", "open", "3f9a1c0e", "--session", "$12"],
           "open names the session by id")
-    check(WorkspaceCommands.open(id: "3f9a1c0e", session: "Dev") == nil
-            && WorkspaceCommands.open(id: "3f9a1c0e", session: "$1 ") == nil
-            && WorkspaceCommands.open(id: "3f9a1c0e", session: "@1") == nil, "and by nothing else")
-    check(WorkspaceCommands.draft(window: "@7") == ["workspace", "draft", "@7"]
-            && WorkspaceCommands.draft(window: "$7") == nil, "a draft names a window by id")
+    check(ProjectCommands.open(id: "3f9a1c0e", session: "Dev") == nil
+            && ProjectCommands.open(id: "3f9a1c0e", session: "$1 ") == nil
+            && ProjectCommands.open(id: "3f9a1c0e", session: "@1") == nil, "and by nothing else")
+    check(ProjectCommands.draft(window: "@7") == ["project", "draft", "@7"]
+            && ProjectCommands.draft(window: "$7") == nil, "a draft names a window by id")
 
-    let listed = SavedWorkspace.parse([
+    let listed = SavedProject.parse([
         #"{"id":"3f9a1c0e","name":"Paw","path":"~/p","command":"cyolo","exists":true}"#,
         #"{"id":"x0123","name":"Gone","path":"/gone","command":"","exists":false}"#,
         #"{"id":"bad id","name":"N","path":"/p"}"#, "not json",
@@ -144,17 +145,32 @@ MainActor.assumeIsolated {
     check(listed.map(\.id) == ["3f9a1c0e", "x0123"] && listed[0].command == "cyolo" && !listed[1].exists,
           "the list reads, and a row with an unusable id is left out")
 
+    check(ProjectCommands.setCommands(["cyolo", "gemini"]) == ["project", "commands", "--set", "Y3lvbG8KZ2VtaW5p"]
+            && ProjectCommands.setCommands([]).last == "=", "the commands list goes one a line, base64")
+    check(ProjectCommands.commands(in: [#"{"id":"a","name":"n","path":"/p"}"#, #"{"commands":["cyolo","gemini"]}"#])
+            == ["cyolo", "gemini"], "the list that ends `projects` reads")
+    check(ProjectCommands.commands(in: [#"{"commands":false,"why":"x"}"#]) == nil
+            && ProjectCommands.commands(in: ["Usage:"]) == nil, "a refusal and an older attache-cli hold no list")
+
+    // A whole answer ends with the commands line; one without it (an ssh
+    // that dropped, an attache-cli that failed: both print nothing) is not
+    // "no projects", and must not replace the list the app holds.
+    check(ProjectCommands.last([#"{"id":"a","name":"n","path":"/p"}"#, #"{"commands":["x"],"commands_why":"w"}"#])?["commands_why"] as? String == "w",
+          "the last line is read, with why the list cannot be edited")
+    check(ProjectCommands.last([]) == nil && ProjectCommands.last([#"{"id":"a","name":"n","path":"/p"}"#]) == nil,
+          "an empty answer, or one cut short, is not a list")
+
     // A save is followed by a kill when the person asked for one, so only an
     // answer that says it happened counts as one.
     func saved(_ lines: [String]?) -> Bool {
-        if case .success = WorkspaceCommands.answer(lines, flag: "saved") { return true }
+        if case .success = ProjectCommands.answer(lines, flag: "saved") { return true }
         return false
     }
     check(saved([#"{"id":"a","saved":true}"#]), "saved")
     check(!saved([#"{"saved":false,"why":"the name is empty"}"#]), "refused")
     check(!saved(nil) && !saved([]) && !saved(["Usage:"]) && !saved([#"{"removed":true}"#]),
           "no answer, an older attache-cli, and another command's answer are not a save")
-    if case .failure(let failure) = WorkspaceCommands.answer([#"{"saved":false,"why":"the name is empty"}"#], flag: "saved") {
+    if case .failure(let failure) = ProjectCommands.answer([#"{"saved":false,"why":"the name is empty"}"#], flag: "saved") {
         check(failure.message == "the name is empty", "the reason is attache-cli's own")
     } else {
         check(false, "a refusal carries its reason")

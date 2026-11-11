@@ -410,9 +410,9 @@ final class MainViewController: NSSplitViewController {
                 forName: name, object: nil, queue: .main
             ) { [weak self] _ in
                 self?.setNeedsWindowSizeReclaim()
-                // A workspace saved on the phone, or by hand, while the app
+                // A project saved on the phone, or by hand, while the app
                 // was in the background: read before a menu asks.
-                if let session = self?.currentSessionID { _ = self?.savedWorkspaces(forSession: session) }
+                if let session = self?.currentSessionID { _ = self?.savedProjects(forSession: session) }
             })
         }
     }
@@ -561,18 +561,18 @@ final class MainViewController: NSSplitViewController {
         sidebar.onRestoreHidden = { [weak self] session in
             self?.inSession(session) { $0.restoreHiddenWindows() }
         }
-        sidebar.workspaces = { [weak self] session in self?.savedWorkspaces(forSession: session) ?? [] }
-        sidebar.onSaveWindowAsWorkspace = { [weak self] session, window in
-            self?.saveWindowAsWorkspace(windowID: window, inSession: session)
+        sidebar.projects = { [weak self] session in self?.savedProjects(forSession: session) ?? [] }
+        sidebar.onSaveWindowAsProject = { [weak self] session, window in
+            self?.saveWindowAsProject(windowID: window, inSession: session)
         }
-        sidebar.onOpenWorkspace = { [weak self] session, id in
-            self?.openWorkspace(id: id, inSession: session)
+        sidebar.onOpenProject = { [weak self] session, id in
+            self?.openProject(id: id, inSession: session)
         }
-        sidebar.onEditWorkspace = { [weak self] session, id in
-            self?.editWorkspace(id: id, inSession: session)
+        sidebar.onEditProject = { [weak self] session, id in
+            self?.editProject(id: id, inSession: session)
         }
-        sidebar.onRemoveWorkspace = { [weak self] session, id in
-            self?.removeWorkspace(id: id, inSession: session)
+        sidebar.onRemoveProject = { [weak self] session, id in
+            self?.removeProject(id: id, inSession: session)
         }
 
         aiQuotaService.onChange = { [weak self] in
@@ -798,26 +798,26 @@ final class MainViewController: NSSplitViewController {
         action(controller)
     }
 
-    // MARK: - Saved workspaces
+    // MARK: - Saved projects
 
-    private func workspaceStore(forSession session: String) -> HostWorkspaces? {
-        host(ofComposite: session).map { HostWorkspaces.shared(for: $0.transport) }
+    private func projectStore(forSession session: String) -> HostProjects? {
+        host(ofComposite: session).map { HostProjects.shared(for: $0.transport) }
     }
 
     /// The list a menu is built from: what was last read, with a fresh read
-    /// started for the next menu. See `HostWorkspaces`.
-    func savedWorkspaces(forSession session: String) -> [SavedWorkspace] {
-        guard let store = workspaceStore(forSession: session) else { return [] }
+    /// started for the next menu. See `HostProjects`.
+    func savedProjects(forSession session: String) -> [SavedProject] {
+        guard let store = projectStore(forSession: session) else { return [] }
         store.refresh()
-        return store.workspaces
+        return store.projects
     }
 
     /// The session a menu-bar item means: the one on screen.
-    var currentSessionForWorkspaces: String? { currentSessionID }
+    var currentSessionForProjects: String? { currentSessionID }
 
-    func openWorkspace(id: String, inSession session: String) {
+    func openProject(id: String, inSession session: String) {
         guard let key = SessionKey(composite: session),
-              let store = workspaceStore(forSession: session) else { return }
+              let store = projectStore(forSession: session) else { return }
         cancelStartupTargeting()   // opening a window is choosing one
         store.open(id: id, session: key.session) { [weak self] result in
             guard let self else { return }
@@ -825,40 +825,40 @@ final class MainViewController: NSSplitViewController {
             case .success:
                 if currentSessionID != session { show(sessionID: session) }
             case .failure(let failure):
-                showStatus("Workspace not opened", detail: failure.message)
+                showStatus("Project not opened", detail: failure.message)
             }
         }
     }
 
     /// The menu bar's "Save Current Window": the active window of the session
     /// on screen.
-    func saveCurrentWindowAsWorkspace() {
+    func saveCurrentWindowAsProject() {
         guard let session = currentSessionID,
               let window = connection(id: session)?.windows.first(where: \.isActive) else {
             showStatus("No window", detail: "There is no window on screen to save")
             return
         }
-        saveWindowAsWorkspace(windowID: window.id, inSession: session)
+        saveWindowAsProject(windowID: window.id, inSession: session)
     }
 
-    private func saveWindowAsWorkspace(windowID: String, inSession session: String) {
-        guard let store = workspaceStore(forSession: session) else { return }
+    private func saveWindowAsProject(windowID: String, inSession session: String) {
+        guard let store = projectStore(forSession: session) else { return }
         store.draft(window: windowID) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let draft):
-                askForWorkspace(draft, id: nil, killing: windowID, inSession: session)
+                askForProject(draft, id: nil, killing: windowID, inSession: session)
             case .failure(let failure):
-                showStatus("Workspace not saved", detail: failure.message)
+                showStatus("Project not saved", detail: failure.message)
             }
         }
     }
 
-    func editWorkspace(id: String, inSession session: String) {
-        guard let saved = workspaceStore(forSession: session)?.workspaces.first(where: { $0.id == id })
+    func editProject(id: String, inSession session: String) {
+        guard let saved = projectStore(forSession: session)?.projects.first(where: { $0.id == id })
         else { return }
-        askForWorkspace(
-            WorkspaceDraft(name: saved.name, path: saved.path, command: saved.command),
+        askForProject(
+            ProjectDraft(name: saved.name, path: saved.path, command: saved.command),
             id: id, killing: nil, inSession: session
         )
     }
@@ -867,16 +867,17 @@ final class MainViewController: NSSplitViewController {
     /// that says so, and only after attache-cli confirmed the save — kills
     /// the window. A refused save puts the form back with what was typed, so
     /// nothing is lost to a mistyped folder.
-    private func askForWorkspace(_ draft: WorkspaceDraft, id: String?, killing windowID: String?,
+    private func askForProject(_ draft: ProjectDraft, id: String?, killing windowID: String?,
                                  inSession session: String) {
-        guard let store = workspaceStore(forSession: session) else { return }
+        guard let store = projectStore(forSession: session) else { return }
         let connection = connection(id: session)
         let window = windowID.flatMap { id in connection?.windows.first { $0.id == id } }
         let label = window.map { "\($0.index):\($0.name)" }
-        let outcome = WorkspaceForm.run(
-            title: id == nil ? "Save as Workspace" : "Edit Workspace", draft: draft, killing: label
+        let outcome = ProjectForm.run(
+            title: id == nil ? "Save as Project" : "Edit Project", draft: draft,
+            suggestions: store.commandSuggestions, killing: label
         )
-        let entered: WorkspaceDraft
+        let entered: ProjectDraft
         let kill: Bool
         switch outcome {
         case .cancel: return
@@ -894,14 +895,14 @@ final class MainViewController: NSSplitViewController {
             switch result {
             case .failure(let failure):
                 let alert = NSAlert()
-                alert.messageText = "The workspace was not saved"
+                alert.messageText = "The project was not saved"
                 alert.informativeText = failure.message + (kill ? "\nThe window was not killed." : "")
                 alert.runModal()
-                askForWorkspace(entered, id: id, killing: windowID, inSession: session)
+                askForProject(entered, id: id, killing: windowID, inSession: session)
             case .success:
                 guard kill, let window, let connection else { return }
                 TmuxLog.destructive(
-                    "kill after saving workspace for \(window.id) (\(window.index):\(window.name))"
+                    "kill after saving project for \(window.id) (\(window.index):\(window.name))"
                         + " — every process in it ends",
                     session: connection.sessionName
                 )
@@ -910,18 +911,56 @@ final class MainViewController: NSSplitViewController {
         }
     }
 
-    func removeWorkspace(id: String, inSession session: String) {
-        guard let store = workspaceStore(forSession: session),
-              let saved = store.workspaces.first(where: { $0.id == id }) else { return }
+    /// The menu bar's "Edit Commands…": the often-used commands of the host
+    /// whose session is on screen. Read fresh first — the list is edited as
+    /// a whole, and saving a stale one would drop a command added elsewhere.
+    func editProjectCommands() {
+        guard let session = currentSessionID, let store = projectStore(forSession: session) else {
+            showStatus("No session", detail: "Commands are kept on a host; show one of its sessions first")
+            return
+        }
+        store.refresh { [weak self] read in
+            guard let self else { return }
+            // The editor saves the whole list back. Opened on a list that
+            // was not just read, or on one attache-cli cannot rewrite, a
+            // Save would drop commands the person never saw.
+            guard read else {
+                showStatus("Commands not read", detail: "The host did not answer; nothing was changed")
+                return
+            }
+            if let refusal = store.commandsRefusal {
+                showStatus("Commands not editable here", detail: refusal)
+                return
+            }
+            editProjectCommands(store.commands, in: store)
+        }
+    }
+
+    /// A refused save puts the editor back with what was typed.
+    private func editProjectCommands(_ commands: [String], in store: HostProjects) {
+        guard let edited = ProjectForm.editCommands(commands) else { return }
+        store.setCommands(edited) { [weak self] result in
+            guard case .failure(let failure) = result else { return }
+            let alert = NSAlert()
+            alert.messageText = "The commands were not saved"
+            alert.informativeText = failure.message
+            alert.runModal()
+            self?.editProjectCommands(edited, in: store)
+        }
+    }
+
+    func removeProject(id: String, inSession session: String) {
+        guard let store = projectStore(forSession: session),
+              let saved = store.projects.first(where: { $0.id == id }) else { return }
         let alert = NSAlert()
-        alert.messageText = "Remove the workspace “\(saved.name)”?"
+        alert.messageText = "Remove the project “\(saved.name)”?"
         alert.informativeText = "Only the saved entry goes. The folder, and any window opened from it, stay."
         alert.addButton(withTitle: "Remove").hasDestructiveAction = true
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         store.remove(id: id) { [weak self] result in
             if case .failure(let failure) = result {
-                self?.showStatus("Workspace not removed", detail: failure.message)
+                self?.showStatus("Project not removed", detail: failure.message)
             }
         }
     }

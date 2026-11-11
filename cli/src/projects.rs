@@ -1,12 +1,12 @@
-//! Saved workspaces: a folder and the command to start in it, kept on the
+//! Saved projects: a folder and the command to start in it, kept on the
 //! host so a window can be closed and made again with one click from either
 //! client.
 //!
-//! They live in `~/.config/attache-workspaces.toml`, a file the person can
+//! They live in `~/.config/attache-projects.toml`, a file the person can
 //! read, edit and keep in their dotfiles:
 //!
 //! ```toml
-//! [[workspace]]
+//! [[project]]
 //! id = "3f9a1c0e"
 //! name = "PastePaw"
 //! path = "~/Code/PastePawX"
@@ -20,7 +20,7 @@
 //! worked out from its contents until the first save writes a real one.
 //!
 //! The folder and the command are the person's own text and never leave this
-//! host as anything but data: a client names a workspace by id, and `open`
+//! host as anything but data: a client names a project by id, and `open`
 //! hands the text to tmux as separate arguments, never through a shell of
 //! this program's making.
 
@@ -35,19 +35,19 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-const HEADER: &str = "[[workspace]]";
+const HEADER: &str = "[[project]]";
 /// The longest command kept, in characters.
 const COMMAND_MAX: usize = 4000;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Workspace {
+pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
     pub command: String,
 }
 
-impl Workspace {
+impl Project {
     fn to_json(&self) -> Value {
         json!({
             "id": self.id,
@@ -94,7 +94,7 @@ impl Block {
     }
 
     /// `None` for a block with no folder: there is nothing to open.
-    fn workspace(&self) -> Option<Workspace> {
+    fn project(&self) -> Option<Project> {
         let path = self.text("path");
         if self.unreadable || path.trim().is_empty() {
             return None;
@@ -111,7 +111,7 @@ impl Block {
             Some(k) if safe_id(&k.value) => k.value.clone(),
             _ => derived_id(&name, &path, &command),
         };
-        Some(Workspace { id, name, path, command })
+        Some(Project { id, name, path, command })
     }
 }
 
@@ -277,24 +277,24 @@ fn parse_blocks(lines: &[&str]) -> Vec<Block> {
     blocks
 }
 
-pub fn list(text: &str) -> Vec<Workspace> {
+pub fn list(text: &str) -> Vec<Project> {
     let lines: Vec<&str> = text.split('\n').collect();
-    parse_blocks(&lines).iter().filter_map(Block::workspace).collect()
+    parse_blocks(&lines).iter().filter_map(Block::project).collect()
 }
 
-const PREAMBLE: &str = "# Attaché workspaces: a folder and the command to start in it.\n#\n# Yours to edit. Attaché rewrites only the lines it recognises, so comments\n# and anything else you put here survive.\n";
+const PREAMBLE: &str = "# Attaché projects: a folder and the command to start in it.\n#\n# Yours to edit. Attaché rewrites only the lines it recognises, so comments\n# and anything else you put here survive.\n";
 
-/// The file with `ws` saved, and the workspace as it now is. With
+/// The file with `ws` saved, and the project as it now is. With
 /// `existing`, the block that has that id is changed in place and keeps the
 /// id written in it; `ws.id` is used only for a block that had none, and
 /// for a new block, which goes at the end. `None` when `existing` names no
 /// block.
-pub fn save(text: &str, existing: Option<&str>, ws: &Workspace) -> Option<(String, Workspace)> {
+pub fn save(text: &str, existing: Option<&str>, ws: &Project) -> Option<(String, Project)> {
     let mut ws = ws.clone();
     let lines: Vec<&str> = text.split('\n').collect();
     let blocks = parse_blocks(&lines);
     let block = match existing {
-        Some(id) => Some(blocks.iter().find(|b| b.workspace().is_some_and(|w| w.id == id))?),
+        Some(id) => Some(blocks.iter().find(|b| b.project().is_some_and(|w| w.id == id))?),
         None => None,
     };
     if let Some(written) = block.and_then(|b| b.get("id")).filter(|k| safe_id(&k.value)) {
@@ -340,7 +340,7 @@ pub fn save(text: &str, existing: Option<&str>, ws: &Workspace) -> Option<(Strin
 pub fn remove(text: &str, id: &str) -> Option<String> {
     let lines: Vec<&str> = text.split('\n').collect();
     let blocks = parse_blocks(&lines);
-    let block = blocks.iter().find(|b| b.workspace().is_some_and(|w| w.id == id))?;
+    let block = blocks.iter().find(|b| b.project().is_some_and(|w| w.id == id))?;
     let mut out: Vec<&str> = lines.clone();
     out.drain(block.header..block.end);
     // The blank line that separated the block from the one before it.
@@ -351,31 +351,294 @@ pub fn remove(text: &str, id: &str) -> Option<String> {
     Some(out.join("\n"))
 }
 
+/// The person's often-used commands: `commands = ["cyolo", "gemini"]` at the
+/// top of the file, before any table, which is the only place TOML lets a
+/// plain key be. A client offers them when a project is saved, so a command
+/// is picked rather than typed again; nothing is looked up in them when a
+/// project is opened, which runs the command written in its own block.
+enum Commands {
+    /// No such key.
+    Absent,
+    /// On this line, readable; with what follows the array on it (a
+    /// comment), which a rewrite keeps.
+    At(usize, Vec<String>, String),
+    /// On this line, written in a way this program does not read (an array
+    /// over several lines, something that is not a string in it).
+    Unreadable,
+}
+
+/// For each line, whether it is the inside or the end of a multi-line
+/// string that opened on an earlier line: text, whatever it looks like. A
+/// line of one that starts with `[` is not a table, and one that reads
+/// `commands = …` is not a key.
+fn in_strings(lines: &[&str]) -> Vec<bool> {
+    let mut closing: Option<&'static str> = None;
+    lines
+        .iter()
+        .map(|raw| {
+            if let Some(delimiter) = closing {
+                if raw.contains(delimiter) {
+                    closing = None;
+                }
+                return true;
+            }
+            let line = raw.trim_start();
+            if !(line.starts_with('[') || line.starts_with('#')) {
+                if let Some((_, value)) = line.split_once('=') {
+                    if let Some(Some(delimiter)) = opens_multiline(value.trim_start()) {
+                        closing = Some(delimiter);
+                    }
+                }
+            }
+            false
+        })
+        .collect()
+}
+
+/// One past the last line that belongs to no table.
+fn top_level_end(lines: &[&str]) -> usize {
+    let text = in_strings(lines);
+    (0..lines.len())
+        .find(|&i| !text[i] && lines[i].trim_start().starts_with('['))
+        .unwrap_or(lines.len())
+}
+
+/// `["a", 'b']`, with an optional trailing comma and comment: the strings,
+/// and what follows the `]` on the line.
+fn parse_array(value: &str) -> Option<(Vec<String>, String)> {
+    let mut rest = value.strip_prefix('[')?.trim_start();
+    let mut out = Vec::new();
+    loop {
+        if let Some(after) = rest.strip_prefix(']') {
+            let comment = after.trim();
+            return (comment.is_empty() || comment.starts_with('#')).then(|| (out, after.trim_end().to_owned()));
+        }
+        let (text, used) = parse_string(rest)?;
+        out.push(text);
+        rest = rest[used..].trim_start();
+        match rest.strip_prefix(',') {
+            Some(after) => rest = after.trim_start(),
+            None if rest.starts_with(']') => {}
+            None => return None,
+        }
+    }
+}
+
+fn find_commands(lines: &[&str]) -> Commands {
+    let text = in_strings(lines);
+    for (i, raw) in lines[..top_level_end(lines)].iter().enumerate() {
+        if text[i] {
+            continue;
+        }
+        let Some(value) = raw.trim_start().strip_prefix("commands") else {
+            continue;
+        };
+        let Some(value) = value.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        return match parse_array(value.trim()) {
+            Some((list, after)) => Commands::At(i, list, after),
+            None => Commands::Unreadable,
+        };
+    }
+    Commands::Absent
+}
+
+/// The list as written; and until the person has written one, the commands
+/// their saved projects already run, in the file's order. So the list is
+/// never empty in front of someone who has plainly been using two commands,
+/// and the first time they edit it they start from those. Once the key is
+/// there it is exactly what it says, an empty list included.
+pub fn commands(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    match find_commands(&lines) {
+        Commands::At(_, list, _) => list,
+        Commands::Unreadable => Vec::new(),
+        Commands::Absent => {
+            let mut used: Vec<String> = Vec::new();
+            for project in list(text) {
+                if !project.command.is_empty() && !used.contains(&project.command) {
+                    used.push(project.command);
+                }
+            }
+            used
+        }
+    }
+}
+
+/// The file with `list` as its commands. A list the person wrote in a way
+/// this program does not read is theirs: refused, not rewritten.
+pub fn set_commands(text: &str, list: &[String]) -> Result<String, String> {
+    let line = format!(
+        "commands = [{}]",
+        list.iter().map(|c| encode_string(c)).collect::<Vec<_>>().join(", ")
+    );
+    if text.trim().is_empty() {
+        return Ok(format!("{PREAMBLE}\n{line}\n"));
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    match find_commands(&lines) {
+        Commands::At(i, _, after) => out[i] = line + &after,
+        Commands::Unreadable => return Err(UNREADABLE_COMMANDS.into()),
+        Commands::Absent => {
+            // Above the first table, and above the comment that sits on it:
+            // comment lines with no blank line before the header are that
+            // table's, and stay with it. The file's own opening comment ends
+            // in a blank line and so stays on top.
+            let mut at = top_level_end(&lines);
+            while at > 0 && lines[at - 1].trim_start().starts_with('#') {
+                at -= 1;
+            }
+            let mut added = vec![line, String::new()];
+            if at > 0 && !lines[at - 1].trim().is_empty() {
+                added.insert(0, String::new());
+            }
+            out.splice(at..at, added);
+        }
+    }
+    Ok(out.join("\n"))
+}
+
+const UNREADABLE_COMMANDS: &str =
+    "the commands list in the file is written in a way Attaché does not read (over several lines?); edit it there";
+
+/// Why the list cannot be edited from a client, when it cannot.
+fn commands_refusal(text: &str) -> Option<&'static str> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    matches!(find_commands(&lines), Commands::Unreadable).then_some(UNREADABLE_COMMANDS)
+}
+
+/// One command a line, tidied the way a project's own is, without blanks
+/// or repeats.
+fn tidy_commands(text: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if line.chars().any(char::is_control) || line.chars().count() > COMMAND_MAX {
+            return Err("a command has to be one line".into());
+        }
+        if !out.iter().any(|c| c == line) {
+            out.push(line.to_owned());
+        }
+    }
+    Ok(out)
+}
+
+/// `attache-cli project commands [--set <base64 of one command a line>]`:
+/// prints `{"commands":[…]}`, after replacing the list when `--set` is
+/// given; `{"commands":false,"why"}` when it could not.
+fn run_commands(args: &[String]) -> Option<i32> {
+    let answer = match args {
+        [] => read().map(|text| commands(&text)),
+        [flag, b64] if flag == "--set" => {
+            let text = String::from_utf8(decode(b64)?).ok()?;
+            tidy_commands(&text).and_then(|list| {
+                update(|file| set_commands(file, &list).map(|t| (t, list.clone())))
+            })
+        }
+        _ => return None,
+    };
+    Some(match answer {
+        Ok(list) => {
+            println!("{}", json!({ "commands": list }));
+            0
+        }
+        Err(why) => fail("commands", &why),
+    })
+}
+
 fn file() -> PathBuf {
-    let path = paths::home().join(".config/attache-workspaces.toml");
+    let path = paths::home().join(".config/attache-projects.toml");
     // A dotfiles setup keeps the real file elsewhere and a link here; a
     // rename over the link would leave the dotfiles copy stale.
     fs::canonicalize(&path).unwrap_or(path)
 }
 
-fn read() -> Result<String, String> {
-    match fs::read(file()) {
-        Ok(bytes) => String::from_utf8(bytes).map_err(|_| "the workspaces file is not UTF-8 text".to_owned()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(format!("cannot read the workspaces file: {e}")),
+/// Where 0.3.9 and 0.3.10 kept these, when they were called workspaces.
+fn old_file() -> PathBuf {
+    paths::home().join(".config/attache-workspaces.toml")
+}
+
+/// That file's text as this one's: its `[[workspace]]` headers renamed.
+fn renamed(old: &str) -> String {
+    let lines: Vec<&str> = old.split('\n').collect();
+    let text = in_strings(&lines);
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            if !text[i] && bare(l) == "[[workspace]]" {
+                l.replacen("[[workspace]]", HEADER, 1)
+            } else {
+                (*l).to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn read_file(path: &std::path::Path) -> Result<Option<String>, String> {
+    match fs::read(path) {
+        Ok(bytes) => String::from_utf8(bytes).map(Some).map_err(|_| "the projects file is not UTF-8 text".to_owned()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read the projects file: {e}")),
     }
+}
+
+/// The file, or the one from before the rename when this one was never
+/// written. Reading moves nothing; the first change writes the new file and
+/// takes the old one away (`update`).
+fn read() -> Result<String, String> {
+    if let Some(text) = read_file(&file())? {
+        return Ok(text);
+    }
+    Ok(read_file(&old_file())?.map(|old| renamed(&old)).unwrap_or_default())
 }
 
 /// Reads the file, lets `change` make the new one, and writes it, all under
 /// the lock so two clients saving at once both land.
 fn update<T>(change: impl FnOnce(&str) -> Result<(String, T), String>) -> Result<T, String> {
-    let lock = Lock::acquire(&paths::state_dir().join("workspaces.lock"), Duration::from_secs(2))
-        .map_err(|e| format!("cannot lock the workspaces file: {e}"))?;
+    let lock = Lock::acquire(&paths::state_dir().join("projects.lock"), Duration::from_secs(2))
+        .map_err(|e| format!("cannot lock the projects file: {e}"))?;
     if lock.is_none() {
-        return Err("another change to the workspaces file is still running".into());
+        return Err("another change to the projects file is still running".into());
     }
+    // Decided before anything is written: the old file is taken away only
+    // when this very change was read from it. With both files there, the
+    // old one was never read, and deleting it would lose what it holds.
+    let new = file();
+    let old = old_file();
+    let moving = !new.exists() && old.exists();
     let (text, value) = change(&read()?)?;
-    write_atomic(&file(), text.as_bytes()).map_err(|e| format!("cannot write the workspaces file: {e}"))?;
+    let failed = |e: std::io::Error| format!("cannot write the projects file: {e}");
+    if !moving {
+        write_atomic(&new, text.as_bytes()).map_err(failed)?;
+        return Ok(value);
+    }
+    // A link into a dotfiles folder: the new file goes beside the old one
+    // there, with a link to it here, so the dotfiles copy stays the real
+    // one. The old dotfiles file is left where it is; it is in someone's
+    // repository, and only the link here is this program's to remove.
+    let linked = fs::symlink_metadata(&old).is_ok_and(|m| m.file_type().is_symlink());
+    let real = fs::canonicalize(&old).ok().filter(|_| linked).map(|t| t.with_file_name("attache-projects.toml"));
+    let written = match &real {
+        Some(real) if !real.exists() => {
+            write_atomic(real, text.as_bytes()).map_err(failed)?;
+            if std::os::unix::fs::symlink(real, &new).is_err() {
+                write_atomic(&new, text.as_bytes()).map_err(failed)?;
+            }
+            real.clone()
+        }
+        _ => {
+            write_atomic(&new, text.as_bytes()).map_err(failed)?;
+            new.clone()
+        }
+    };
+    // A file the person made private stays private.
+    if let Ok(meta) = fs::metadata(&old) {
+        let _ = fs::set_permissions(&written, meta.permissions());
+    }
+    let _ = fs::remove_file(&old);
     Ok(value)
 }
 
@@ -426,19 +689,28 @@ fn plain_arg<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.get(at + 1).map(String::as_str)
 }
 
-/// `attache-cli workspaces`: one JSON line per saved workspace, in the
+/// `attache-cli projects`: one JSON line per saved project, in the
 /// file's order: `id`, `name`, `path`, `command`, and `exists` (whether the
-/// folder is there now).
+/// folder is there now); then `{"commands":[…]}`, the person's often-used
+/// commands, so one read fills a client's whole menu and form.
 pub fn run_list(_args: &[String]) -> i32 {
     match read() {
         Ok(text) => {
             for ws in list(&text) {
                 println!("{}", ws.to_json());
             }
+            // Always the last line, so a client can tell a whole answer
+            // from one cut short. `commands_why` is there when the list is
+            // the person's own writing and cannot be edited from a client.
+            let mut last = json!({ "commands": commands(&text) });
+            if let Some(why) = commands_refusal(&text) {
+                last["commands_why"] = json!(why);
+            }
+            println!("{last}");
             0
         }
         Err(why) => {
-            eprintln!("attache-cli workspaces: {why}");
+            eprintln!("attache-cli projects: {why}");
             1
         }
     }
@@ -446,7 +718,7 @@ pub fn run_list(_args: &[String]) -> i32 {
 
 pub fn run(args: &[String]) -> i32 {
     let usage = || {
-        eprintln!("Usage:\n  attache-cli workspace save [--id <id>] --name <base64> --path <base64> --command <base64>\n  attache-cli workspace remove <id>\n  attache-cli workspace open <id> --session <$N>\n  attache-cli workspace draft <@window>");
+        eprintln!("Usage:\n  attache-cli project save [--id <id>] --name <base64> --path <base64> --command <base64>\n  attache-cli project remove <id>\n  attache-cli project open <id> --session <$N>\n  attache-cli project draft <@window>\n  attache-cli project commands [--set <base64>]");
         2
     };
     let Some((verb, rest)) = args.split_first() else {
@@ -455,7 +727,7 @@ pub fn run(args: &[String]) -> i32 {
     match (verb.as_str(), rest) {
         ("save", rest) => run_save(rest).unwrap_or_else(usage),
         ("remove", [id]) if safe_id(id) => match update(|text| {
-            remove(text, id).map(|t| (t, ())).ok_or_else(|| "there is no such workspace".to_owned())
+            remove(text, id).map(|t| (t, ())).ok_or_else(|| "there is no such project".to_owned())
         }) {
             Ok(()) => {
                 println!("{}", json!({ "removed": true, "id": id }));
@@ -467,6 +739,7 @@ pub fn run(args: &[String]) -> i32 {
             run_open(id, session)
         }
         ("draft", [window]) if is_id(window, '@') => run_draft(window),
+        ("commands", rest) => run_commands(rest).unwrap_or_else(usage),
         _ => usage(),
     }
 }
@@ -477,7 +750,7 @@ fn is_id(s: &str, sigil: char) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Prints `{"saved":true,"id",…}` with the workspace as kept, or
+/// Prints `{"saved":true,"id",…}` with the project as kept, or
 /// `{"saved":false,"why"}`. `None` when the arguments are not a save.
 fn run_save(args: &[String]) -> Option<i32> {
     let existing = plain_arg(args, "--id");
@@ -497,8 +770,8 @@ fn run_save(args: &[String]) -> Option<i32> {
         return Some(fail("saved", "the command has to be one line"));
     }
     let saved = update(|text| {
-        let ws = Workspace { id: new_id(), name, path, command };
-        save(text, existing, &ws).ok_or_else(|| "there is no such workspace".to_owned())
+        let ws = Project { id: new_id(), name, path, command };
+        save(text, existing, &ws).ok_or_else(|| "there is no such project".to_owned())
     });
     Some(match saved {
         Ok(ws) => {
@@ -540,10 +813,10 @@ fn default_shell() -> String {
         .unwrap_or_else(|| "/bin/sh".into())
 }
 
-/// `attache-cli workspace open <id> --session <$N>`: a new window in that
-/// session, in the workspace's folder, named after it and selected, running
+/// `attache-cli project open <id> --session <$N>`: a new window in that
+/// session, in the project's folder, named after it and selected, running
 /// its command. Prints `{"opened":true,"window","pane"}` or
-/// `{"opened":false,"why"}`. Opening the same workspace again makes another
+/// `{"opened":false,"why"}`. Opening the same project again makes another
 /// window: several of one are an ordinary thing to want.
 ///
 /// The command runs in the person's own shell, started the way tmux starts
@@ -565,7 +838,7 @@ fn run_open(id: &str, session: &str) -> i32 {
         Err(why) => return fail("opened", &why),
     };
     let Some(ws) = ws else {
-        return fail("opened", "there is no such workspace");
+        return fail("opened", "there is no such project");
     };
     if !is_full_path(&ws.path) {
         return fail("opened", "the folder has to be a full path, or start with ~/");
@@ -601,8 +874,8 @@ fn run_open(id: &str, session: &str) -> i32 {
     0
 }
 
-/// `attache-cli workspace draft <@window>`: what saving that window as a
-/// workspace would start from, for a client to show and the person to edit:
+/// `attache-cli project draft <@window>`: what saving that window as a
+/// project would start from, for a client to show and the person to edit:
 /// `{"draft":true,"name","path","command"}`. The folder is the active
 /// pane's; the command is how the agent in that pane was started, when
 /// there is one, with any alias already spelled out, since the process
@@ -664,11 +937,11 @@ fn started_as(pid: u32, kind: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn ws(id: &str, name: &str, path: &str, command: &str) -> Workspace {
-        Workspace { id: id.into(), name: name.into(), path: path.into(), command: command.into() }
+    fn ws(id: &str, name: &str, path: &str, command: &str) -> Project {
+        Project { id: id.into(), name: name.into(), path: path.into(), command: command.into() }
     }
 
-    const HAND: &str = "# mine\ntheme = \"dark\"\n\n# the main one\n[[workspace]]\nname = 'PastePaw'   # literal\npath = \"~/Code/PastePawX\"\ncommand = \"cyolo\"\nretries = 3\n\n[other]\nname = \"not a workspace\"\n\n[[workspace]]  # second\nid = \"abcd1234\"\npath = \"/srv/a \\\"b\\\"\"\n";
+    const HAND: &str = "# mine\ntheme = \"dark\"\n\n# the main one\n[[project]]\nname = 'PastePaw'   # literal\npath = \"~/Code/PastePawX\"\ncommand = \"cyolo\"\nretries = 3\n\n[other]\nname = \"not a project\"\n\n[[project]]  # second\nid = \"abcd1234\"\npath = \"/srv/a \\\"b\\\"\"\n";
 
     #[test]
     fn a_hand_written_file_reads() {
@@ -687,7 +960,7 @@ mod tests {
         let (out, _) = save(HAND, None, &ws("11112222", "T \"q\"", "/tmp/x\\y", "claude -c")).unwrap();
         assert_eq!(
             out,
-            format!("{HAND}\n[[workspace]]\nid = \"11112222\"\nname = \"T \\\"q\\\"\"\npath = \"/tmp/x\\\\y\"\ncommand = \"claude -c\"\n")
+            format!("{HAND}\n[[project]]\nid = \"11112222\"\nname = \"T \\\"q\\\"\"\npath = \"/tmp/x\\\\y\"\ncommand = \"claude -c\"\n")
         );
         assert_eq!(list(&out)[2], ws("11112222", "T \"q\"", "/tmp/x\\y", "claude -c"));
     }
@@ -695,7 +968,7 @@ mod tests {
     #[test]
     fn the_first_one_makes_the_file() {
         let (out, _) = save("", None, &ws("11112222", "T", "/tmp", "")).unwrap();
-        assert!(out.starts_with("# Attaché workspaces"));
+        assert!(out.starts_with("# Attaché projects"));
         assert_eq!(list(&out), vec![ws("11112222", "T", "/tmp", "")]);
     }
 
@@ -711,7 +984,7 @@ mod tests {
                 .replace("command = \"cyolo\"\nretries = 3\n", "command = \"claude\"\nretries = 3\nid = \"99990000\"\n")
         );
         // The other table's `name` was not the block's.
-        assert!(out.contains("[other]\nname = \"not a workspace\""));
+        assert!(out.contains("[other]\nname = \"not a project\""));
         // Keys the block lacked are added to it, not to the end of the file.
         // The id written in a block is kept, whatever the caller brought.
         let (out, kept) = save(HAND, Some("abcd1234"), &ws("ffff0000", "A", "/srv/a", "x")).unwrap();
@@ -725,11 +998,11 @@ mod tests {
         let id = list(HAND)[0].id.clone();
         assert_eq!(
             remove(HAND, &id).unwrap(),
-            "# mine\ntheme = \"dark\"\n\n# the main one\n\n[other]\nname = \"not a workspace\"\n\n[[workspace]]  # second\nid = \"abcd1234\"\npath = \"/srv/a \\\"b\\\"\"\n"
+            "# mine\ntheme = \"dark\"\n\n# the main one\n\n[other]\nname = \"not a project\"\n\n[[project]]  # second\nid = \"abcd1234\"\npath = \"/srv/a \\\"b\\\"\"\n"
         );
         assert_eq!(
             remove(HAND, "abcd1234").unwrap(),
-            HAND.replace("\n[[workspace]]  # second\nid = \"abcd1234\"\npath = \"/srv/a \\\"b\\\"\"\n", "")
+            HAND.replace("\n[[project]]  # second\nid = \"abcd1234\"\npath = \"/srv/a \\\"b\\\"\"\n", "")
         );
         assert!(remove(HAND, "nope").is_none());
         // Saved then removed is the file as it was, plus nothing.
@@ -754,10 +1027,10 @@ mod tests {
         // number for an id, a key written twice: none is listed, so none can
         // be edited into two `command` keys or half removed.
         let odd = concat!(
-            "[[workspace]]\nid = \"aaaa1111\"\npath = \"/a\"\ncommand = '''\nclaude\n[[workspace]]\npath = \"/inside\"\n'''\n\n",
-            "[[workspace]]\nid = 123\npath = \"/b\"\n\n",
-            "[[workspace]]\npath = \"/c\"\npath = \"/d\"\n\n",
-            "[[workspace]]\nid = \"eeee5555\"\npath = \"/e\"\nnote = \"\"\"\n[other]\n\"\"\"\ncommand = \"x\"\n",
+            "[[project]]\nid = \"aaaa1111\"\npath = \"/a\"\ncommand = '''\nclaude\n[[project]]\npath = \"/inside\"\n'''\n\n",
+            "[[project]]\nid = 123\npath = \"/b\"\n\n",
+            "[[project]]\npath = \"/c\"\npath = \"/d\"\n\n",
+            "[[project]]\nid = \"eeee5555\"\npath = \"/e\"\nnote = \"\"\"\n[other]\n\"\"\"\ncommand = \"x\"\n",
         );
         assert_eq!(list(odd), vec![ws("eeee5555", "e", "/e", "x")]);
         assert!(save(odd, Some("aaaa1111"), &ws("aaaa1111", "A", "/a", "x")).is_none());
@@ -774,6 +1047,71 @@ mod tests {
     fn fish_reads_single_quotes_its_own_way() {
         assert_eq!(quote_for("/bin/zsh", r"a\b 'c'"), r"'a\b '\''c'\'''");
         assert_eq!(quote_for("/opt/homebrew/bin/fish", r"a\b 'c'"), r"'a\\b \'c\''");
+    }
+
+    #[test]
+    fn the_commands_list_reads_and_is_written_above_the_first_table() {
+        let noted = "commands = [\"cyolo\", 'gemini', ]  # mine\n\n[[project]]\npath = \"/a\"\n";
+        assert_eq!(commands(noted), ["cyolo", "gemini"]);
+        // The comment on the line outlives a rewrite of it.
+        assert_eq!(
+            set_commands(noted, &["claude".to_owned()]).unwrap(),
+            "commands = [\"claude\"]  # mine\n\n[[project]]\npath = \"/a\"\n"
+        );
+        // A comment straight on the first table stays on it.
+        assert_eq!(
+            set_commands("# mine\n[[project]]\npath = \"/a\"\n", &["x".to_owned()]).unwrap(),
+            "commands = [\"x\"]\n\n# mine\n[[project]]\npath = \"/a\"\n"
+        );
+        // Lines of a multi-line string are not tables or keys.
+        let stringy = "note = \"\"\"\n[not a table]\ncommands = [\"no\"]\n\"\"\"\n\n[[project]]\npath = \"/a\"\n";
+        assert_eq!(
+            set_commands(stringy, &["x".to_owned()]).unwrap(),
+            stringy.replace("\n\n[[project]]", "\n\ncommands = [\"x\"]\n\n[[project]]")
+        );
+        assert_eq!(renamed("a = \"\"\"\n[[workspace]]\n\"\"\"\n[[workspace]]\n"), "a = \"\"\"\n[[workspace]]\n\"\"\"\n[[project]]\n");
+        // Not written yet: what the saved projects run. Written: as written.
+        assert_eq!(commands(HAND), ["cyolo"]);
+        assert!(commands(&format!("commands = []\n{HAND}")).is_empty());
+        // A `commands` inside a table is that table's, not this list.
+        assert!(commands("[other]\ncommands = [\"x\"]\n").is_empty());
+
+        let wanted = vec!["cyolo".to_owned(), "say \"hi\"".to_owned()];
+        // Into a file with tables: above the first one and its comment.
+        let out = set_commands(HAND, &wanted).unwrap();
+        assert_eq!(
+            out,
+            HAND.replace("\n# the main one\n", "\ncommands = [\"cyolo\", \"say \\\"hi\\\"\"]\n\n# the main one\n")
+        );
+        assert_eq!(commands(&out), wanted);
+        assert_eq!(list(&out), list(HAND));
+        // Again: the line is replaced where it is, nothing else moves.
+        let again = set_commands(&out, &["claude".to_owned()]).unwrap();
+        assert_eq!(again, out.replace("commands = [\"cyolo\", \"say \\\"hi\\\"\"]", "commands = [\"claude\"]"));
+        // An empty file, and one the first save made: under the preamble.
+        assert_eq!(set_commands("", &wanted).unwrap(), format!("{PREAMBLE}\ncommands = [\"cyolo\", \"say \\\"hi\\\"\"]\n"));
+        let (made, _) = save("", None, &ws("11112222", "T", "/tmp", "")).unwrap();
+        let out = set_commands(&made, &wanted).unwrap();
+        assert_eq!(out, made.replace("\n[[project]]", "\ncommands = [\"cyolo\", \"say \\\"hi\\\"\"]\n\n[[project]]"));
+        assert_eq!(commands(&out), wanted);
+        // Written over several lines by hand: read as none, never rewritten.
+        let multi = "commands = [\n  \"a\",\n]\n";
+        assert!(commands(multi).is_empty());
+        assert!(set_commands(multi, &wanted).is_err());
+    }
+
+    #[test]
+    fn commands_are_tidied_one_a_line() {
+        assert_eq!(tidy_commands(" cyolo \n\ngemini\ncyolo\n").unwrap(), ["cyolo", "gemini"]);
+        assert!(tidy_commands("a\tb").is_err());
+    }
+
+    #[test]
+    fn the_file_from_before_the_rename_reads_as_projects() {
+        let old = "# note\n[[workspace]]\nid = \"abcd1234\"\npath = \"/a\"\n\n  [[workspace]]  # two\npath = \"/b\"\n";
+        let new = renamed(old);
+        assert_eq!(new, "# note\n[[project]]\nid = \"abcd1234\"\npath = \"/a\"\n\n  [[project]]  # two\npath = \"/b\"\n");
+        assert_eq!(list(&new).len(), 2);
     }
 
     #[test]
