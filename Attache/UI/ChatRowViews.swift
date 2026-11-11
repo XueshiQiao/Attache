@@ -12,14 +12,18 @@ import Cocoa
 enum ChatRowViews {
     static var size: CGFloat { AppSettings.conversationFontSize + 1 }
 
-    static func make(_ element: ChatElement, width: @escaping () -> CGFloat) -> NSView {
+    static func make(
+        _ element: ChatElement,
+        width: @escaping () -> CGFloat,
+        linkContext: ChatLinkContext = .localDefault
+    ) -> NSView {
         switch element {
         case .row(.user(_, let text, let queued)):
             return UserBubble(text: text, caption: queued ? "Sent while it was working" : nil, faded: false)
         case .row(.agent(_, let text)):
-            return AgentReply(markdown: text)
+            return AgentReply(markdown: text, linkContext: linkContext)
         case .row(.thinking(_, let text)):
-            return ThinkingRow(text: text)
+            return ThinkingRow(text: text, linkContext: linkContext)
         case .row(.output(_, let text, let isError, _)):
             return OutputCard(text: text, isError: isError)
         case .row(.note(_, let text)), .note(_, let text):
@@ -34,7 +38,7 @@ enum ChatRowViews {
             return WorkFold(fold)
         case .reply(let row, let fold):
             guard case .agent(_, let text) = row else { return NSView() }
-            return MarkedReply(row: row, markdown: text, fold: fold)
+            return MarkedReply(row: row, markdown: text, fold: fold, linkContext: linkContext)
         }
     }
 
@@ -164,7 +168,7 @@ private final class UserBubble: NSView {
 
 /// What the agent said, as rendered markdown across the width.
 private final class AgentReply: NSView {
-    init(markdown: String, leading: CGFloat = 20) {
+    init(markdown: String, leading: CGFloat = 20, linkContext: ChatLinkContext = .localDefault) {
         super.init(frame: .zero)
         var style = ConversationMarkdown.Style.current
         style.body = .systemFont(ofSize: ChatRowViews.size)
@@ -187,9 +191,11 @@ private final class AgentReply: NSView {
                 switch block {
                 case .text(let text):
                     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                    view = Self.textField(text, style: style)
+                    view = Self.textField(text, style: style, linkContext: linkContext)
                 case .table(let header, let rows, let align):
-                    view = MarkdownTableView(header: header, rows: rows, align: align)
+                    view = MarkdownTableView(
+                        header: header, rows: rows, align: align, linkContext: linkContext
+                    )
                 }
                 column.addArrangedSubview(view)
                 view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
@@ -203,7 +209,7 @@ private final class AgentReply: NSView {
             }
             return
         }
-        let body = Self.textField(markdown, style: style)
+        let body = Self.textField(markdown, style: style, linkContext: linkContext)
         guard ChatStyle.current.repliesOnCards else {
             ChatRowViews.pin(body, in: self, insets: NSEdgeInsets(top: 0, left: leading, bottom: 0, right: 24))
             return
@@ -215,8 +221,16 @@ private final class AgentReply: NSView {
         ChatRowViews.pin(card, in: self, insets: NSEdgeInsets(top: 0, left: leading, bottom: 0, right: 24))
     }
 
-    private static func textField(_ markdown: String, style: ConversationMarkdown.Style) -> NSView {
-        MarkdownTextView(ConversationMarkdown.rendered(markdown, style: style))
+    private static func textField(
+        _ markdown: String,
+        style: ConversationMarkdown.Style,
+        linkContext: ChatLinkContext
+    ) -> NSView {
+        MarkdownTextView(
+            ConversationMarkdown.rendered(markdown, style: style),
+            linkContext: linkContext,
+            accent: style.accent
+        )
     }
 
     /// Inline code in a warm tone that reads on the scheme: darker on a light
@@ -333,14 +347,14 @@ final class MarkedReply: NSView {
     private static let textInset: CGFloat = 100
     private static let markInset: CGFloat = 16
 
-    init(row: ChatRow, markdown: String, fold: ChatFold) {
+    init(row: ChatRow, markdown: String, fold: ChatFold, linkContext: ChatLinkContext = .localDefault) {
         rowKey = row.key
         text = markdown
         mark = FoldMark(fold)
         running = ChatRowViews.label("", font: .monospacedSystemFont(ofSize: ChatRowViews.size - 2.5, weight: .regular),
                                      colour: ChromeTheme.current.mutedText, selectable: false)
         super.init(frame: .zero)
-        let reply = AgentReply(markdown: markdown)
+        let reply = AgentReply(markdown: markdown, linkContext: linkContext)
         running.maximumNumberOfLines = 1
         running.lineBreakMode = .byTruncatingTail
         let column = NSStackView(views: [reply, running])
@@ -782,9 +796,9 @@ private final class ToolStep: NSView {
 /// markdown — with only a thin rule down the left to say what it is. Small
 /// faint italics made it read as a footnote (the owner's call, 2026-11-06).
 private final class ThinkingRow: NSView {
-    init(text: String) {
+    init(text: String, linkContext: ChatLinkContext = .localDefault) {
         super.init(frame: .zero)
-        let reply = AgentReply(markdown: text, leading: 32)
+        let reply = AgentReply(markdown: text, leading: 32, linkContext: linkContext)
         ChatRowViews.pin(reply, in: self, insets: NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0))
     }
 

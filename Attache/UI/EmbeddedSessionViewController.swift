@@ -266,6 +266,7 @@ final class EmbeddedSessionViewController: NSViewController {
         chatView.translatesAutoresizingMaskIntoConstraints = false
         chatView.isHidden = true
         chatView.onShowTerminal = { [weak self] in self?.toggleChat() }
+        chatView.onOpenLink = { [weak self] raw in self?.openChatLink(raw) }
         root.addSubview(chatView)
         root.addSubview(titleBand)
 
@@ -914,6 +915,63 @@ final class EmbeddedSessionViewController: NSViewController {
             connection.showStatusMessage("Attaché: no such path — \(path)")
         case .unsupported:
             connection.showStatusMessage("Attaché: not a path this app can open — \(raw)")
+        }
+    }
+
+    /// Opens a link clicked inside `ChatPaneView`. Unlike a terminal ⌘-click
+    /// (which reveals files in Finder), clicking an explicit Markdown link in
+    /// chat opens local files directly in their default macOS application
+    /// (e.g. Preview for images, editor for source files, Finder for folders).
+    private func openChatLink(_ raw: String) {
+        let paneDir = chatView.model?.agent?.path
+        let cwd = (paneDir?.isEmpty == false) ? paneDir : nil
+
+        guard host.transport.pathsAreLocal else {
+            guard let helper = host.helper else {
+                chatView.showNotice("Can't reach \(host.displayName) right now.")
+                return
+            }
+            RemoteLinkResolver.resolve(raw: raw, cwd: cwd, helper: helper) { [weak self] target in
+                guard let self else { return }
+                guard let target else {
+                    self.chatView.showNotice("Can't reach \(self.host.displayName) right now.")
+                    return
+                }
+                switch target {
+                case let .url(url):
+                    NSWorkspace.shared.open(url)
+                case let .directory(path), let .file(path):
+                    RemoteOpener.open(
+                        path: path,
+                        host: self.host.displayName,
+                        destination: self.host.transport.ssh?.destination ?? self.host.displayName,
+                        template: self.host.config?.remoteOpenCommand,
+                        status: { [weak self] message in self?.chatView.showNotice(message) }
+                    )
+                case let .missing(path):
+                    self.chatView.showNotice("No such path on \(self.host.displayName) — \(path)")
+                case .unsupported:
+                    self.chatView.showNotice("Not a link this app can open — \(raw)")
+                }
+            }
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let target = TerminalLinkTarget.resolve(raw, cwd: cwd, existence: Self.existence)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch target {
+                case let .url(url):
+                    NSWorkspace.shared.open(url)
+                case let .directory(path), let .file(path):
+                    NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                case let .missing(path):
+                    self.chatView.showNotice("No such path — \(path)")
+                case .unsupported:
+                    self.chatView.showNotice("Not a link this app can open — \(raw)")
+                }
+            }
         }
     }
 

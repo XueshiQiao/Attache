@@ -136,6 +136,58 @@ let cases: [Case] = [
         expect: .file("/Users/tester/Code/a.swift")
     ),
     Case(
+        name: "file: with percent-encoded spaces and #L10-L20 fragment resolves to the file",
+        raw: "file:///Users/tester/My%20Notes/a.swift#L10-L20",
+        fs: ["/Users/tester/My Notes/a.swift": .file],
+        expect: .file("/Users/tester/My Notes/a.swift")
+    ),
+    Case(
+        name: "angle-bracketed file: URL with unencoded spaces and @2x resolves cleanly",
+        raw: "<file:///Users/tester/Screenshots/CleanShot 2026-11-11 at 10.53.20@2x.png>",
+        fs: ["/Users/tester/Screenshots/CleanShot 2026-11-11 at 10.53.20@2x.png": .file],
+        expect: .file("/Users/tester/Screenshots/CleanShot 2026-11-11 at 10.53.20@2x.png")
+    ),
+    Case(
+        name: "file: with unencoded CJK and line fragment resolves to the file",
+        raw: "file:///Users/tester/文档/设计稿.png#L12",
+        fs: ["/Users/tester/文档/设计稿.png": .file],
+        expect: .file("/Users/tester/文档/设计稿.png")
+    ),
+    Case(
+        name: "file: with square brackets in filename resolves via fallback",
+        raw: "file:///Users/tester/Downloads/shot[1].png#L3",
+        fs: ["/Users/tester/Downloads/shot[1].png": .file],
+        expect: .file("/Users/tester/Downloads/shot[1].png")
+    ),
+    Case(
+        name: "bare absolute path with #L10-L20 fragment resolves to the file",
+        raw: "/Users/tester/Code/utils.py#L10-L20",
+        fs: ["/Users/tester/Code/utils.py": .file],
+        expect: .file("/Users/tester/Code/utils.py")
+    ),
+    Case(
+        name: "tilde path with #L15 fragment resolves to the file",
+        raw: "~/Code/utils.py#L15",
+        fs: ["/Users/tester/Code/utils.py": .file],
+        expect: .file("/Users/tester/Code/utils.py")
+    ),
+    Case(
+        name: "relative path with #L5 fragment resolves against cwd",
+        raw: "./src/main.swift#L5",
+        cwd: "/Users/tester/Code/proj",
+        fs: ["/Users/tester/Code/proj/src/main.swift": .file],
+        expect: .file("/Users/tester/Code/proj/src/main.swift")
+    ),
+    Case(
+        name: "literal # filename wins when it actually exists on disk",
+        raw: "/Users/tester/notes#1.md",
+        fs: [
+            "/Users/tester/notes#1.md": .file,
+            "/Users/tester/notes": .file,
+        ],
+        expect: .file("/Users/tester/notes#1.md")
+    ),
+    Case(
         // Not on the allow-list. A click must not be able to reach an arbitrary
         // registered handler just because the screen held its scheme.
         name: "unknown scheme is refused",

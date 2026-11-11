@@ -58,6 +58,14 @@ for (source, expected, note) in [
     ("a **b** c `d` e", "a b c d e", "mixed"),
     ("**unclosed", "**unclosed", "an unclosed marker is literal"),
     ("plain 中文", "plain 中文", "untouched"),
+    ("[F01-A](file:///tmp/a.png)", "F01-A", "link shows its label"),
+    ("![F01-A](file:///tmp/a.png)", "[F01-A]", "image shows bracketed alt before hydration"),
+    ("![](file:///tmp/a.png)", "[image]", "empty image alt uses fallback word"),
+    ("[`Sym`](file:///a.swift#L10)", "Sym", "code inside link label"),
+    ("**[F01-A](file:///a.png)**", "F01-A", "link inside bold"),
+    (#"\[F01-A](file:///a.png)"#, "[F01-A](file:///a.png)", "escaped bracket stays literal"),
+    ("[a] (https://example.com)", "[a] (https://example.com)", "space between ] and ( stays literal"),
+    ("[a](https://example.com/x y)", "[a](https://example.com/x y)", "raw space in bare destination stays literal"),
 ] {
     let actual = ConversationMarkdown.visibleText(source)
     if actual != expected {
@@ -253,18 +261,113 @@ do {
     }
 }
 
-// MARK: - Things that are not markdown come through unharmed
+// MARK: - Things that are not valid markdown links/images come through unharmed
 
 for text in [
     "<div>Why does this break?</div>",
-    "[link](https://example.com)",
     "> quoted",
     "~~struck~~",
+    "[link] (https://example.com)",
+    "[link](https://example.com/a b)",
+    "![unclosed](file:///tmp/a.png",
+    "[empty]()",
+    "[](https://example.com)",
 ] {
     let rendered = ConversationMarkdown.render(text, style: style).string
-    if !rendered.contains(text.prefix(6)) {
-        fail("未实现的语法应原样显示", "\(text.debugDescription) → \(rendered.debugDescription)")
+    if rendered != text {
+        fail("未实现或格式错误的语法应原样显示", "\(text.debugDescription) → \(rendered.debugDescription)")
     }
+}
+
+// MARK: - Strict CommonMark links, images, escapes, and nesting
+
+do {
+    // 1. Link without `!` pointing to `.png` stays a link, NOT an image.
+    let linkToPng = ConversationMarkdown.render(
+        "[F01-A](file:///Users/joey/Code/F01-A-smooth-mochi-pads.png)", style: style
+    )
+    if linkToPng.string != "F01-A" {
+        fail("PNG 链接文本错误", linkToPng.string.debugDescription)
+    }
+    let linkAttr = linkToPng.attribute(.link, at: 0, effectiveRange: nil) as? String
+    let imgAttr = linkToPng.attribute(.markdownImage, at: 0, effectiveRange: nil)
+    if linkAttr != "file:///Users/joey/Code/F01-A-smooth-mochi-pads.png" || imgAttr != nil {
+        fail("无感叹号的 [F01-A](file:///...png) 必须是链接而非图片", "link=\(String(describing: linkAttr)) img=\(String(describing: imgAttr))")
+    }
+
+    // 2. Image with `!` emits `.markdownImage`.
+    let imageMd = ConversationMarkdown.render(
+        "![F01-A](file:///Users/joey/Code/F01-A-smooth-mochi-pads.png)", style: style
+    )
+    let spec = imageMd.attribute(.markdownImage, at: 0, effectiveRange: nil) as? MarkdownImageSpec
+    if imageMd.string != "[F01-A]" || spec != MarkdownImageSpec(alt: "F01-A", destination: "file:///Users/joey/Code/F01-A-smooth-mochi-pads.png") {
+        fail("标准图片语法 ![alt](url) 解析错误", "str=\(imageMd.string) spec=\(String(describing: spec))")
+    }
+
+    // 3. Nested inline code inside link label: `[`ClassName`](file:///path#L10-L20)`
+    let codeLink = ConversationMarkdown.render(
+        "[`ClassName`](file:///Users/joey/utils.py#L10-L20)", style: style
+    )
+    let codeLinkFont = codeLink.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+    let codeLinkDest = codeLink.attribute(.link, at: 0, effectiveRange: nil) as? String
+    if codeLink.string != "ClassName" || codeLinkFont?.isFixedPitch != true || codeLinkDest != "file:///Users/joey/utils.py#L10-L20" {
+        fail("行内代码嵌套链接解析错误", "str=\(codeLink.string) fixed=\(String(describing: codeLinkFont?.isFixedPitch)) dest=\(String(describing: codeLinkDest))")
+    }
+
+    // 4. Pointy-bracket destination with spaces (`<file:///path with spaces.png>`).
+    let angleImg = ConversationMarkdown.render(
+        "![shot](<file:///Users/joey/Screenshots/CleanShot 2026-11-11 at 10.53.20@2x.png>)",
+        style: style
+    )
+    let angleSpec = angleImg.attribute(.markdownImage, at: 0, effectiveRange: nil) as? MarkdownImageSpec
+    if angleSpec?.destination != "file:///Users/joey/Screenshots/CleanShot 2026-11-11 at 10.53.20@2x.png" {
+        fail("尖括号包裹含空格路径解析错误", "spec=\(String(describing: angleSpec))")
+    }
+
+    // 5. Balanced parens, escaped parens, escaped brackets, and optional title.
+    for (md, expectedText, expectedDest) in [
+        ("[wiki](https://en.wikipedia.org/wiki/Foo_(bar))", "wiki", "https://en.wikipedia.org/wiki/Foo_(bar)"),
+        (#"[wiki](https://en.wikipedia.org/wiki/Foo_\(bar\))"#, "wiki", "https://en.wikipedia.org/wiki/Foo_(bar)"),
+        (#"[a\]b](https://example.com "Title")"#, "a]b", "https://example.com"),
+    ] {
+        let r = ConversationMarkdown.render(md, style: style)
+        let d = r.attribute(.link, at: 0, effectiveRange: nil) as? String
+        if r.string != expectedText || d != expectedDest {
+            fail("括号/转义/标题链接解析错误: \(md)", "got text=\(r.string.debugDescription) dest=\(String(describing: d))")
+        }
+    }
+
+    // 6. Backslash-escaped markers do not trigger links or images.
+    for (escaped, expectedLiteral) in [
+        (#"\[foo](https://example.com)"#, "[foo](https://example.com)"),
+        (#"\!\[foo](file:///a.png)"#, "![foo](file:///a.png)"),
+    ] {
+        let r = ConversationMarkdown.render(escaped, style: style)
+        let hasLink = r.attribute(.link, at: 0, effectiveRange: nil) != nil
+        let hasImg = r.attribute(.markdownImage, at: 0, effectiveRange: nil) != nil
+        if r.string != expectedLiteral || hasLink || hasImg {
+            fail("反斜杠转义未生效: \(escaped)", "got \(r.string.debugDescription) link=\(hasLink) img=\(hasImg)")
+        }
+    }
+
+    // 7. Linked image `[![alt](img.png)](https://example.com)`: inner `.markdownImage`
+    //    preserved, outer `.link` wins.
+    let linkedImg = ConversationMarkdown.render(
+        "[![preview](file:///tmp/preview.png)](https://example.com/full)", style: style
+    )
+    let liSpec = linkedImg.attribute(.markdownImage, at: 0, effectiveRange: nil) as? MarkdownImageSpec
+    let liDest = linkedImg.attribute(.link, at: 0, effectiveRange: nil) as? String
+    if liSpec?.destination != "file:///tmp/preview.png" || liDest != "https://example.com/full" {
+        fail("链接包裹图片解析错误", "spec=\(String(describing: liSpec)) link=\(String(describing: liDest))")
+    }
+
+    // 8. Table alignment holds when cells contain links and images.
+    checkTable("含链接与图片的表格仍然严格对齐", """
+    | 候选 | 文件 | 说明 |
+    |---|---|---|
+    | A | [F01-A](file:///Users/joey/Code/F01-A.png) | 圆润触感 |
+    | B | ![缩略图](file:///Users/joey/Code/F01-B.png) | 备选方案 |
+    """)
 }
 
 

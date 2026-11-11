@@ -5,40 +5,6 @@
 
 import Cocoa
 
-/// Something drawn beside or behind a run of rendered markdown that an
-/// attributed string cannot say by itself: a heading's bar, a nested list's
-/// guide line, a number's disc, a code block's box.
-///
-/// A class, and compared by identity on purpose: two list items side by side
-/// carry equal-looking decorations, and value equality would merge their runs
-/// into one, losing where the second item starts — which is where its tick
-/// goes.
-final class MarkdownDecoration: NSObject {
-    enum Kind {
-        /// A bar down the left of a heading.
-        case headingBar
-        /// A vertical line at `x` beside a nested list item, with a tick
-        /// across to the item's first line.
-        case guide(x: CGFloat)
-        /// A disc behind the glyphs it is on: an ordered list's number.
-        case disc(radius: CGFloat)
-        /// A rounded box behind a whole code block, full width.
-        case codeBox(padding: CGFloat, stroke: NSColor)
-    }
-
-    let kind: Kind
-    let colour: NSColor
-
-    init(_ kind: Kind, colour: NSColor) {
-        self.kind = kind
-        self.colour = colour
-    }
-}
-
-extension NSAttributedString.Key {
-    static let markdownDecoration = NSAttributedString.Key("AttacheMarkdownDecoration")
-}
-
 /// Draws the `MarkdownDecoration`s under the text it lays out.
 private final class MarkdownLayoutManager: NSLayoutManager {
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
@@ -125,17 +91,24 @@ private final class ReplyTextView: NSTextView {
 /// A text view rather than a label: a label draws an attributed string and
 /// nothing else, and the decorations need a layout manager to ask where each
 /// line went.
-final class MarkdownTextView: NSView {
+@MainActor
+final class MarkdownTextView: NSView, NSTextViewDelegate {
     private let storage: NSTextStorage
     private let manager = MarkdownLayoutManager()
     private let container = NSTextContainer(size: NSSize(width: 100, height: CGFloat.greatestFiniteMagnitude))
     private let text: NSTextView
+    private let linkContext: ChatLinkContext
     private var measuredWidth: CGFloat = -1
     private var height: CGFloat = 0
     private var bottomInset: CGFloat = 0
 
-    init(_ string: NSAttributedString) {
+    init(
+        _ string: NSAttributedString,
+        linkContext: ChatLinkContext? = nil,
+        accent: NSColor = .controlAccentColor
+    ) {
         storage = NSTextStorage(attributedString: string)
+        self.linkContext = linkContext ?? .localDefault
         container.lineFragmentPadding = 0
         manager.addTextContainer(container)
         storage.addLayoutManager(manager)
@@ -151,6 +124,14 @@ final class MarkdownTextView: NSView {
            case .codeBox(let padding, _) = d.kind {
             bottomInset = padding + 1
         }
+        text.delegate = self
+        // Omit `.underlineStyle` here so text links keep the single underline
+        // `ConversationMarkdown` placed on them while hydrated image
+        // attachments share native link clicking with no line under the bitmap.
+        text.linkTextAttributes = [
+            .foregroundColor: accent,
+            .cursor: NSCursor.pointingHand,
+        ]
         text.isEditable = false
         text.isSelectable = true
         text.drawsBackground = false
@@ -161,6 +142,14 @@ final class MarkdownTextView: NSView {
         addSubview(text)
         setContentHuggingPriority(.defaultHigh, for: .vertical)
         setContentCompressionResistancePriority(.init(1), for: .horizontal)
+
+        MarkdownImageLoader.hydrate(
+            storage,
+            context: self.linkContext,
+            maxSize: MarkdownImageAttachmentCell.bodyMaxSize
+        ) { [weak self] in
+            self?.relayoutAfterImageLoad()
+        }
     }
 
     @available(*, unavailable)
@@ -186,5 +175,49 @@ final class MarkdownTextView: NSView {
             }
         }
         text.frame = NSRect(x: 0, y: 0, width: width, height: max(height, bounds.height))
+    }
+
+    private func relayoutAfterImageLoad() {
+        measuredWidth = -1
+        if bounds.width > 0 {
+            container.size = NSSize(width: bounds.width, height: .greatestFiniteMagnitude)
+            manager.ensureLayout(for: container)
+            let measured = ceil(manager.usedRect(for: container).height + bottomInset)
+            if measured != height {
+                height = measured
+                invalidateIntrinsicContentSize()
+            }
+            measuredWidth = bounds.width
+            text.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(height, bounds.height))
+        } else {
+            invalidateIntrinsicContentSize()
+        }
+        needsLayout = true
+        needsDisplay = true
+        text.needsDisplay = true
+        linkContext.onLayoutInvalidated?()
+    }
+
+    // MARK: - NSTextViewDelegate
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        if let target = ChatLinkContext.linkTargetString(from: link) {
+            linkContext.open(target)
+            return true
+        }
+        return MarkdownImageLoader.handleAttachmentClick(
+            in: textView, at: charIndex, context: linkContext
+        )
+    }
+
+    func textView(
+        _ textView: NSTextView,
+        clickedOn cell: any NSTextAttachmentCellProtocol,
+        in cellFrame: NSRect,
+        at charIndex: Int
+    ) {
+        _ = MarkdownImageLoader.handleAttachmentClick(
+            in: textView, at: charIndex, context: linkContext
+        )
     }
 }

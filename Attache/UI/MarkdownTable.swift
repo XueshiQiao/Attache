@@ -78,7 +78,8 @@ enum MarkdownBlocks {
         return out.isEmpty ? nil : out
     }
 
-    /// A row's cells: split on `|`, not on `\|`.
+    /// A row's cells: split on `|`, not on `\|`, inline code spans, or
+    /// `](<...>)` link destinations.
     static func cells(_ line: String) -> [String] {
         var t = line.trimmingCharacters(in: .whitespaces)
         if t.hasPrefix("|") { t.removeFirst() }
@@ -90,12 +91,45 @@ enum MarkdownBlocks {
         }
         var out: [String] = []
         var cur = ""
-        var escaped = false
-        for ch in t {
-            if escaped { cur.append(ch); escaped = false; continue }
-            if ch == "\\" { escaped = true; continue }
-            if ch == "|" { out.append(cur.trimmingCharacters(in: .whitespaces)); cur = ""; continue }
+        var index = t.startIndex
+        while index < t.endIndex {
+            let ch = t[index]
+            if ch == "\\" {
+                let next = t.index(after: index)
+                if next < t.endIndex, ConversationMarkdown.isASCIIPunctuation(t[next]) {
+                    if t[next] == "|" {
+                        cur.append("|")
+                    } else {
+                        cur.append("\\")
+                        cur.append(t[next])
+                    }
+                    index = t.index(after: next)
+                    continue
+                }
+            }
+            let rest = t[index...]
+            if ch == "`", let close = rest.dropFirst().firstIndex(of: "`") {
+                cur += rest[rest.startIndex...close]
+                index = rest.index(after: close)
+                continue
+            }
+            if rest.hasPrefix("](<"),
+               let closeAngle = ConversationMarkdown.findClosingAngleDestination(
+                   in: t, from: t.index(index, offsetBy: 3)
+               )
+            {
+                cur += t[index...closeAngle]
+                index = t.index(after: closeAngle)
+                continue
+            }
+            if ch == "|" {
+                out.append(cur.trimmingCharacters(in: .whitespaces))
+                cur = ""
+                index = t.index(after: index)
+                continue
+            }
             cur.append(ch)
+            index = t.index(after: index)
         }
         out.append(cur.trimmingCharacters(in: .whitespaces))
         return out
@@ -107,12 +141,14 @@ enum MarkdownBlocks {
 /// Columns take the width their longest cell wants; when that is wider than
 /// the column of text, the wide columns give way and wrap, and once they are
 /// down to `floor` the table scrolls sideways instead.
+@MainActor
 final class MarkdownTableView: NSView {
     private let header: [String]
     private let rows: [[String]]
     private let align: [NSTextAlignment]
+    private let linkContext: ChatLinkContext
     private let scroll = TableScrollView()
-    private let grid = TableGridView()
+    private let grid: TableGridView
     private var height: NSLayoutConstraint!
     private var laidOutFor: CGFloat = -1
 
@@ -120,11 +156,22 @@ final class MarkdownTableView: NSView {
     private static let floor: CGFloat = 160
     private static let pad = NSSize(width: 10, height: 6)
 
-    init(header: [String], rows: [[String]], align: [NSTextAlignment]) {
+    init(
+        header: [String],
+        rows: [[String]],
+        align: [NSTextAlignment],
+        linkContext: ChatLinkContext? = nil
+    ) {
+        let resolvedContext = linkContext ?? .localDefault
         self.header = header
         self.rows = rows
         self.align = align
+        self.linkContext = resolvedContext
+        self.grid = TableGridView(linkContext: resolvedContext)
         super.init(frame: .zero)
+        grid.onIntrinsicHeightChange = { [weak self] in
+            self?.relayoutForLoadedImage()
+        }
         scroll.documentView = grid
         scroll.hasHorizontalScroller = true
         scroll.hasVerticalScroller = false
@@ -154,6 +201,19 @@ final class MarkdownTableView: NSView {
         grid.frame = NSRect(origin: .zero, size: size)
         if height.constant != size.height { height.constant = size.height }
     }
+
+    private func relayoutForLoadedImage() {
+        guard bounds.width > 0 else { return }
+        laidOutFor = bounds.width
+        let size = grid.remeasure(available: bounds.width, floor: Self.floor, pad: Self.pad)
+        grid.frame = NSRect(origin: .zero, size: size)
+        if height.constant != size.height {
+            height.constant = size.height
+            invalidateIntrinsicContentSize()
+        }
+        needsLayout = true
+        linkContext.onLayoutInvalidated?()
+    }
 }
 
 /// Scrolls sideways only; a vertical turn of the wheel goes on to the page.
@@ -171,39 +231,102 @@ private final class TableScrollView: NSScrollView {
 }
 
 /// The grid itself: measured once per width, drawn from those measures.
-private final class TableGridView: NSView {
-    private var cells: [[NSAttributedString]] = []
+private final class TableGridView: NSView, NSTextViewDelegate {
+    private final class CellEntry {
+        let storage: NSTextStorage
+        let manager: NSLayoutManager
+        let container: NSTextContainer
+        let view: NSTextView
+
+        init(attributed: NSAttributedString, delegate: NSTextViewDelegate, accent: NSColor) {
+            storage = NSTextStorage(attributedString: attributed)
+            manager = NSLayoutManager()
+            container = NSTextContainer(size: NSSize(width: 200, height: CGFloat.greatestFiniteMagnitude))
+            container.lineFragmentPadding = 0
+            manager.addTextContainer(container)
+            storage.addLayoutManager(manager)
+            view = NSTextView(frame: .zero, textContainer: container)
+            view.delegate = delegate
+            view.linkTextAttributes = [
+                .foregroundColor: accent,
+                .cursor: NSCursor.pointingHand,
+            ]
+            view.textContainerInset = .zero
+            view.isEditable = false
+            view.isSelectable = true
+            view.drawsBackground = false
+            view.isAutomaticLinkDetectionEnabled = false
+            // Sized by the grid, which measured the cell; left resizable,
+            // a cell that wrapped differently would grow into the next row.
+            view.isVerticallyResizable = false
+            view.isHorizontallyResizable = false
+        }
+    }
+
+    var onIntrinsicHeightChange: (() -> Void)?
+    private let linkContext: ChatLinkContext
+    private var entries: [[CellEntry]] = []
     private var widths: [CGFloat] = []
     private var heights: [CGFloat] = []
     private var pad = NSSize.zero
     private static let gap: CGFloat = 1
+
+    init(linkContext: ChatLinkContext) {
+        self.linkContext = linkContext
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not from a nib") }
 
     override var isFlipped: Bool { true }
 
     func lay(header: [String], rows: [[String]], align: [NSTextAlignment], available: CGFloat,
              floor: CGFloat, pad: NSSize) -> NSSize {
         self.pad = pad
-        let theme = ChromeTheme.current
-        let size = ChatRowViews.size - 0.5
-        cells = ([header] + rows).enumerated().map { r, row in
-            row.enumerated().map { c, text in
-                let paragraph = NSMutableParagraphStyle()
-                paragraph.alignment = c < align.count ? align[c] : .left
-                paragraph.lineSpacing = 2
-                let font = r == 0 ? NSFont.systemFont(ofSize: size, weight: .semibold) : .systemFont(ofSize: size)
-                return Self.inline(text, font: font, colour: theme.text, paragraph: paragraph)
+        let allRows = [header] + rows
+        if entries.count != allRows.count || entries.first?.count != header.count {
+            subviews.forEach { $0.removeFromSuperview() }
+            let theme = ChromeTheme.current
+            let size = ChatRowViews.size - 0.5
+            entries = allRows.enumerated().map { r, row in
+                row.enumerated().map { c, text in
+                    let paragraph = NSMutableParagraphStyle()
+                    paragraph.alignment = c < align.count ? align[c] : .left
+                    paragraph.lineSpacing = 2
+                    let font = r == 0 ? NSFont.systemFont(ofSize: size, weight: .semibold) : .systemFont(ofSize: size)
+                    let rendered = Self.inline(text, font: font, theme: theme, paragraph: paragraph)
+                    let entry = CellEntry(attributed: rendered, delegate: self, accent: theme.accent)
+                    addSubview(entry.view)
+                    MarkdownImageLoader.hydrate(
+                        entry.storage,
+                        context: linkContext,
+                        maxSize: MarkdownImageAttachmentCell.tableMaxSize
+                    ) { [weak self] in
+                        self?.onIntrinsicHeightChange?()
+                    }
+                    return entry
+                }
             }
         }
-        let columns = header.count
+        return remeasure(available: available, floor: floor, pad: pad)
+    }
+
+    func remeasure(available: CGFloat, floor: CGFloat, pad: NSSize) -> NSSize {
+        self.pad = pad
+        guard let firstRow = entries.first, !firstRow.isEmpty else { return .zero }
+        let columns = firstRow.count
         let gap = Self.gap
         let natural = (0..<columns).map { c in
-            cells.map { ceil($0[c].size().width) + 2 * pad.width }.max() ?? 0
+            entries.map { ceil($0[c].storage.size().width) + 2 * pad.width }.max() ?? 0
         }
         widths = Self.fit(natural, available: available - gap * CGFloat(columns + 1), floor: floor)
-        heights = cells.map { row in
-            row.enumerated().map { c, text in
-                ceil(text.boundingRect(with: NSSize(width: widths[c] - 2 * pad.width, height: .greatestFiniteMagnitude),
-                                       options: [.usesLineFragmentOrigin, .usesFontLeading]).height) + 2 * pad.height
+        heights = entries.map { row in
+            row.enumerated().map { c, entry in
+                let innerWidth = max(1, widths[c] - 2 * pad.width)
+                entry.container.size = NSSize(width: innerWidth, height: .greatestFiniteMagnitude)
+                entry.manager.ensureLayout(for: entry.container)
+                return ceil(entry.manager.usedRect(for: entry.container).height) + 2 * pad.height
             }.max() ?? 0
         }
         placeText()
@@ -212,43 +335,17 @@ private final class TableGridView: NSView {
                       height: heights.reduce(0, +) + gap * CGFloat(heights.count + 1))
     }
 
-    /// Each cell's text as a selectable text view on its cell; the grid only
-    /// paints the fills and rules. Drawn straight onto the grid, as it was,
-    /// no word of a table could be selected or copied.
-    ///
-    /// The views are made once and moved after that: a width change (every
-    /// step of a window drag) used to rebuild them all, at a TextKit stack a
-    /// cell, and drop whatever was selected.
+    /// Each cell's text as a selectable TextKit 1 text view on its cell; the
+    /// grid only paints the fills and rules.
     private func placeText() {
-        let count = cells.reduce(0) { $0 + $1.count }
-        if subviews.count != count {
-            subviews.forEach { $0.removeFromSuperview() }
-            for text in cells.joined() {
-                let view = NSTextView(frame: .zero)
-                view.textContainer?.lineFragmentPadding = 0
-                view.textContainerInset = .zero
-                view.isEditable = false
-                view.isSelectable = true
-                view.drawsBackground = false
-                view.isAutomaticLinkDetectionEnabled = false
-                // Sized by the grid, which measured the cell; left resizable,
-                // a cell that wrapped differently would grow into the next row.
-                view.isVerticallyResizable = false
-                view.isHorizontallyResizable = false
-                view.textStorage?.setAttributedString(text)
-                addSubview(view)
-            }
-        }
-        var views = subviews.makeIterator()
         var y = Self.gap
-        for (r, row) in cells.enumerated() {
+        for (r, row) in entries.enumerated() {
             var x = Self.gap
-            for c in row.indices {
+            for (c, entry) in row.enumerated() {
                 let frame = NSRect(x: x, y: y, width: widths[c], height: heights[r]).insetBy(dx: pad.width, dy: pad.height)
-                if let view = views.next() as? NSTextView {
-                    view.frame = frame
-                    view.textContainer?.size = NSSize(width: frame.width, height: .greatestFiniteMagnitude)
-                }
+                entry.view.frame = frame
+                entry.container.size = NSSize(width: max(1, frame.width), height: .greatestFiniteMagnitude)
+                entry.view.needsDisplay = true
                 x += widths[c] + Self.gap
             }
             y += heights[r] + Self.gap
@@ -272,31 +369,56 @@ private final class TableGridView: NSView {
         return natural.indices.map { open.contains($0) ? max(share, min(floor, natural[$0])) : natural[$0] }
     }
 
-    /// `**bold**` and `` `code` `` inside a cell.
-    private static func inline(_ text: String, font: NSFont, colour: NSColor,
-                               paragraph: NSParagraphStyle) -> NSAttributedString {
-        let out = NSMutableAttributedString()
-        let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: colour, .paragraphStyle: paragraph]
-        var rest = Substring(text)
-        while !rest.isEmpty {
-            if rest.hasPrefix("**"), let end = rest.dropFirst(2).range(of: "**") {
-                var a = base
-                a[.font] = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
-                out.append(NSAttributedString(string: String(rest[rest.index(rest.startIndex, offsetBy: 2)..<end.lowerBound]), attributes: a))
-                rest = rest[end.upperBound...]
-            } else if rest.hasPrefix("`"), let end = rest.dropFirst().firstIndex(of: "`") {
-                var a = base
-                a[.font] = NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
-                a[.backgroundColor] = ChromeTheme.current.hover
-                out.append(NSAttributedString(string: String(rest[rest.index(after: rest.startIndex)..<end]), attributes: a))
-                rest = rest[rest.index(after: end)...]
-            } else {
-                let next = rest.dropFirst().firstIndex { $0 == "*" || $0 == "`" } ?? rest.endIndex
-                out.append(NSAttributedString(string: String(rest[rest.startIndex..<next]), attributes: base))
-                rest = rest[next...]
-            }
-        }
+    /// Unified cell inline formatting via `ConversationMarkdown.inline`.
+    private static func inline(
+        _ text: String, font: NSFont, theme: ChromeTheme, paragraph: NSParagraphStyle
+    ) -> NSAttributedString {
+        let cellStyle = ConversationMarkdown.Style(
+            body: font,
+            mono: .monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular),
+            bold: NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask),
+            text: theme.text,
+            strong: theme.text,
+            faint: theme.faintText,
+            codeBackground: theme.hover,
+            look: .plain,
+            accent: theme.accent,
+            codeText: theme.text,
+            line: theme.separator
+        )
+        let out = NSMutableAttributedString(
+            attributedString: ConversationMarkdown.inline(
+                text, style: cellStyle, baseFont: font, defaultColour: theme.text
+            )
+        )
+        out.addAttribute(
+            .paragraphStyle, value: paragraph,
+            range: NSRange(location: 0, length: out.length)
+        )
         return out
+    }
+
+    // MARK: - NSTextViewDelegate
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        if let target = ChatLinkContext.linkTargetString(from: link) {
+            linkContext.open(target)
+            return true
+        }
+        return MarkdownImageLoader.handleAttachmentClick(
+            in: textView, at: charIndex, context: linkContext
+        )
+    }
+
+    func textView(
+        _ textView: NSTextView,
+        clickedOn cell: any NSTextAttachmentCellProtocol,
+        in cellFrame: NSRect,
+        at charIndex: Int
+    ) {
+        _ = MarkdownImageLoader.handleAttachmentClick(
+            in: textView, at: charIndex, context: linkContext
+        )
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -311,7 +433,7 @@ private final class TableGridView: NSView {
         bounds.fill()
         let headFill = theme.background.blended(withFraction: 0.07, of: theme.text) ?? theme.hover
         var y = Self.gap
-        for (r, row) in cells.enumerated() {
+        for (r, row) in entries.enumerated() {
             var x = Self.gap
             for c in row.indices {
                 let cell = NSRect(x: x, y: y, width: widths[c], height: heights[r])

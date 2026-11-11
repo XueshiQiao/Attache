@@ -75,8 +75,8 @@ extension TerminalLinkTarget {
                 return .url(url)
             }
             if scheme == "file" {
-                guard let url = URL(string: text), url.isFileURL else { return .unsupported }
-                return classify(url.path, existence: existence)
+                guard let path = filePath(from: text) else { return .unsupported }
+                return classify(path, existence: existence)
             }
             return .unsupported
         }
@@ -85,7 +85,8 @@ extension TerminalLinkTarget {
     }
 
     /// Every path `resolve` could possibly ask `existence` about, in probe
-    /// order — the whole match first, then each space-cut prefix.
+    /// order — the whole match first, then any `#L…` fragment-stripped path,
+    /// then each space-cut prefix.
     ///
     /// This exists for the remote flow, whose `existence` cannot be a live
     /// closure: a round trip per probe would put serial network waits behind
@@ -101,14 +102,17 @@ extension TerminalLinkTarget {
         guard !text.isEmpty else { return [] }
         let base: String?
         if let scheme = scheme(of: text) {
-            guard scheme == "file", let url = URL(string: text), url.isFileURL else { return [] }
-            base = url.path
+            guard scheme == "file", let path = filePath(from: text) else { return [] }
+            base = path
         } else {
             base = absolutePath(for: text, cwd: cwd, home: home)
         }
         guard let path = base, !path.isEmpty else { return [] }
 
         var candidates = [path]
+        if let stripped = strippingFragment(from: path), !candidates.contains(stripped) {
+            candidates.append(stripped)
+        }
         // Mirrors `longestExistingPrefix` exactly, empties-stop included: it
         // cuts the *uncleaned* text at each space and probes the cleaned form.
         var candidate = path
@@ -130,8 +134,49 @@ extension TerminalLinkTarget {
         case .file: return .file(path)
         case .directory: return .directory(path)
         case .absent:
+            if let stripped = strippingFragment(from: path) {
+                switch existence(stripped) {
+                case .file: return .file(stripped)
+                case .directory: return .directory(stripped)
+                case .absent: break
+                }
+            }
             return longestExistingPrefix(of: path, existence: existence) ?? .missing(path)
         }
+    }
+
+    /// Extract a local POSIX path from a `file:` URI, stripping any `#L10-L20`
+    /// fragment or `?query` and decoding percent-escapes while tolerating
+    /// unencoded spaces, CJK characters, or square brackets in filenames.
+    private static func filePath(from text: String) -> String? {
+        if let url = URL(string: text), url.isFileURL {
+            let host = url.host?.lowercased() ?? ""
+            guard host.isEmpty || host == "localhost" else { return nil }
+            let decoded = url.path
+            return decoded.isEmpty ? nil : normalised(decoded)
+        }
+        // Fallback for `file:///path/with[brackets].png` or unencoded spaces
+        // where strict RFC 3986 parsing rejects characters valid in POSIX paths.
+        guard text.lowercased().hasPrefix("file://") else { return nil }
+        var rest = Substring(text.dropFirst("file://".count))
+        if rest.lowercased().hasPrefix("localhost/") {
+            rest = rest.dropFirst("localhost".count)
+        }
+        guard rest.hasPrefix("/") else { return nil }
+        if let end = rest.firstIndex(where: { $0 == "#" || $0 == "?" }) {
+            rest = rest[..<end]
+        }
+        let rawPath = String(rest)
+        let decoded = rawPath.removingPercentEncoding ?? rawPath
+        return decoded.isEmpty ? nil : normalised(decoded)
+    }
+
+    /// Strip a `#L10-L20` (or `#anchor`) suffix from a bare path when the
+    /// literal `#` path itself does not exist on disk.
+    private static func strippingFragment(from path: String) -> String? {
+        guard let hash = path.firstIndex(of: "#"), hash > path.startIndex else { return nil }
+        let prefix = normalised(String(path[..<hash]))
+        return prefix.isEmpty || prefix == path ? nil : prefix
     }
 
     /// When the whole match is not there, the longest prefix of it that is.

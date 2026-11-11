@@ -20,6 +20,8 @@ import Cocoa
 final class ChatPaneView: NSView {
     /// Asked when the person wants the terminal instead.
     var onShowTerminal: (() -> Void)?
+    /// Asked when a link or rendered image in a reply is clicked.
+    var onOpenLink: ((String) -> Void)?
 
     private(set) var model: AgentChatModel?
     private let header = ChatHeaderView()
@@ -550,12 +552,49 @@ final class ChatPaneView: NSView {
 
         if let text = model.notice {
             model.notice = nil
-            notice.stringValue = text
-            notice.isHidden = false
-            noticeTimer?.invalidate()
-            noticeTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
-                MainActor.assumeIsolated { self?.notice.isHidden = true }
-            }
+            showNotice(text)
+        }
+    }
+
+    /// Shows a short transient notice in the chat dock (e.g. a missing path
+    /// when clicking a dead link).
+    func showNotice(_ text: String) {
+        notice.stringValue = text
+        notice.isHidden = false
+        noticeTimer?.invalidate()
+        noticeTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.notice.isHidden = true }
+        }
+    }
+
+    private func makeLinkContext() -> ChatLinkContext {
+        let cwd = model?.agent?.path
+        return ChatLinkContext(
+            cwd: (cwd?.isEmpty == false) ? cwd : nil,
+            pathsAreLocal: model?.link.transport.pathsAreLocal ?? true,
+            onOpenLink: { [weak self] raw in self?.openChatLink(raw) },
+            onLayoutInvalidated: { [weak self] in self?.handleAsyncImageLayout() }
+        )
+    }
+
+    private func openChatLink(_ raw: String) {
+        if let onOpenLink {
+            onOpenLink(raw)
+        } else {
+            let cwd = model?.agent?.path
+            ChatLinkContext(
+                cwd: (cwd?.isEmpty == false) ? cwd : nil,
+                pathsAreLocal: model?.link.transport.pathsAreLocal ?? true
+            ).open(raw)
+        }
+    }
+
+    private func handleAsyncImageLayout() {
+        if followsBottom, !inLiveResize {
+            scrollToBottom()
+        } else {
+            settle()
+            updateMinimap()
         }
     }
 
@@ -587,6 +626,7 @@ final class ChatPaneView: NSView {
         let prepended = keep == 0 && !drawn.isEmpty && !followsBottom
         for gone in drawn[keep...] { gone.view.removeFromSuperview() }
         drawn.removeSubrange(keep...)
+        let context = makeLinkContext()
         for (i, element) in elements.enumerated().dropFirst(keep) {
             let view: NSView
             if case .fold(let fold) = element {
@@ -594,11 +634,15 @@ final class ChatPaneView: NSView {
                 folded.onToggle = { [weak self] in self?.toggle(fold: fold.key) }
                 view = folded
             } else if case .reply(let row, let fold) = element, case .agent(_, let text) = row {
-                let reply = MarkedReply(row: row, markdown: text, fold: fold)
+                let reply = MarkedReply(row: row, markdown: text, fold: fold, linkContext: context)
                 reply.onToggle = { [weak self] in self?.toggle(fold: fold.key) }
                 view = reply
             } else {
-                view = ChatRowViews.make(element, width: { [weak self] in self?.bounds.width ?? 600 })
+                view = ChatRowViews.make(
+                    element,
+                    width: { [weak self] in self?.bounds.width ?? 600 },
+                    linkContext: context
+                )
             }
             list.addArrangedSubview(view)
             view.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
@@ -900,7 +944,7 @@ struct ChatFold: Equatable {
             while let mark = ["#", ">", "- ", "* ", "+ "].first(where: { line.hasPrefix($0) }) {
                 line = String(line.dropFirst(mark.count)).trimmingCharacters(in: .whitespaces)
             }
-            line = line.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+            line = ConversationMarkdown.visibleText(line).trimmingCharacters(in: .whitespaces)
             if !line.isEmpty { return line }
         }
         return nil

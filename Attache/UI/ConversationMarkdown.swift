@@ -5,21 +5,65 @@
 
 import AppKit
 
-/// Renders the markdown an agent wrote into something readable in a 400pt
-/// column.
+/// Something drawn beside or behind a run of rendered markdown that an
+/// attributed string cannot say by itself: a heading's bar, a nested list's
+/// guide line, a number's disc, a code block's box.
+///
+/// A class, and compared by identity on purpose: two list items side by side
+/// carry equal-looking decorations, and value equality would merge their runs
+/// into one, losing where the second item starts — which is where its tick
+/// goes.
+final class MarkdownDecoration: NSObject {
+    enum Kind {
+        /// A bar down the left of a heading.
+        case headingBar
+        /// A vertical line at `x` beside a nested list item, with a tick
+        /// across to the item's first line.
+        case guide(x: CGFloat)
+        /// A disc behind the glyphs it is on: an ordered list's number.
+        case disc(radius: CGFloat)
+        /// A rounded box behind a whole code block, full width.
+        case codeBox(padding: CGFloat, stroke: NSColor)
+    }
+
+    let kind: Kind
+    let colour: NSColor
+
+    init(_ kind: Kind, colour: NSColor) {
+        self.kind = kind
+        self.colour = colour
+    }
+}
+
+/// Pure description of an inline `![alt](destination)` image emitted by
+/// `ConversationMarkdown` without touching disk or network. Views that show
+/// images (`MarkdownTextView`, `MarkdownTableView`) hydrate matching runs
+/// asynchronously off the main thread.
+struct MarkdownImageSpec: Hashable {
+    let alt: String
+    let destination: String
+}
+
+extension NSAttributedString.Key {
+    static let markdownDecoration = NSAttributedString.Key("AttacheMarkdownDecoration")
+    static let markdownImage = NSAttributedString.Key("AttacheMarkdownImage")
+    static let markdownImageToken = NSAttributedString.Key("AttacheMarkdownImageToken")
+    static let markdownImageLink = NSAttributedString.Key("AttacheMarkdownImageLink")
+}
+
+/// Renders the markdown an agent wrote into something readable in the rail or
+/// on the chat page.
 ///
 /// **Hand-written rather than `NSAttributedString(markdown:)`, and the reason
 /// is tables.** Foundation's parser has no table support at all — a `| a | b |`
 /// row comes through as literal pipes in the body font, where the columns do
 /// not line up and the result is worse than the source. Agent replies in this
-/// codebase are full of tables. The rest of what Foundation would give is a few
-/// lines here.
+/// codebase are full of tables.
 ///
-/// Scope is deliberately small: what agents actually emit into a terminal.
-/// Inline bold and code, ATX and bold-line headings, bullet and numbered
-/// lists, tables, horizontal rules, fenced code. No links, no images, no
-/// blockquotes, no nesting — none of which appears often enough to earn the
-/// ambiguity it would add.
+/// Scope covers what agents emit: inline bold, code, CommonMark links
+/// (`[label](dest)`) and images (`![alt](dest)`), backslash escapes, ATX and
+/// bold-line headings, bullet and numbered lists, tables, horizontal rules, and
+/// fenced code.
 enum ConversationMarkdown {
 
     struct Style {
@@ -74,7 +118,7 @@ enum ConversationMarkdown {
     static func rendered(_ markdown: String, style: Style) -> NSAttributedString {
         let key = Key(
             text: markdown, size: style.body.pointSize,
-            colour: style.text.hashValue &* 31 &+ style.strong.hashValue,
+            colour: (style.text.hashValue &* 31 &+ style.strong.hashValue) &* 31 &+ style.accent.hashValue,
             look: style.look
         )
         if let hit = cache[key] { return hit }
@@ -276,12 +320,13 @@ enum ConversationMarkdown {
         paragraph.paragraphSpacing = 2
         let result = NSMutableAttributedString(
             attributedString: inline(
-                text, style: style, baseFont: .systemFont(ofSize: size, weight: weight)
+                text, style: style, baseFont: .systemFont(ofSize: size, weight: weight),
+                defaultColour: style.strong
             )
         )
-        result.append(NSAttributedString(string: "\n"))
-        result.addAttributes(
-            [.foregroundColor: style.strong, .paragraphStyle: paragraph],
+        result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: size, weight: weight), .foregroundColor: style.strong]))
+        result.addAttribute(
+            .paragraphStyle, value: paragraph,
             range: NSRange(location: 0, length: result.length)
         )
         return result
@@ -412,10 +457,13 @@ enum ConversationMarkdown {
                 let piece = cell.isLiteral
                     ? NSMutableAttributedString(
                         string: cell.text,
-                        attributes: [.font: font, .foregroundColor: style.text]
+                        attributes: [.font: font, .foregroundColor: isHeader ? style.strong : style.text]
                     )
                     : NSMutableAttributedString(
-                        attributedString: inline(cell.text, style: style, baseFont: font)
+                        attributedString: inline(
+                            cell.text, style: style, baseFont: font,
+                            defaultColour: isHeader ? style.strong : nil
+                        )
                     )
                 // Padding outside the inline pass, so a cell's code background
                 // stops at the text rather than running into the gap.
@@ -424,12 +472,6 @@ enum ConversationMarkdown {
                         string: String(repeating: " ", count: cell.padding),
                         attributes: [.font: font]
                     ))
-                }
-                if isHeader {
-                    piece.addAttribute(
-                        .foregroundColor, value: style.strong,
-                        range: NSRange(location: 0, length: piece.length)
-                    )
                 }
                 result.append(piece)
             }
@@ -518,18 +560,42 @@ enum ConversationMarkdown {
         var result = ""
         var index = text.startIndex
         while index < text.endIndex {
-            let rest = text[index...]
-            if rest.hasPrefix("**"), let close = rest.dropFirst(2).range(of: "**") {
-                result += rest[rest.index(rest.startIndex, offsetBy: 2)..<close.lowerBound]
-                index = close.upperBound
-                continue
+            let ch = text[index]
+            if ch == "\\" {
+                let next = text.index(after: index)
+                if next < text.endIndex, isASCIIPunctuation(text[next]) {
+                    result.append(text[next])
+                    index = text.index(after: next)
+                    continue
+                }
             }
-            if rest.hasPrefix("`"), let close = rest.dropFirst().firstIndex(of: "`") {
+            let rest = text[index...]
+            if ch == "`", let close = rest.dropFirst().firstIndex(of: "`") {
                 result += rest[rest.index(after: rest.startIndex)..<close]
                 index = rest.index(after: close)
                 continue
             }
-            result.append(text[index])
+            if rest.hasPrefix("**"),
+               let close = findClosingBold(in: text, from: text.index(index, offsetBy: 2)),
+               close > text.index(index, offsetBy: 2)
+            {
+                let inner = String(text[text.index(index, offsetBy: 2)..<close])
+                result += visibleText(inner)
+                index = text.index(close, offsetBy: 2)
+                continue
+            }
+            if rest.hasPrefix("!["), let match = parseLinkOrImage(in: text, at: index, isImage: true) {
+                let shownAlt = visibleText(match.label)
+                result += "[" + (shownAlt.isEmpty ? "image" : shownAlt) + "]"
+                index = match.afterIndex
+                continue
+            }
+            if ch == "[", let match = parseLinkOrImage(in: text, at: index, isImage: false) {
+                result += visibleText(match.label)
+                index = match.afterIndex
+                continue
+            }
+            result.append(ch)
             index = text.index(after: index)
         }
         return result
@@ -596,21 +662,39 @@ enum ConversationMarkdown {
         var index = body.startIndex
 
         while index < body.endIndex {
+            let ch = body[index]
+            if ch == "\\" {
+                let next = body.index(after: index)
+                if next < body.endIndex, isASCIIPunctuation(body[next]) {
+                    current.append(ch)
+                    current.append(body[next])
+                    index = body.index(after: next)
+                    continue
+                }
+            }
             let rest = body[index...]
             // The same test `inline` makes: a backtick opens a code span only
             // when there is a closing one after it.
-            if rest.hasPrefix("`"), let close = rest.dropFirst().firstIndex(of: "`") {
+            if ch == "`", let close = rest.dropFirst().firstIndex(of: "`") {
                 current += rest[rest.startIndex...close]
                 index = rest.index(after: close)
                 continue
             }
-            if body[index] == "|" {
+            // Pointy-bracket link destination `](<...>)` may contain `|`.
+            if rest.hasPrefix("](<"),
+               let closeAngle = findClosingAngleDestination(in: body, from: body.index(index, offsetBy: 3))
+            {
+                current += body[index...closeAngle]
+                index = body.index(after: closeAngle)
+                continue
+            }
+            if ch == "|" {
                 cells.append(current.trimmingCharacters(in: .whitespaces))
                 current = ""
                 index = body.index(after: index)
                 continue
             }
-            current.append(body[index])
+            current.append(ch)
             index = body.index(after: index)
         }
         cells.append(current.trimmingCharacters(in: .whitespaces))
@@ -624,16 +708,17 @@ enum ConversationMarkdown {
 
     // MARK: - Inline
 
-    /// `**bold**` and `` `code` ``, in one pass.
+    /// `**bold**`, `` `code` ``, `[label](dest)`, `![alt](dest)`, and CommonMark
+    /// backslash escapes, in one pass.
     ///
-    /// One pass because the two can abut and a second pass over an attributed
-    /// string would have to re-find ranges it had already styled. Unmatched
-    /// markers are left as literal text: an agent writing about `**` should see
-    /// what it wrote.
+    /// One pass because constructs can abut or nest (e.g. `` [`Sym`](url) `` or
+    /// `[![alt](img)](href)`), and unmatched or malformed markers stay literal:
+    /// an agent writing `[a] (b)` or `[a](b c)` sees exactly what it wrote.
     static func inline(
-        _ text: String, style: Style, baseFont: NSFont? = nil
+        _ text: String, style: Style, baseFont: NSFont? = nil, defaultColour: NSColor? = nil
     ) -> NSAttributedString {
         let font = baseFont ?? style.body
+        let ink = defaultColour ?? style.text
         // **Bold and code have to stay in the caller's face.** Hard-coding
         // `style.bold` — a proportional font — inside a table cell measured in
         // monospaced columns is a silent misalignment: `**WW**` and `**ii**`
@@ -653,38 +738,372 @@ enum ConversationMarkdown {
         func flush() {
             guard !plain.isEmpty else { return }
             result.append(NSAttributedString(
-                string: plain, attributes: [.font: font, .foregroundColor: style.text]
+                string: plain, attributes: [.font: font, .foregroundColor: ink]
             ))
             plain = ""
         }
 
         while index < text.endIndex {
-            let rest = text[index...]
-            if rest.hasPrefix("**"), let close = rest.dropFirst(2).range(of: "**") {
-                flush()
-                result.append(NSAttributedString(
-                    string: String(rest[rest.index(rest.startIndex, offsetBy: 2)..<close.lowerBound]),
-                    attributes: [.font: boldFont, .foregroundColor: style.strong]
-                ))
-                index = close.upperBound
-                continue
+            let ch = text[index]
+            if ch == "\\" {
+                let next = text.index(after: index)
+                if next < text.endIndex, isASCIIPunctuation(text[next]) {
+                    plain.append(text[next])
+                    index = text.index(after: next)
+                    continue
+                }
             }
-            if rest.hasPrefix("`"), let close = rest.dropFirst().firstIndex(of: "`") {
+            let rest = text[index...]
+            if ch == "`", let close = rest.dropFirst().firstIndex(of: "`") {
                 flush()
+                var codeAttrs: [NSAttributedString.Key: Any] = [.font: codeFont]
+                if style.look == .guides {
+                    codeAttrs[.foregroundColor] = style.codeText
+                } else {
+                    codeAttrs[.foregroundColor] = ink
+                    codeAttrs[.backgroundColor] = style.codeBackground
+                }
                 result.append(NSAttributedString(
                     string: String(rest[rest.index(after: rest.startIndex)..<close]),
-                    attributes: style.look == .guides
-                        ? [.font: codeFont, .foregroundColor: style.codeText]
-                        : [.font: codeFont, .foregroundColor: style.text, .backgroundColor: style.codeBackground]
+                    attributes: codeAttrs
                 ))
                 index = rest.index(after: close)
                 continue
             }
-            plain.append(text[index])
+            if rest.hasPrefix("**"),
+               let close = findClosingBold(in: text, from: text.index(index, offsetBy: 2)),
+               close > text.index(index, offsetBy: 2)
+            {
+                flush()
+                let inner = String(text[text.index(index, offsetBy: 2)..<close])
+                result.append(inline(
+                    inner, style: style, baseFont: boldFont, defaultColour: style.strong
+                ))
+                index = text.index(close, offsetBy: 2)
+                continue
+            }
+            if rest.hasPrefix("!["), let match = parseLinkOrImage(in: text, at: index, isImage: true) {
+                flush()
+                let shownAlt = visibleText(match.label)
+                let placeholder = "[" + (shownAlt.isEmpty ? "image" : shownAlt) + "]"
+                let spec = MarkdownImageSpec(alt: shownAlt, destination: match.destination)
+                result.append(NSAttributedString(
+                    string: placeholder,
+                    attributes: [
+                        .font: font,
+                        .foregroundColor: style.accent,
+                        .underlineStyle: NSUnderlineStyle.single.rawValue,
+                        .link: match.destination as NSString,
+                        .markdownImage: spec,
+                    ]
+                ))
+                index = match.afterIndex
+                continue
+            }
+            if ch == "[", let match = parseLinkOrImage(in: text, at: index, isImage: false) {
+                flush()
+                let styled = NSMutableAttributedString(
+                    attributedString: inline(
+                        match.label, style: style, baseFont: font, defaultColour: style.accent
+                    )
+                )
+                let whole = NSRange(location: 0, length: styled.length)
+                if whole.length > 0 {
+                    styled.addAttribute(.link, value: match.destination as NSString, range: whole)
+                    styled.addAttribute(.foregroundColor, value: style.accent, range: whole)
+                    styled.enumerateAttribute(.markdownImage, in: whole) { value, subrange, _ in
+                        if value == nil {
+                            styled.addAttribute(
+                                .underlineStyle, value: NSUnderlineStyle.single.rawValue, range: subrange
+                            )
+                        }
+                    }
+                    result.append(styled)
+                }
+                index = match.afterIndex
+                continue
+            }
+            plain.append(ch)
             index = text.index(after: index)
         }
         flush()
         return result
+    }
+
+    // MARK: - CommonMark inline link & image scanning
+
+    struct InlineLinkMatch {
+        let label: String
+        let destination: String
+        let afterIndex: String.Index
+    }
+
+    static func isASCIIPunctuation(_ ch: Character) -> Bool {
+        guard let ascii = ch.asciiValue else { return false }
+        switch ascii {
+        case 0x21...0x2F, 0x3A...0x40, 0x5B...0x60, 0x7B...0x7E: return true
+        default: return false
+        }
+    }
+
+    static func findClosingAngleDestination<S: StringProtocol>(
+        in text: S, from start: S.Index
+    ) -> S.Index? {
+        var cursor = start
+        while cursor < text.endIndex {
+            let ch = text[cursor]
+            if ch == "\n" || ch == "\r" || ch == "<" { return nil }
+            if ch == "\\" {
+                let next = text.index(after: cursor)
+                if next < text.endIndex, isASCIIPunctuation(text[next]) {
+                    cursor = text.index(after: next)
+                    continue
+                }
+            }
+            if ch == ">" { return cursor }
+            cursor = text.index(after: cursor)
+        }
+        return nil
+    }
+
+    private static func findClosingBold(in text: String, from start: String.Index) -> String.Index? {
+        var cursor = start
+        while cursor < text.endIndex {
+            let ch = text[cursor]
+            if ch == "\\" {
+                let next = text.index(after: cursor)
+                if next < text.endIndex, isASCIIPunctuation(text[next]) {
+                    cursor = text.index(after: next)
+                    continue
+                }
+            }
+            if ch == "`", let close = text[text.index(after: cursor)...].firstIndex(of: "`") {
+                cursor = text.index(after: close)
+                continue
+            }
+            if text[cursor...].hasPrefix("**") { return cursor }
+            cursor = text.index(after: cursor)
+        }
+        return nil
+    }
+
+    /// Strict CommonMark inline `[label](destination "title")` and
+    /// `![alt](destination "title")` parser.
+    ///
+    /// Rules enforced:
+    /// - Zero characters allowed between `]` and `(`.
+    /// - Balanced `[...]` inside the label, ignoring `\]` and backtick code spans.
+    /// - Links (`isImage == false`) require a non-empty rendered label and may
+    ///   not contain nested `[link](...)` links (CommonMark §6.3), though they
+    ///   may wrap an image (`[![alt](img.png)](https://example.com)`).
+    /// - Destinations inside `(...)` are either `<...>` (spaces allowed, no
+    ///   newlines or unescaped `<`/`>`) or bare tokens with balanced `(...)`
+    ///   and **no unescaped ASCII whitespace or control characters**.
+    static func parseLinkOrImage(
+        in text: String, at start: String.Index, isImage: Bool
+    ) -> InlineLinkMatch? {
+        let labelStart: String.Index
+        if isImage {
+            guard text[start...].hasPrefix("![") else { return nil }
+            labelStart = text.index(start, offsetBy: 2)
+        } else {
+            guard text[start] == "[" else { return nil }
+            labelStart = text.index(after: start)
+        }
+
+        // 1. Scan balanced `[...]` label.
+        var depth = 1
+        var cursor = labelStart
+        var labelEnd: String.Index?
+        while cursor < text.endIndex {
+            let ch = text[cursor]
+            if ch == "\n" || ch == "\r" { return nil }
+            if ch == "\\" {
+                let next = text.index(after: cursor)
+                if next < text.endIndex, isASCIIPunctuation(text[next]) {
+                    cursor = text.index(after: next)
+                    continue
+                }
+            }
+            if ch == "`", let close = text[text.index(after: cursor)...].firstIndex(of: "`"),
+               !text[text.index(after: cursor)..<close].contains(where: \.isNewline)
+            {
+                cursor = text.index(after: close)
+                continue
+            }
+            if ch == "[" {
+                depth += 1
+            } else if ch == "]" {
+                depth -= 1
+                if depth == 0 {
+                    labelEnd = cursor
+                    break
+                }
+            }
+            cursor = text.index(after: cursor)
+        }
+
+        guard let labelEnd else { return nil }
+        let label = String(text[labelStart..<labelEnd])
+
+        // 2. `]` must be immediately followed by `(` — no whitespace in between.
+        let openParen = text.index(after: labelEnd)
+        guard openParen < text.endIndex, text[openParen] == "(" else { return nil }
+
+        // Links cannot contain nested links (CommonMark §6.3) and must produce
+        // something clickable on screen; images may have an empty `alt`.
+        if !isImage {
+            if containsInlineLink(label) { return nil }
+            if visibleText(label).isEmpty { return nil }
+        }
+
+        // 3. Scan destination and optional title up to matching `)`.
+        var scan = skipHorizontalSpaces(in: text, from: text.index(after: openParen))
+        guard scan < text.endIndex, text[scan] != ")" else { return nil }
+
+        var destination = ""
+        if text[scan] == "<" {
+            var angle = text.index(after: scan)
+            var closed = false
+            while angle < text.endIndex {
+                let ch = text[angle]
+                if ch == "\n" || ch == "\r" || ch == "<" { return nil }
+                if ch == "\\" {
+                    let next = text.index(after: angle)
+                    if next < text.endIndex, isASCIIPunctuation(text[next]) {
+                        destination.append(text[next])
+                        angle = text.index(after: next)
+                        continue
+                    }
+                }
+                if ch == ">" {
+                    scan = text.index(after: angle)
+                    closed = true
+                    break
+                }
+                destination.append(ch)
+                angle = text.index(after: angle)
+            }
+            guard closed, !destination.isEmpty else { return nil }
+        } else {
+            var parenDepth = 0
+            while scan < text.endIndex {
+                let ch = text[scan]
+                if ch == ")" && parenDepth == 0 { break }
+                if ch == " " || ch == "\t" { break }
+                if ch.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
+                    return nil
+                }
+                if ch == "\\" {
+                    let next = text.index(after: scan)
+                    if next < text.endIndex, isASCIIPunctuation(text[next]) {
+                        destination.append(text[next])
+                        scan = text.index(after: next)
+                        continue
+                    }
+                }
+                if ch == "(" {
+                    parenDepth += 1
+                    destination.append(ch)
+                } else if ch == ")" {
+                    parenDepth -= 1
+                    destination.append(ch)
+                } else {
+                    destination.append(ch)
+                }
+                scan = text.index(after: scan)
+            }
+            guard parenDepth == 0, !destination.isEmpty else { return nil }
+        }
+
+        // 4. Immediately `)`, or whitespace + optional quoted title + `)`.
+        if scan < text.endIndex, text[scan] == ")" {
+            return InlineLinkMatch(
+                label: label, destination: destination, afterIndex: text.index(after: scan)
+            )
+        }
+        guard scan < text.endIndex, text[scan] == " " || text[scan] == "\t" else { return nil }
+        scan = skipHorizontalSpaces(in: text, from: scan)
+        if scan < text.endIndex, text[scan] == ")" {
+            return InlineLinkMatch(
+                label: label, destination: destination, afterIndex: text.index(after: scan)
+            )
+        }
+        // Optional CommonMark title in `"..."`, `'...'`, or `(...)`.
+        guard scan < text.endIndex else { return nil }
+        let opener = text[scan]
+        let closer: Character
+        switch opener {
+        case "\"": closer = "\""
+        case "'": closer = "'"
+        case "(": closer = ")"
+        default: return nil
+        }
+        scan = text.index(after: scan)
+        var foundTitleClose = false
+        while scan < text.endIndex {
+            let ch = text[scan]
+            if ch == "\n" || ch == "\r" { return nil }
+            if opener == "(" && ch == "(" { return nil }
+            if ch == "\\" {
+                let next = text.index(after: scan)
+                if next < text.endIndex, isASCIIPunctuation(text[next]) {
+                    scan = text.index(after: next)
+                    continue
+                }
+            }
+            if ch == closer {
+                scan = text.index(after: scan)
+                foundTitleClose = true
+                break
+            }
+            scan = text.index(after: scan)
+        }
+        guard foundTitleClose else { return nil }
+        scan = skipHorizontalSpaces(in: text, from: scan)
+        guard scan < text.endIndex, text[scan] == ")" else { return nil }
+        return InlineLinkMatch(
+            label: label, destination: destination, afterIndex: text.index(after: scan)
+        )
+    }
+
+    private static func skipHorizontalSpaces(in text: String, from start: String.Index) -> String.Index {
+        var cursor = start
+        while cursor < text.endIndex, text[cursor] == " " || text[cursor] == "\t" {
+            cursor = text.index(after: cursor)
+        }
+        return cursor
+    }
+
+    private static func containsInlineLink(_ text: String) -> Bool {
+        var index = text.startIndex
+        while index < text.endIndex {
+            let ch = text[index]
+            if ch == "\\" {
+                let next = text.index(after: index)
+                if next < text.endIndex, isASCIIPunctuation(text[next]) {
+                    index = text.index(after: next)
+                    continue
+                }
+            }
+            if ch == "`", let close = text[text.index(after: index)...].firstIndex(of: "`") {
+                index = text.index(after: close)
+                continue
+            }
+            if text[index...].hasPrefix("![") {
+                if let match = parseLinkOrImage(in: text, at: index, isImage: true) {
+                    index = match.afterIndex
+                    continue
+                }
+                index = text.index(index, offsetBy: 2)
+                continue
+            }
+            if ch == "[", parseLinkOrImage(in: text, at: index, isImage: false) != nil {
+                return true
+            }
+            index = text.index(after: index)
+        }
+        return false
     }
 
     // MARK: - Shapes
@@ -717,12 +1136,14 @@ enum ConversationMarkdown {
     /// Markers come off rather than being rendered: the row is one line of
     /// truncated text and a stray `**` in it reads as a typo.
     static func firstLine(of markdown: String) -> String {
-        let line = markdown.split(separator: "\n", omittingEmptySubsequences: true).first ?? ""
-        return line
-            .replacingOccurrences(of: "**", with: "")
-            .replacingOccurrences(of: "`", with: "")
-            .replacingOccurrences(of: "#", with: "")
+        var line = String(markdown.split(separator: "\n", omittingEmptySubsequences: true).first ?? "")
             .trimmingCharacters(in: .whitespaces)
+        while line.hasPrefix("#") { line.removeFirst() }
+        line = line.trimmingCharacters(in: .whitespaces)
+        if let marker = listMarker(line) {
+            line = String(line.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces)
+        }
+        return visibleText(line).trimmingCharacters(in: .whitespaces)
     }
 }
 
@@ -797,8 +1218,8 @@ extension ConversationMarkdown {
             p.firstLineHeadIndent = 13
             p.headIndent = 13
             let body = NSMutableAttributedString(attributedString: inline(
-                text, style: style, baseFont: .systemFont(ofSize: size, weight: .bold)))
-            body.addAttribute(.foregroundColor, value: style.strong, range: NSRange(location: 0, length: body.length))
+                text, style: style, baseFont: .systemFont(ofSize: size, weight: .bold),
+                defaultColour: style.strong))
             return finished(body, p, decoration: MarkdownDecoration(.headingBar, colour: style.accent))
         }
 
