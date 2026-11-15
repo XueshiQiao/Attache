@@ -14,8 +14,8 @@
 //! Named files rather than a scan of the system: merman's own scan stopped
 //! at its limits on a Mac with an ordinary set of fonts ("system-cmap-bytes",
 //! 16.8 MB against 16 MB), and reading every font on the machine for each
-//! diagram would be slow if it had not. A monospaced Latin file and the
-//! system's CJK one are used (`LATIN_FONTS`); a host with neither is told so rather than
+//! diagram would be slow if it had not. One file is used, the system's
+//! Chinese font, with a list of others to fall back to (`CJK_FONTS`); a host with neither is told so rather than
 //! handed a picture with boxes for words. The same fonts measure the text
 //! and paint it, so a label fits the box it was laid out in.
 //!
@@ -62,33 +62,43 @@ const DEADLINE: Duration = Duration::from_secs(8);
 
 const KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
 
-/// The Latin face is a monospaced one and the CJK face is the system's own
-/// (PingFang on a Mac): the owner's choice, 2026-11-15. One of each is
-/// loaded, the first that exists.
+/// One face draws everything, Latin included: the system's own Chinese
+/// font, PingFang on a Mac (the owner's choice, 2026-11-15).
 ///
-/// **A line with any Chinese in it is drawn in the CJK face throughout, and
-/// that is resvg, not a setting here.** When the first face lacks a glyph,
-/// usvg shapes the whole run again in the fallback, and if the fallback has
-/// every glyph it takes the whole run from it. PingFang has Latin letters,
-/// so "2. 本机 history.jsonl" is all PingFang while "1. /tmp/a.json" on the
-/// line above is Menlo. Only a CJK font with no Latin in it would mix the
-/// two inside one line, and no system ships one.
-const LATIN_FONTS: &[&str] = &[
-    "/System/Library/Fonts/Menlo.ttc",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
-];
+/// One and not a Latin face beside it, because the two cannot share a line.
+/// When the first face lacks a glyph, usvg shapes the whole run again in the
+/// fallback, and if the fallback has every glyph it takes the whole run from
+/// it. Every CJK font has Latin letters, so with Menlo first "1. /tmp/a.json"
+/// was Menlo and "2. 本机 history.jsonl" on the next line was all PingFang —
+/// two Latin faces in one box. Measured, and shown to the owner, who chose
+/// one face throughout.
+///
+/// **The order is the fallback, and it is the owner's question answered:
+/// what draws a diagram on a machine with no PingFang.** PingFang where
+/// current macOS keeps it (`pingfang_asset`), then where older macOS did,
+/// then Hiragino Sans GB and STHeiti, which every Mac has under a fixed path
+/// and which are the closest in look; then Noto Sans CJK, which is what a
+/// Linux machine with Chinese fonts has.
 const CJK_FONTS: &[&str] = &[
     "/System/Library/Fonts/PingFang.ttc",
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
 ];
-/// The families those files hold, in the order text should try them.
-const FONT_FAMILY: &str = "Menlo, DejaVu Sans Mono, Noto Sans Mono, PingFang SC, Hiragino Sans GB, Noto Sans CJK SC, monospace";
+/// The last resort, for a machine with no Chinese font at all: a diagram in
+/// English is still drawn. Chinese in it has no glyphs to be drawn with.
+const LATIN_FONTS: &[&str] = &[
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+];
+/// The families those files hold, in the same order.
+const FONT_FAMILY: &str = "PingFang SC, Hiragino Sans GB, Heiti SC, Noto Sans CJK SC, Helvetica, DejaVu Sans, Noto Sans, sans-serif";
 
 /// PingFang where current macOS keeps it: not in `/System/Library/Fonts`
 /// but in a font asset folder whose name is a hash, so it is looked for
@@ -254,17 +264,13 @@ fn fonts(control: &OperationControl) -> Result<merman::svg::export::NativeFontCo
     fn first(candidates: &[&'static str]) -> Option<PathBuf> {
         candidates.iter().map(PathBuf::from).find(|path| path.is_file())
     }
-    let files: Vec<PathBuf> = [first(LATIN_FONTS), pingfang_asset().or_else(|| first(CJK_FONTS))]
-        .into_iter()
-        .flatten()
-        .collect();
-    if files.is_empty() {
+    let Some(file) = pingfang_asset().or_else(|| first(CJK_FONTS)).or_else(|| first(LATIN_FONTS)) else {
         return Err("this host has none of the fonts a diagram is drawn with".to_owned());
-    }
+    };
     let limits = NativeFontLimits { max_bytes: MAX_FONT_BYTES, ..NativeFontLimits::default() };
-    files
-        .into_iter()
-        .fold(NativeFontOptions::default().with_limits(limits), |options, file| options.with_font_file(file))
+    NativeFontOptions::default()
+        .with_limits(limits)
+        .with_font_file(file)
         .load(control)
         .map_err(|e| format!("the host's fonts could not be read: {e}"))
 }

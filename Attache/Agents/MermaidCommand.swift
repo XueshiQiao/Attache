@@ -77,5 +77,5 @@ nonisolated enum MermaidCommand {
         return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static let generation = 4
+    private static let generation = 5
 }

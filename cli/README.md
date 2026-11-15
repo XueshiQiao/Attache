@@ -160,8 +160,9 @@ nothing is written. `width` and `height` are in points, and the PNG is
 A refusal is about the source — it cannot be drawn, now or later — so a
 client keeps it and leaves the block as code; no line at all (ssh dropped,
 an attache-cli from before 0.3.15) says nothing about the source and is
-asked again. The text is drawn with the host's own fonts, from a short list
-of files (`src/mermaid.rs`); a host with none of them is refused. Pixels
+asked again. The text is drawn with one font of the host's own: PingFang, else
+Hiragino Sans GB, STHeiti or Noto Sans CJK, else a Latin font
+(`src/mermaid.rs`); a host with none of them is refused. Pixels
 and not SVG because merman's SVG needs CSS applied to draw, and neither
 client may use a web view for it.
 
