@@ -8,7 +8,7 @@ import AppKit
 /// The right-hand rail: the conversation happening in the window on screen.
 ///
 /// **Everything here is authored locally, and it is the third exception to
-/// CLAUDE.md's opening rule** — alongside the hidden window ids and
+/// AGENTS.md's opening rule** — alongside the hidden window ids and
 /// `expandedSessions`. Which turns are open and which progress rows are
 /// expanded are facts about *looking*, not about the session; tmux has no
 /// opinion and no format variable holds them. The conversation itself is read,
@@ -927,7 +927,7 @@ private final class StepRowView: ClickableView {
 /// A view that reports a click.
 ///
 /// Tracking that a press started here rather than reading `clickCount`, for the
-/// reason CLAUDE.md records: synthesised events carry a click count of 0, so a
+/// reason AGENTS.md records: synthesised events carry a click count of 0, so a
 /// `clickCount == 1` test fails under exactly the automation used to check this
 /// app's own interactions.
 private class ClickableView: NSView {
@@ -1112,7 +1112,7 @@ final class TitleDragStrip: NSView {
 
 /// A button that receives its own clicks.
 ///
-/// **The trap CLAUDE.md records, arrived at from a new direction.** The window
+/// **The trap AGENTS.md records, arrived at from a new direction.** The window
 /// sets `isMovableByWindowBackground`, and AppKit asks the *hit* view's
 /// `mouseDownCanMoveWindow` before it delivers anything — a view that does not
 /// answer inherits yes and its mouse handling becomes unreachable code. The

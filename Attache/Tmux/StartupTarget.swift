@@ -8,7 +8,7 @@ import Foundation
 /// Which session and window the app should open on.
 ///
 /// **The配置 holds names; everything that touches tmux still uses ids.** That
-/// is not a loophole in CLAUDE.md's rule — it is what the rule is for. A name
+/// is not a loophole in AGENTS.md's rule — it is what the rule is for. A name
 /// is arbitrary user text and must never be interpolated into a command line,
 /// so it is used here for one thing only: comparing against the names tmux has
 /// already reported, to find the id that goes with it. The id is what gets
@@ -29,7 +29,7 @@ enum StartupTarget {
     /// - **Case-insensitive.** `dev` and `DEV` are the same session to a
     ///   person and there is no reason to make them different here.
     /// - **Diacritic-insensitive.** This app is called `Attaché` and its
-    ///   window is called `Attache`; CLAUDE.md has a whole section on that
+    ///   window is called `Attache`; AGENTS.md has a whole section on that
     ///   distinction being load-bearing elsewhere. Someone configuring a
     ///   window called `Attache` will very reasonably type `Attaché`, and
     ///   refusing that would be a puzzle with no upside.

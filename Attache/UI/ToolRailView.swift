@@ -112,7 +112,7 @@ final class ToolRailView: NSView {
         cluster.translatesAutoresizingMaskIntoConstraints = false
         // Added after both tools, which is load-bearing twice over: hit
         // testing, and the macOS 26 sibling overdraw — the last sibling is the
-        // one that survives the overlap (CLAUDE.md).
+        // one that survives the overlap (AGENTS.md).
         addSubview(cluster)
         // Centred against the header's two text lines (11pt + 3 + 10pt ≈
         // 27pt), wherever `applyHeaderTop` puts the row.

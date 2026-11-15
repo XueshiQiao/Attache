@@ -193,7 +193,7 @@ enum TmuxLog {
             let line = "[\(stamp.string(from: now))] [\(kind.rawValue)] "
                 + "[\(session)] \(caller) — \(text)\n"
 
-            // stdout too: CLAUDE.md's documented way to run this app is the binary
+            // stdout too: AGENTS.md's documented way to run this app is the binary
             // directly, with stdout attached, and that is where anyone watching a
             // live repro is already looking.
             //

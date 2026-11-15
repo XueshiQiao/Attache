@@ -1058,7 +1058,7 @@ final class MainViewController: NSSplitViewController {
 
     private func installSidebar() {
         // A plain item, and the reasoning has *changed* — this is not the
-        // mistake CLAUDE.md records, it is the fix for what that mistake had
+        // mistake AGENTS.md records, it is the fix for what that mistake had
         // been standing in front of.
         //
         // `sidebarWithViewController:` draws the rail as an inset rounded panel,
@@ -1148,7 +1148,7 @@ final class MainViewController: NSSplitViewController {
         // only because NSSplitViewController runs its split view with
         // `arrangesAllSubviews` off — checked below, because a split view that
         // *does* arrange all subviews would adopt the button as a fourth pane.
-        // Added after every pane so the macOS 26 sibling overdraw (CLAUDE.md)
+        // Added after every pane so the macOS 26 sibling overdraw (AGENTS.md)
         // cannot put a pane's backing layer over it. The fold pair that used to
         // share its cluster lives in the conversation rail's own header now
         // (`ToolRailView.showFoldButtons`), next to the tool tabs.

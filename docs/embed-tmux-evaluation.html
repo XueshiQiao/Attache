@@ -365,7 +365,7 @@
   <tbody>
     <tr>
       <td>Most of the protocol layer retires</td>
-      <td>Layout parsing, screen replay, keystroke filtering (<code>TerminalReply</code>), rename-string filtering (<code>TmuxRenameString</code>) — the files with the longest trap records in CLAUDE.md stop being needed. In plain mode tmux digests those sequences itself and emits bytes translated for the outer terminal.</td>
+      <td>Layout parsing, screen replay, keystroke filtering (<code>TerminalReply</code>), rename-string filtering (<code>TmuxRenameString</code>) — the files with the longest trap records in AGENTS.md stop being needed. In plain mode tmux digests those sequences itself and emits bytes translated for the outer terminal.</td>
     </tr>
     <tr>
       <td>All of tmux&rsquo;s features for free</td>
@@ -386,7 +386,7 @@
 <p>The second version titled this section &ldquo;each pain&rsquo;s fix inside the current architecture.&rdquo; Frank&rsquo;s measurements overturned the heaviest item, so it is rewritten honestly:</p>
 
 <h3>4.1 &ldquo;The protocol layer is fragile, maintenance is exhausting&rdquo; — the curve is actually converging</h3>
-<p>Read the maintenance record as a curve: the traps burst between 07-26 and 07-28, the phase that forced the truths out; each fix left a comment, a CLAUDE.md entry, and (for the four most dangerous files) a rerunnable checker. The remaining risk surface is three things: behaviour changes in future tmux versions, notification types not yet encountered, and the three pieces of code TODO §6 names as never independently reviewed (<code>TmuxControlClient</code> threading, the reply-pairing FIFO&rsquo;s error paths, closure lifetimes). <strong>Work item: do the §6 review.</strong> One payment to retire a whole class of worry — two orders of magnitude cheaper than switching architectures.</p>
+<p>Read the maintenance record as a curve: the traps burst between 07-26 and 07-28, the phase that forced the truths out; each fix left a comment, a AGENTS.md entry, and (for the four most dangerous files) a rerunnable checker. The remaining risk surface is three things: behaviour changes in future tmux versions, notification types not yet encountered, and the three pieces of code TODO §6 names as never independently reviewed (<code>TmuxControlClient</code> threading, the reply-pairing FIFO&rsquo;s error paths, closure lifetimes). <strong>Work item: do the §6 review.</strong> One payment to retire a whole class of worry — two orders of magnitude cheaper than switching architectures.</p>
 
 <h3>4.2 &ldquo;I want tmux&rsquo;s full feature set&rdquo; — Frank measured: two items are simply unreachable on route A</h3>
 <p>The second version claimed &ldquo;there is a path for each.&rdquo; Frank attached a control client to an isolated <code>-L</code> server (tmux 3.6a), recorded every byte on the stream, and validated the method with a sentinel (an ordinary-output marker did arrive as <code>%output</code>, so the zeros below are real zeros):</p>
@@ -490,7 +490,7 @@
     <tr>
       <td>Protocol traps paid for and guarded by regression tools</td>
       <td><span class="pill good">repo record</span></td>
-      <td>TODO §0 / §4b all closed; the four checkers have rerunnable commands in CLAUDE.md</td>
+      <td>TODO §0 / §4b all closed; the four checkers have rerunnable commands in AGENTS.md</td>
     </tr>
     <tr>
       <td>copy mode and <code>display-popup</code> put nothing on the control stream (unreachable on route A)</td>

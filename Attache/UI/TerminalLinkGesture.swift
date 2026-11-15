@@ -41,7 +41,7 @@ import Cocoa
 ///
 /// `TerminalReply` is not a safety net for any of this. It lost its call sites
 /// when the pane renderer was deleted and filters nothing today, whatever
-/// CLAUDE.md's older paragraph about it says.
+/// AGENTS.md's older paragraph about it says.
 /// Only ⌘ and ⇧⌘ are offered, and that is a decision rather than an oversight.
 /// The rewrite happens on the way *in*, before Ghostty knows whether the
 /// pointer is over a link, so every event carrying the gesture is rewritten —

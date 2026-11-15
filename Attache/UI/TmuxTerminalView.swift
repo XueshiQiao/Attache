@@ -179,7 +179,7 @@ final class TmuxTerminalView: TerminalView {
     ///
     /// That mouse input reaches tmux at all is measured rather than assumed —
     /// clicking a window's name in tmux's own status line switches windows in
-    /// this app, 2026-07-31. The note in CLAUDE.md saying no mouse button
+    /// this app, 2026-07-31. The note in AGENTS.md saying no mouse button
     /// reaches a pane was true of the pane renderer and is not true now.
     private var pressWasRewritten = false
 
@@ -215,7 +215,7 @@ final class TmuxTerminalView: TerminalView {
     // is the same path that reports the pointer to the program. Pressing ⌘
     // while a mouse-reporting program sits under the pointer would send it
     // motion the user never made — the same class of defect as the 705
-    // unrequested mouse reports recorded in CLAUDE.md, and there is no filter
+    // unrequested mouse reports recorded in AGENTS.md, and there is no filter
     // left in the way, because `TerminalReply` lost its call sites when the
     // pane renderer was deleted.
     //

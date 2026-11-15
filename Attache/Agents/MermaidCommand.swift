@@ -10,7 +10,7 @@ import Foundation
 ///
 /// The drawing is attache-cli's — layout and pixels — so that the phone shows
 /// the same picture and so that this app needs nothing but an image view
-/// (`cli/src/mermaid.rs`; no web view may draw it, CLAUDE.md).
+/// (`cli/src/mermaid.rs`; no web view may draw it, AGENTS.md).
 nonisolated enum MermaidCommand {
     /// What became of one request.
     ///

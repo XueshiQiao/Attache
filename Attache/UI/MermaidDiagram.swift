@@ -43,7 +43,7 @@ extension NSAttributedString.Key {
 /// Turns `.markdownDiagram` runs into pictures.
 ///
 /// **attache-cli draws; this shows a PNG.** No web view is involved and none
-/// may be (CLAUDE.md): the first version loaded attache-cli's SVG into one,
+/// may be (AGENTS.md): the first version loaded attache-cli's SVG into one,
 /// and the owner threw it out.
 ///
 /// **When a diagram is asked for is the whole design, so here it is in one

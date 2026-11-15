@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 env:
-  # The name split this app is careful about (see project.yml / CLAUDE.md):
+  # The name split this app is careful about (see project.yml / AGENTS.md):
   #  - SCHEME / PROJECT are ASCII `Attache` — what xcodebuild is invoked with.
   #  - APP_NAME is the accented PRODUCT_NAME `Attaché` — the built .app and the
   #    DMG volume name.

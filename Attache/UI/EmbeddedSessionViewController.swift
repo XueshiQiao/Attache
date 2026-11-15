@@ -252,7 +252,7 @@ final class EmbeddedSessionViewController: NSViewController {
         }
         // The title band goes in last of the two siblings that draw, because on
         // macOS 26 a drawing view gets a backing layer 66pt taller than itself
-        // and whichever sibling was added last wins the overlap. See CLAUDE.md.
+        // and whichever sibling was added last wins the overlap. See AGENTS.md.
         // The cards go in first: they are the one sibling that must lose every
         // overlap, since the terminal's transparent cells are what they show
         // through. Sized by autoresizing rather than constraints because they
@@ -278,7 +278,7 @@ final class EmbeddedSessionViewController: NSViewController {
         // `masksToBounds`, with the terminal hanging out of it. Built that way
         // first, and tmux's status line stayed on screen: a layer mask does not
         // contain what libghostty draws, which is of a piece with the overhang
-        // trap in CLAUDE.md — a view in this app can and does paint outside its
+        // trap in AGENTS.md — a view in this app can and does paint outside its
         // superview. The window's backing store is the one boundary nothing gets
         // past, so the overhang goes there.
         //

@@ -319,7 +319,7 @@ final class WorkFold: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
     override func mouseDown(with event: NSEvent) { pressed = true }
 
-    // On mouse up, and only for a press that began here (CLAUDE.md).
+    // On mouse up, and only for a press that began here (AGENTS.md).
     override func mouseUp(with event: NSEvent) {
         defer { pressed = false }
         guard pressed, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
@@ -509,7 +509,7 @@ private final class FoldMark: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
     override func mouseDown(with event: NSEvent) { pressed = true }
 
-    // On mouse up, and only for a press that began here (CLAUDE.md).
+    // On mouse up, and only for a press that began here (AGENTS.md).
     override func mouseUp(with event: NSEvent) {
         defer { pressed = false }
         guard pressed, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
@@ -1343,7 +1343,7 @@ private final class AnswerRow: NSView {
         layer?.backgroundColor = (pressed ? theme.separator : hovered ? theme.accent.withAlphaComponent(0.1) : theme.hover).cgColor
     }
 
-    // Pressed on mouse down, answered on mouse up inside: the CLAUDE.md
+    // Pressed on mouse down, answered on mouse up inside: the AGENTS.md
     // rule for anything a click commits.
     override func mouseDown(with event: NSEvent) {
         pressed = true
@@ -1512,7 +1512,7 @@ final class ChatComposer: NSView {
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: Self.textInset, height: 8)
         // The system completion popup takes the Return that was meant to
-        // send (CLAUDE.md, "Autocorrect eats Return in inline editors").
+        // send (AGENTS.md, "Autocorrect eats Return in inline editors").
         textView.isAutomaticTextCompletionEnabled = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false

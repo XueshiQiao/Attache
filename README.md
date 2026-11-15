@@ -91,7 +91,7 @@ See [BUILDING.md](BUILDING.md).
 
 ## Working on it
 
-[CLAUDE.md](CLAUDE.md) has the architecture, the invariants worth protecting, how
+[AGENTS.md](AGENTS.md) has the architecture, the invariants worth protecting, how
 to verify a change, and the traps already paid for — most of them are things that
 look obviously correct and are not. The
 [GitHub issues](https://github.com/XueshiQiao/Attache/issues) are the open work.
@@ -165,7 +165,7 @@ tmux 回报之后才会真正生效 —— 所以你在另一个终端里敲 `pr
 
 ## 参与开发
 
-[CLAUDE.md](CLAUDE.md) 写了架构、值得守住的不变量、怎么验证一个改动，以及已经付过学费的那些
+[AGENTS.md](AGENTS.md) 写了架构、值得守住的不变量、怎么验证一个改动，以及已经付过学费的那些
 坑 —— 它们大多数看起来"显然是对的"，其实不是。[GitHub issues](https://github.com/XueshiQiao/Attache/issues) 是待办。
 
 ## 已知限制

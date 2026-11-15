@@ -7,7 +7,7 @@ Design note, 2026-07-28. Covers two features and one defect:
    first, but the mechanism is not specific to it.
 3. The 1–2 pt line between the rail and the panes. (Separate; see the end.)
 
-Read [CLAUDE.md](../CLAUDE.md) first. The constraint that shapes everything
+Read [AGENTS.md](../AGENTS.md) first. The constraint that shapes everything
 below is its opening rule: **tmux owns everything, the GUI owns nothing.**
 
 ---
@@ -54,7 +54,7 @@ carrying the **active pane's** path, and re-fires when the active pane changes.
 %subscription-changed wpath $0 @0 0 - : /Users/joey/Code/blog^Azsh
 ```
 
-This is the same rule CLAUDE.md already records for `#{pane_id}` in a
+This is the same rule AGENTS.md already records for `#{pane_id}` in a
 `list-windows` format. It removes an entire pane→window mapping layer.
 
 ### tmux will hold arbitrary state for us, keyed to a pane
@@ -304,7 +304,7 @@ Decided rather than asked, because the answer follows from the numbers:
 
 All git work is on one serial background queue, coalesced per repo root, with
 the result cached by root. Never on the main thread and never on the tmux
-reader queue — CLAUDE.md's rule about keeping `%output` off the main thread
+reader queue — AGENTS.md's rule about keeping `%output` off the main thread
 cuts both ways.
 
 ### `↑` and `↓`, honestly
@@ -460,7 +460,7 @@ practice than it looks in a mockup.
 
 ## Verification plan
 
-Reading the code is not verification. Per CLAUDE.md, what will actually be run:
+Reading the code is not verification. Per AGENTS.md, what will actually be run:
 
 **Headless, by the agent:**
 

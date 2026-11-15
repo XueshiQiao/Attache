@@ -76,7 +76,7 @@ Opus-specific weekly window has been rumoured elsewhere and did not appear.
 A shell script writes the payload into a tmux **pane option**; the GUI reads it
 over the control connection it already has. Same shape as `@agent_state`, and
 for the same reason: the value belongs to tmux, so `tmux show-options -p -t
-%42` prints it from any terminal and CLAUDE.md's opening rule survives a
+%42` prints it from any terminal and AGENTS.md's opening rule survives a
 feature that looks like it needs local state.
 
 **The script parses nothing.** It writes the JSON through verbatim and Swift

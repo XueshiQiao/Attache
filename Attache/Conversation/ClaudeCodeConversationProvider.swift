@@ -12,7 +12,7 @@ import Foundation
 /// Code hands its status line into the pane option `@agent_stat`, and that
 /// object carries `transcript_path` — an absolute path to the JSONL this reads.
 /// So the pane-to-conversation link costs one more field in `AgentStats` rather
-/// than a new mechanism, and it keeps CLAUDE.md's opening rule intact: the
+/// than a new mechanism, and it keeps AGENTS.md's opening rule intact: the
 /// value lives in tmux and any `tmux attach` client can read it.
 ///
 /// ## What a second implementation looks like

@@ -28,7 +28,7 @@ import Cocoa
 /// owner chose after trying them.
 ///
 /// Layers, not `draw(_:)`. A view that draws gets a backing layer 66pt taller
-/// than itself on macOS 26 and the overhang is not clipped (CLAUDE.md), and
+/// than itself on macOS 26 and the overhang is not clipped (AGENTS.md), and
 /// this view sits directly under the terminal it would overdraw.
 final class PaneCardsView: NSView {
     struct Card: Equatable {

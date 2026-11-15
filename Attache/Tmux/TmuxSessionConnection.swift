@@ -113,7 +113,7 @@ final class TmuxSessionConnection {
         // renderer would reattach at, and because `TmuxRenameString` and
         // `TmuxOutputRouter` are kept for the same reason `TerminalReply` is:
         // correct, checked against a table, and with no caller since that
-        // deletion. See CLAUDE.md.
+        // deletion. See AGENTS.md.
         client.onPaneOutput = { _, _ in }
         client.onNotification = { [weak self] notification in
             self?.handle(notification)

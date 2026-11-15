@@ -144,7 +144,7 @@ final class GitToolView: NSView {
 
         // The terminal is inserted at the bottom of this pile when it exists:
         // on macOS 26 a drawing view's backing layer overhangs its frame
-        // (CLAUDE.md), so the header has to be the later sibling to survive
+        // (AGENTS.md), so the header has to be the later sibling to survive
         // the overlap.
         addSubview(titleDragStrip)
         addSubview(placeholderLabel)

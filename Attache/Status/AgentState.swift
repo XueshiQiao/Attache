@@ -11,7 +11,7 @@ import Foundation
 /// as a pane user option — `@agent_state`, written by a hook inside the pane —
 /// and arrives on the same control mode connection as everything else. A plain
 /// `tmux attach` in another terminal can read the same value, and a status-line
-/// format could draw it. That is what keeps CLAUDE.md's opening rule intact for
+/// format could draw it. That is what keeps AGENTS.md's opening rule intact for
 /// a feature that looks like it needs local state and does not.
 enum AgentState: String, Equatable {
     /// Doing something. The one state you do not have to act on.

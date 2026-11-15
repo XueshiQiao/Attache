@@ -1,7 +1,7 @@
 # Agent Hub: Multi-Agent Hook Abstraction, Centralized State Machine, and Multi-Client Delivery
 
 Design and verification note, 2026-11-01. Extends [sidebar-status-design.md](sidebar-status-design.md).
-Read [CLAUDE.md](../CLAUDE.md) first — everything below preserves its opening invariant:
+Read [AGENTS.md](../AGENTS.md) first — everything below preserves its opening invariant:
 **tmux owns everything; the GUI owns nothing.**
 
 ---

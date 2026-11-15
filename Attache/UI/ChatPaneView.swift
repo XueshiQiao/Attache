@@ -199,7 +199,7 @@ final class ChatPaneView: NSView {
     private func build() {
         let theme = ChromeTheme.current
         // The header last: on macOS 26 a drawing view's layer overhangs it by
-        // 66pt and the sibling added last wins (CLAUDE.md), so the scroll
+        // 66pt and the sibling added last wins (AGENTS.md), so the scroll
         // view must not be the one added after it.
         sheet.translatesAutoresizingMaskIntoConstraints = false
         addSubview(sheet)

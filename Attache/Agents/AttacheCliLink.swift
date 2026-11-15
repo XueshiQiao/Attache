@@ -92,7 +92,7 @@ nonisolated final class AttacheCliStream: @unchecked Sendable {
     private var cancelled = false
 
     // On the main actor because `readUntilEOF` is: it is how every pipe in
-    // this app is read (CLAUDE.md, "A `readabilityHandler` that ignores
+    // this app is read (AGENTS.md, "A `readabilityHandler` that ignores
     // empty data never stops running").
     @MainActor
     fileprivate func start(argv: [String],
@@ -125,7 +125,7 @@ nonisolated final class AttacheCliStream: @unchecked Sendable {
         }
         // After `run()`, never before: a launch that fails produces no EOF,
         // and a reader installed ahead of it would never clear itself (see
-        // CLAUDE.md, "A reader installed before `run()`").
+        // AGENTS.md, "A reader installed before `run()`").
         var lines = JSONLines()
         output.fileHandleForReading.readUntilEOF { data in
             let objects = lines.feed(data).compactMap(AttacheCliProtocol.object)

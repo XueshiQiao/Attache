@@ -4,7 +4,7 @@
 //! Here rather than in either client so that the phone and the desktop show
 //! the same picture, from one renderer neither has to carry — and as pixels,
 //! because neither client may bring in a web view to draw SVG with (the
-//! owner's ruling, 2026-11-15; the repository's CLAUDE.md has it). merman's
+//! owner's ruling, 2026-11-15; the repository's AGENTS.md has it). merman's
 //! SVG is styled by a `<style>` element, which AppKit's `NSImage` ignores:
 //! it drew every edge of a flowchart as a solid black shape. So the drawing
 //! happens here, with resvg, and what leaves this program is a picture any

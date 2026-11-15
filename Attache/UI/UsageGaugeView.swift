@@ -18,7 +18,7 @@ import AppKit
 ///
 /// Built from plain subviews rather than `draw(_:)` on purpose. A view that
 /// draws gets a backing layer taller than itself on macOS 26, and the overhang
-/// is not clipped — see the sibling-overdraw note in CLAUDE.md. Nothing here
+/// is not clipped — see the sibling-overdraw note in AGENTS.md. Nothing here
 /// needs a drawing pass, so nothing here takes that risk.
 final class UsageGaugeView: NSView {
     enum LayoutStyle {

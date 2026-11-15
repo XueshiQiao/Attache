@@ -88,7 +88,7 @@ final class TmuxOutputRouter {
     /// supposed to defer to.
     ///
     /// What that costs, stated exactly rather than as "nothing", because
-    /// CLAUDE.md's rule about not slowing this path deserves a real answer.
+    /// AGENTS.md's rule about not slowing this path deserves a real answer.
     /// `InMemoryTerminalSession.receive` reaches `enqueueWrite`, which is a
     /// `DispatchQueue.async` onto the surface's own serial queue — so the lock
     /// never covers a parse. But `enqueueWrite` first reads `currentGeneration`,

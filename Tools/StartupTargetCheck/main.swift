@@ -12,7 +12,7 @@
 //  *wrong* one silently sends them to another project's windows.
 //
 //  The names below are the ones actually on this machine, including the
-//  `Attaché` / `Attache` pair that CLAUDE.md warns is not interchangeable.
+//  `Attaché` / `Attache` pair that AGENTS.md warns is not interchangeable.
 //
 
 import Foundation
@@ -109,7 +109,7 @@ do {
 
 // MARK: - A name is compared, never executed
 //
-// The whole reason CLAUDE.md forbids targeting tmux by name. A session called
+// The whole reason AGENTS.md forbids targeting tmux by name. A session called
 // something shell-shaped must be matched or not matched and nothing else.
 
 do {

@@ -53,7 +53,7 @@ package. If `Vendor/libghostty-spm` is empty, generation fails.
 
 ## Verifying a change
 
-Reading the code is not verification. [CLAUDE.md](CLAUDE.md) has the full list of
+Reading the code is not verification. [AGENTS.md](AGENTS.md) has the full list of
 what actually works, including several standalone checkers that run a case table
 against the pure parts of the tmux layer with no app and no screen, for example:
 
@@ -74,4 +74,4 @@ tmux -L attache-test kill-server
 
 `TMUX_TMPDIR` is **not** an isolation mechanism. On tmux 3.6a it is honoured only
 when `-L` is also given; on its own it is silently ignored and every command
-lands on the default server. CLAUDE.md records what that cost once.
+lands on the default server. AGENTS.md records what that cost once.

@@ -47,6 +47,6 @@ final class ContentHalfView: NSView {
     ///
     /// Not drawing at all is also the safer shape. A view that draws gets a
     /// backing layer 66pt taller than itself on macOS 26 and the overhang is
-    /// not clipped — see CLAUDE.md — so a view with no `draw` has one less way
+    /// not clipped — see AGENTS.md — so a view with no `draw` has one less way
     /// to go wrong.
 }
