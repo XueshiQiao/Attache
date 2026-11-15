@@ -33,6 +33,17 @@ Each runs as its own short process, except `follow`, `agents --watch` and
 | `project draft <@window>` | clients | what saving that window would start from: its name, its folder, how its agent was started |
 | `project commands [--set <base64>]` | clients | the person's often-used commands, offered when a project is saved; `--set` replaces the list (one command a line) |
 | `mermaid --source <base64> [--dark] [--scale <1-4>] [--inline]` | clients | draws a Mermaid diagram as a PNG, for a ```` ```mermaid ```` block in a reply |
+| `guard status` | clients | the privacy guard on this host: on, paused, and whether each agent (Claude Code, Codex, agy) is wired up, with what that does and does not cover |
+| `guard rules [--set <base64 json>]` | clients | the guard's rules as JSON (`{"rules","errors","path"}`); `--set` replaces them and answers `{"saved":…}` |
+| `guard test --text <base64> [--rules <base64 json>]` | clients | what the rules (saved, or the ones given) would find in a text: byte offsets, rule, verdict, and the masked text; records nothing |
+| `guard events [--limit N] [--clear]` | clients | what was masked, restored, withheld or let through, newest last; placeholders only, never a value |
+| `guard vault [--forget <placeholder>… \| --forget-all]` | clients | the placeholders this host made (without their values), or forgets some |
+| `guard reveal <placeholder>…` | clients | the values, for the owner's own screen; refused when an agent's environment is set |
+| `guard install \| uninstall <claude\|codex\|agy>` | clients | wires the guard into that agent, or takes it out (see below) |
+| `guard pause <minutes>` | clients | stands the guard aside for a while; `0` resumes |
+| `guard mask [--json]` / `guard restore [--json \| --sh <text>]` | the Claude Code mod | swaps values for placeholders, or back |
+| `guard run --agent <a> --sh <command>` | Codex and agy hooks | puts the values back in its own memory, runs the command, masks its output as it streams |
+| `guard hook <name>` | agents' hooks | one JSON event in, the agent's answer out (`claude-pre`, `claude-post`, `codex-pre`, `codex-post`, `codex-prompt`, `agy-pre`) |
 | `statusline claude` | Claude Code | keeps the status line snapshot, draws the old status line |
 | `send <file>...` (also as `attache-send`) | people, agents | hands files to the phone's inbox |
 
@@ -190,6 +201,33 @@ folder; left alone when a new file is already there). It is theirs to edit by ha
 rewrites only the values of those four keys in the block it is changing,
 writes through a link to the file it points at, and a block written
 without an `id` works as it is.
+
+The privacy guard's rules are the person's too:
+`~/.config/attache-guard.toml` (`enabled`, `paused_until`, `allow = [...]`,
+`[detect]` switches, `[[word]]` and `[[pattern]]` blocks), read on every
+run, so an edit applies to the next row an agent stores. Saving from a
+client rewrites the whole file. The real values live only under
+`guard/` in the state folder, mode 0700: `key` (this host's HMAC key; a
+placeholder is `⟦<kind>:<6+ hex>⟧` of the value), `vault.json`
+(placeholder → value) and `events.jsonl` (placeholders only), all 0600.
+Not the Keychain: its access list names the binary, which every upgrade
+replaces, so each upgrade would raise a dialog in front of whichever agent
+ran first — on a host over SSH, one nobody can answer.
+
+How each agent is wired, measured 2026-11-15 on Claude Code 2.1.325, Codex
+0.164 and agy 1.5.9: Claude Code gets a mod (`guard-mod/`, embedded in this
+binary, written to `~/.local/share/attache/claude-guard/` and named in
+`env.CLAUDE_CODE_PLUGIN_DIRS` of `~/.claude/settings.json`) that masks the
+prompt, every stored row and every tool result (whose structured record a
+row hook cannot reach — it kept a raw value in the first experiment), and
+puts real values back into tool arguments; the transcript then holds
+placeholders only. Codex and agy can rewrite a command but not its output
+(Codex answers only with a block; agy parses `overwriteResult` and ignores
+it), so their commands are wrapped in `guard run`. Codex accepts a rewrite
+only with `permissionDecision: allow`, but runs its own approval on the
+rewritten command afterwards; commands are wrapped where Codex asks no
+approval, or where one carries a placeholder. Codex's own session file
+keeps output that was not wrapped; agy's prompts have no hook at all.
 
 Processes never talk to each other, only through these files: each is
 replaced by rename, never edited in place, and every read-modify-write takes

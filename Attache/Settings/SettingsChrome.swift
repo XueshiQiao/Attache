@@ -18,7 +18,7 @@ import SwiftUI
 // MARK: - Sidebar pages
 
 enum SettingsPage: Hashable, CaseIterable {
-    case terminal, appearance, behaviour, permissions, quickActions, hosts, about
+    case terminal, appearance, behaviour, permissions, quickActions, hosts, privacy, about
 
     var title: String {
         switch self {
@@ -28,6 +28,7 @@ enum SettingsPage: Hashable, CaseIterable {
         case .permissions: "Permissions"
         case .quickActions: "Quick Actions"
         case .hosts: "Hosts"
+        case .privacy: "Privacy Guard"
         case .about: "About"
         }
     }
@@ -40,6 +41,7 @@ enum SettingsPage: Hashable, CaseIterable {
         case .permissions: "lock.shield.fill"
         case .quickActions: "bolt.fill"
         case .hosts: "server.rack"
+        case .privacy: "eye.slash.fill"
         case .about: "info.circle.fill"
         }
     }
@@ -52,6 +54,7 @@ enum SettingsPage: Hashable, CaseIterable {
         case .permissions: .green
         case .quickActions: .orange
         case .hosts: .indigo
+        case .privacy: .cyan
         case .about: .pink
         }
     }
@@ -65,6 +68,7 @@ enum SettingsPage: Hashable, CaseIterable {
         case .permissions: "permissions"
         case .quickActions: "quickactions"
         case .hosts: "hosts"
+        case .privacy: "privacy"
         case .about: "about"
         }
     }
@@ -223,6 +227,7 @@ struct SettingsRootView: View {
                 case .permissions: PermissionsPage()
                 case .quickActions: QuickActionsPage()
                 case .hosts: HostsPage()
+                case .privacy: PrivacyGuardPage()
                 case .about: AboutPage()
                 }
             }

@@ -40,6 +40,18 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     })
 }
 
+/// `write_atomic` on the file `path` leads to: a config file the person
+/// keeps in a dotfiles folder behind a link stays a link, and the folder's
+/// copy is the one that changes. A plain rename would put a file in the
+/// link's place.
+pub fn write_through(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let target = match fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => fs::canonicalize(path)?,
+        _ => path.to_path_buf(),
+    };
+    write_atomic(&target, bytes)
+}
+
 /// An exclusive lock on `path` (created if missing), held until dropped.
 pub struct Lock {
     _file: File,

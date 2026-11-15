@@ -19,7 +19,7 @@
 //! only on install and upgrade, reads and writes in one short step, keeps a
 //! backup beside the file, and reads the result back.
 
-use crate::fsutil::{write_atomic, Lock};
+use crate::fsutil::{write_atomic, write_through, Lock};
 use crate::paths;
 use serde_json::{json, Map, Value};
 use std::fs;
@@ -119,7 +119,7 @@ fn expand_home(path: &str) -> PathBuf {
     }
 }
 
-fn read_settings(path: &Path) -> Result<Map<String, Value>, String> {
+pub(crate) fn read_settings(path: &Path) -> Result<Map<String, Value>, String> {
     match fs::read(path) {
         Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(Value::Object(map)) => Ok(map),
@@ -132,7 +132,7 @@ fn read_settings(path: &Path) -> Result<Map<String, Value>, String> {
     }
 }
 
-fn write_settings(path: &Path, settings: &Map<String, Value>) -> Result<(), String> {
+pub(crate) fn write_settings(path: &Path, settings: &Map<String, Value>) -> Result<(), String> {
     if path.exists() {
         let epoch = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -143,7 +143,7 @@ fn write_settings(path: &Path, settings: &Map<String, Value>) -> Result<(), Stri
     }
     let mut text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     text.push('\n');
-    write_atomic(path, text.as_bytes()).map_err(|e| e.to_string())?;
+    write_through(path, text.as_bytes()).map_err(|e| e.to_string())?;
     // Claude may have written it in the same moment; say so rather than
     // report an install that is not there.
     if read_settings(path)? != *settings {

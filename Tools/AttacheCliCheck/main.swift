@@ -241,5 +241,46 @@ do {
     check(key != MermaidCommand.key(source: "flowchart LR", dark: false, scale: 2), "another source is another picture")
 }
 
+// MARK: - Privacy guard
+//
+// What reaches a command line is the half that matters: a placeholder is
+// put on one only in its exact shape, so no text from a reply can ride in
+// as a shell word.
+
+do {
+    check(GuardCommands.isToken("⟦ip:7f3a9c⟧") && GuardCommands.isToken("⟦word:0123456789abcdef⟧"), "placeholders pass")
+    for bad in ["⟦ip:7f3a⟧", "⟦IP:7f3a9c⟧", "⟦ip:7f3a9c⟧ ", "⟦ip:7f3a9c⟧;rm", "ip:7f3a9c", "⟦ip:zzzzzz⟧", "⟦ip:7f3a9c⟧\n"] {
+        check(!GuardCommands.isToken(bad), "not a placeholder: \(bad.debugDescription)")
+    }
+    check(GuardCommands.reveal(["⟦ip:7f3a9c⟧", "$(id)"]) == nil, "one bad word refuses the whole reveal")
+    check(GuardCommands.reveal([]) == nil, "an empty reveal is not asked")
+    check(GuardCommands.install("claude") == ["guard", "install", "claude"], "install argv")
+    check(GuardCommands.install("bash") == nil, "an agent attache-cli does not know is not asked")
+    check(GuardCommands.pause(minutes: -5) == ["guard", "pause", "0"], "a negative pause resumes")
+
+    var rules = GuardRules()
+    rules.words = [GuardWord(text: "studio-mac")]
+    rules.patterns = [GuardPattern(name: "ticket", pattern: #"ACME-(\d+)"#, kind: "ticket", action: .maskOnly)]
+    rules.detect = ["email": false]
+    rules.allow = ["git@github.com"]
+    let argv = GuardCommands.setRules(rules)!
+    let sent = Data(base64Encoded: argv[3]).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+    check((sent?["word"] as? [[String: Any]])?.first?["ignore_case"] as? Bool == true, "words go as attache-cli spells them")
+    check((sent?["pattern"] as? [[String: Any]])?.first?["action"] as? String == "mask_only", "actions too")
+    check(sent?["id"] == nil && (sent?["word"] as? [[String: Any]])?.first?["id"] == nil, "the page's row ids stay here")
+    let back = GuardCommands.parseRules(["rules": sent!])
+    check(back?.words.first?.text == "studio-mac" && back?.patterns.first?.action == .maskOnly
+        && back?.detects("email") == false && back?.detects("ipv4_lan") == true && back?.detects("ipv4_loopback") == false,
+          "rules read back as they were sent, with defaults for switches not written")
+    check(GuardCommands.parseRules(["rules": NSNull(), "why": "broken"]) == nil, "an unreadable file is no rules, not empty rules")
+
+    let test = GuardCommands.parseTest(object(#"{"hits":[{"start":4,"end":13,"kind":"ip","rule":"ipv4_public","verdict":"mask"}],"masked":"ssh ⟦ip:7f3a9c⟧","blocked":false,"errors":[{"pattern":0,"why":"unclosed group"}]}"#))
+    check(test?.hits.first?.start == 4 && test?.hits.first?.verdict == "mask" && test?.errors == ["unclosed group"], "test result")
+    check(GuardCommands.tokens(in: "a ⟦ip:7f3a9c⟧ b ⟦ip:7f3a9c⟧ ⟦email:0011aa⟧") == ["⟦ip:7f3a9c⟧", "⟦email:0011aa⟧"],
+          "placeholders in a text, once each, in order")
+    check(!AttacheCliLink.environment.keys.contains { GuardCommands.agentMarks.contains($0) },
+          "attache-cli never inherits an agent's marks from this app")
+}
+
 print(failures == 0 ? "\(cases) cases, all pass" : "\(failures) of \(cases) cases fail")
 exit(failures == 0 ? 0 : 1)

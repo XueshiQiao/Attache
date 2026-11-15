@@ -34,6 +34,12 @@ nonisolated struct AttacheCliLink: Equatable {
         }
     }
 
+    /// This app's environment without the variables an agent sets: the app
+    /// may have been started from an agent's shell, and attache-cli's
+    /// `guard reveal` refuses wherever one of them is set.
+    static let environment: [String: String] = ProcessInfo.processInfo.environment
+        .filter { !GuardCommands.agentMarks.contains($0.key) }
+
     /// Runs one short command and hands back its stdout lines (nil when it
     /// could not be started or ran past `timeout`). Every attache-cli
     /// command but `follow` and `agents --watch` ends by itself in well under
@@ -49,6 +55,7 @@ nonisolated struct AttacheCliLink: Equatable {
             process.standardOutput = output
             process.standardError = FileHandle.nullDevice
             process.standardInput = FileHandle.nullDevice
+            process.environment = Self.environment
             do {
                 try process.run()
             } catch {

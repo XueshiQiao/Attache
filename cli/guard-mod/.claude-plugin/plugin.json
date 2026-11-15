@@ -1,0 +1,5 @@
+{
+  "name": "attache-guard",
+  "version": "0.1.0",
+  "description": "Attaché privacy guard: keeps IP addresses, emails, keys and chosen words out of the conversation and its transcript"
+}

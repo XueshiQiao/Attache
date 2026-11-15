@@ -133,6 +133,20 @@ attache-cli, on the host, hands them to tmux (`project open`). The menus
 are built from `HostProjects`, a cache of the last read; nothing about a
 project is authored or kept here.
 
+**The privacy guard is attache-cli's too, per host.** It keeps IP
+addresses, email addresses, keys and words the owner names out of every
+agent's conversation: values become placeholders (`⟦ip:7f3a9c⟧`) before a
+model sees them and are put back only when a command runs or a file is
+written, on that host (issue #43). The rules, the vault of real values,
+the events and the agents' hooks or mod all live on the host and only
+attache-cli touches them; the Privacy Guard settings page (`HostGuard`,
+`PrivacyGuardPage`) and the chat's placeholder chips (`GuardChips`) only
+name commands. A real value is shown only where the owner pressed Show,
+through `guard reveal`, which refuses inside an agent's environment — so
+`AttacheCliLink` starts attache-cli without those variables, in case the
+app itself was started from an agent's shell. Chips keep the placeholder's
+own text: a reply copied back to the agent must still carry it.
+
 **No key reaches an agent on the strength of what this app was shown.** Every
 key and message goes through `attache-cli input`, which names the screen it is
 for (`--if approval:<fp>`, `--if panel[:<fp>]`, `--if working`) and reads the
@@ -523,6 +537,7 @@ swiftc -O -o /tmp/attachecliccheck Attache/Agents/AttacheCliProtocol.swift \
   Attache/Agents/AgentChatModel.swift Attache/Agents/AttacheCliLink.swift \
   Attache/Agents/HostAgents.swift Attache/Agents/AttacheCliInstaller.swift \
   Attache/Agents/Projects.swift Attache/Agents/MermaidCommand.swift \
+  Attache/Agents/PrivacyGuard.swift \
   Attache/Tmux/TmuxTransport.swift Attache/Tmux/TmuxSocket.swift \
   Attache/Tmux/PipeRead.swift Tools/AttacheCliCheck/main.swift
 /tmp/attachecliccheck

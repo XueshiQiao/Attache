@@ -204,6 +204,9 @@ final class MarkdownTextView: NSView, NSTextViewDelegate {
     // MARK: - NSTextViewDelegate
 
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        if GuardChips.handleClick(link, in: textView, at: charIndex, cli: linkContext.cli) {
+            return true
+        }
         if MermaidDiagramLoader.handleLink(link, in: textView, at: charIndex) {
             relayoutAfterImageLoad()
             return true

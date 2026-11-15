@@ -11,6 +11,7 @@ mod chat;
 mod claude_transcript;
 mod follow;
 mod fsutil;
+mod guard;
 mod host;
 mod input;
 mod mermaid;
@@ -77,11 +78,12 @@ fn dispatch(args: &[String]) -> i32 {
         "projects" => projects::run_list(rest),
         "project" => projects::run(rest),
         "mermaid" => mermaid::run(rest),
+        "guard" => guard::run(rest),
         "setup" => setup::run_setup(),
         "uninstall" => setup::run_uninstall(),
         _ => {
             eprintln!(
-                "attache-cli {}\n\nUsage:\n  attache-cli version\n  attache-cli send <file>...\n  attache-cli agents [--pane %N]\n  attache-cli seen <kind> <conversation>\n  attache-cli rename <%pane> --name <base64>\n  attache-cli follow <claude|agy> <transcript> [--before <offset>]\n  attache-cli input <%pane> --text <base64> [--enter] | --key <name> --if <approval:<fingerprint>|panel|working>\n  attache-cli screen <%pane>\n  attache-cli usage [--watch]\n  attache-cli projects\n  attache-cli project save [--id <id>] --name <base64> --path <base64> --command <base64>\n  attache-cli project remove <id>\n  attache-cli project open <id> --session <$N>\n  attache-cli project draft <@window>\n  attache-cli project commands [--set <base64>]\n  attache-cli mermaid --source <base64> [--dark] [--scale <1-4>] [--inline]\n  attache-cli setup | uninstall\n  attache-cli statusline claude   (run by Claude Code)",
+                "attache-cli {}\n\nUsage:\n  attache-cli version\n  attache-cli send <file>...\n  attache-cli agents [--pane %N]\n  attache-cli seen <kind> <conversation>\n  attache-cli rename <%pane> --name <base64>\n  attache-cli follow <claude|agy> <transcript> [--before <offset>]\n  attache-cli input <%pane> --text <base64> [--enter] | --key <name> --if <approval:<fingerprint>|panel|working>\n  attache-cli screen <%pane>\n  attache-cli usage [--watch]\n  attache-cli projects\n  attache-cli project save [--id <id>] --name <base64> --path <base64> --command <base64>\n  attache-cli project remove <id>\n  attache-cli project open <id> --session <$N>\n  attache-cli project draft <@window>\n  attache-cli project commands [--set <base64>]\n  attache-cli mermaid --source <base64> [--dark] [--scale <1-4>] [--inline]\n  attache-cli guard <mask|restore|run|hook|test|rules|events|reveal|vault|status|install|uninstall|pause> ...\n  attache-cli setup | uninstall\n  attache-cli statusline claude   (run by Claude Code)",
                 env!("CARGO_PKG_VERSION")
             );
             if cmd == "help" || cmd == "--help" {

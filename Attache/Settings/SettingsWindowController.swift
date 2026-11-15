@@ -77,6 +77,25 @@ final class SettingsStore: ObservableObject {
     /// back to nil, so it is a hand-off, not a second selection state.
     @Published var hostsPageSelection: String?
 
+    // ─── Privacy guard ───────────────────────────────────────────────────────
+
+    /// Every host, this Mac first: each has its own guard.
+    func guardHosts() -> [HostContext] {
+        (Self.remoteHostsProvider?() ?? []).sorted { $0.isLocal && !$1.isLocal }
+    }
+
+    private var hostGuards: [String: HostGuard] = [:]
+
+    /// One `HostGuard` per host for the life of the window's store, so going
+    /// back to a host shows what was read without a blank moment.
+    func hostGuard(for host: HostContext) -> HostGuard {
+        let link = AttacheCliLink(transport: host.transport)
+        if let existing = hostGuards[host.id], existing.link == link { return existing }
+        let made = HostGuard(link: link)
+        hostGuards[host.id] = made
+        return made
+    }
+
     private func remoteHosts() -> [HostContext] {
         (Self.remoteHostsProvider?() ?? []).filter { !$0.isLocal }
     }

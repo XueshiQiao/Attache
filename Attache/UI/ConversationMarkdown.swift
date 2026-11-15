@@ -166,6 +166,7 @@ enum ConversationMarkdown {
                 .font: NSFont.systemFont(ofSize: 1), .paragraphStyle: hairline,
             ]), at: 0)
         }
+        GuardChips.decorate(output, style: style)
         return output
     }
 

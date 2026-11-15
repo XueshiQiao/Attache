@@ -395,12 +395,16 @@ private final class TableGridView: NSView, NSTextViewDelegate {
             .paragraphStyle, value: paragraph,
             range: NSRange(location: 0, length: out.length)
         )
+        GuardChips.decorate(out, style: cellStyle)
         return out
     }
 
     // MARK: - NSTextViewDelegate
 
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        if GuardChips.handleClick(link, in: textView, at: charIndex, cli: linkContext.cli) {
+            return true
+        }
         if let target = ChatLinkContext.linkTargetString(from: link) {
             linkContext.open(target)
             return true

@@ -1,6 +1,6 @@
 [package]
 name = "attache-cli"
-version = "0.3.18"
+version = "0.3.20"
 edition = "2021"
 description = "The host side of Attaché: what the phone and the desktop read agents through"
 publish = false
@@ -13,6 +13,14 @@ path = "src/main.rs"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 libc = "0.2"
+# The privacy guard (`guard`): detection runs on every row an agent stores,
+# so the engine must be linear-time whatever the text (no backtracking a
+# crafted tool output could hang), and placeholders are an HMAC-SHA256 of
+# the value. sha2 is already in the tree through merman; toml reads and
+# writes the rules file the person may also edit by hand.
+regex = "1"
+sha2 = "0.11"
+toml = "1"
 # Mermaid diagrams for `mermaid`: layout (merman) and the PNG (resvg, which
 # it brings). No C code in the tree, which is what keeps the musl builds
 # linking with rust-lld alone. Fonts are read from files this program names,
