@@ -22,8 +22,8 @@ enum ChatRowViews {
             return UserBubble(text: text, caption: queued ? "Sent while it was working" : nil, faded: false)
         case .row(.agent(_, let text)):
             return AgentReply(markdown: text, linkContext: linkContext)
-        case .row(.thinking(_, let text)):
-            return ThinkingRow(text: text, linkContext: linkContext)
+        case .row(.narration(_, let text)), .row(.thinking(_, let text)):
+            return BarredReply(text: text, linkContext: linkContext)
         case .row(.output(_, let text, let isError, _)):
             return OutputCard(text: text, isError: isError)
         case .row(.note(_, let text)), .note(_, let text):
@@ -37,7 +37,7 @@ enum ChatRowViews {
         case .fold(let fold):
             return WorkFold(fold)
         case .reply(let row, let fold):
-            guard case .agent(_, let text) = row else { return NSView() }
+            guard let text = row.said else { return NSView() }
             return MarkedReply(row: row, markdown: text, fold: fold, linkContext: linkContext)
         }
     }
@@ -338,6 +338,7 @@ final class MarkedReply: NSView {
     var onToggle: (() -> Void)?
     let rowKey: String
     let text: String
+    let isNarration: Bool
     private let mark: FoldMark
     private let running: NSTextField
     private var hoverArea: NSTrackingArea?
@@ -350,11 +351,17 @@ final class MarkedReply: NSView {
     init(row: ChatRow, markdown: String, fold: ChatFold, linkContext: ChatLinkContext = .localDefault) {
         rowKey = row.key
         text = markdown
+        isNarration = row.isNarration
         mark = FoldMark(fold)
         running = ChatRowViews.label("", font: .monospacedSystemFont(ofSize: ChatRowViews.size - 2.5, weight: .regular),
                                      colour: ChromeTheme.current.mutedText, selectable: false)
         super.init(frame: .zero)
-        let reply = AgentReply(markdown: markdown, linkContext: linkContext)
+        // Narration stands set apart from a reply by the bar before it.
+        let reply: NSView = if row.isNarration {
+            BarredReply(text: markdown, linkContext: linkContext)
+        } else {
+            AgentReply(markdown: markdown, linkContext: linkContext)
+        }
         running.maximumNumberOfLines = 1
         running.lineBreakMode = .byTruncatingTail
         let column = NSStackView(views: [reply, running])
@@ -362,8 +369,9 @@ final class MarkedReply: NSView {
         column.alignment = .leading
         column.spacing = 3
         reply.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
-        // Under the reply's text, which is set in by 20.
-        running.leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: 20).isActive = true
+        // Under the reply's text, which is set in by 20 (32 past the bar).
+        let textLeading: CGFloat = row.isNarration ? 32 : 20
+        running.leadingAnchor.constraint(equalTo: column.leadingAnchor, constant: textLeading).isActive = true
         running.trailingAnchor.constraint(lessThanOrEqualTo: column.trailingAnchor, constant: -24).isActive = true
         // The reply keeps 24 on its right itself.
         ChatRowViews.pin(column, in: self, insets: NSEdgeInsets(top: 0, left: 0, bottom: 0, right: Self.textInset - 24))
@@ -795,7 +803,9 @@ private final class ToolStep: NSView {
 /// Thinking: set exactly as a reply is — the same size, colour and
 /// markdown — with only a thin rule down the left to say what it is. Small
 /// faint italics made it read as a footnote (the owner's call, 2026-11-06).
-private final class ThinkingRow: NSView {
+/// Text with a grey bar before it: narration, set apart from a reply
+/// (asked for on 2026-11-15), and agy's thinking when its run is open.
+private final class BarredReply: NSView {
     init(text: String, linkContext: ChatLinkContext = .localDefault) {
         super.init(frame: .zero)
         let reply = AgentReply(markdown: text, leading: 32, linkContext: linkContext)

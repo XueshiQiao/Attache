@@ -20,6 +20,13 @@ pub enum Item {
         key: String,
         text: String,
     },
+    /// A line the agent wrote to the person along the way that its
+    /// transcript files as thinking: Claude Code's narration. Shown like a
+    /// reply, not folded with the work.
+    Narration {
+        key: String,
+        text: String,
+    },
     /// A tool call, with its result once one has come back.
     Tool {
         key: String,
@@ -70,6 +77,9 @@ impl Item {
             }
             Item::Agent { key, text } => json!({ "type": "agent", "key": key, "text": text }),
             Item::Thinking { key, text } => json!({ "type": "thinking", "key": key, "text": text }),
+            Item::Narration { key, text } => {
+                json!({ "type": "narration", "key": key, "text": text })
+            }
             Item::Tool {
                 key,
                 name,

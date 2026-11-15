@@ -272,12 +272,23 @@ impl ClaudeTranscript {
                         });
                     }
                 }
-                // Current Claude Code writes thinking redacted, signature
-                // only; an empty one is not worth a row.
+                // Current Claude Code writes its thinking redacted: the text
+                // is empty and only the signature is kept, so an empty one is
+                // not worth a row. A thinking block that does carry text is
+                // not thinking at all but narration — a line written to the
+                // person along the way, sometimes the answer to a message
+                // they sent mid-turn — and folding it away with the work hid
+                // it. Measured 2026-11-15 over 600 local transcripts: of
+                // 19,932 thinking blocks, every one with text (3,172) has
+                // `narration` as the kind inside its signature, and every
+                // one marked `thinking` (16,757) is empty. The signature's
+                // format is not published, so the rule keys off the text and
+                // not off it: should real thinking ever be written out
+                // again, the cost is that it shows, never that a line hides.
                 "thinking" => {
                     let t = str_of(block, "thinking").unwrap_or("").trim();
                     if !t.is_empty() {
-                        self.items.push(Item::Thinking {
+                        self.items.push(Item::Narration {
                             key,
                             text: t.into(),
                         });
@@ -644,6 +655,22 @@ mod tests {
     #[test]
     fn redacted_thinking_is_not_a_row() {
         assert!(parse(&[r#"{"type":"assistant","uuid":"a","message":{"content":[{"type":"thinking","thinking":"","signature":"abc"}]}}"#]).is_empty());
+    }
+
+    #[test]
+    fn thinking_with_text_is_narration() {
+        let items = parse(&[
+            r#"{"type":"assistant","uuid":"a","message":{"content":[{"type":"thinking","thinking":"","signature":"x"},{"type":"thinking","thinking":"The rule is in CLAUDE.md; now checking the fonts.\n\n","signature":"y"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls","description":"List"}}]}}"#,
+        ]);
+        assert_eq!(
+            items[0],
+            Item::Narration {
+                key: "a-1".into(),
+                text: "The rule is in CLAUDE.md; now checking the fonts.".into()
+            }
+        );
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].to_json()["type"], "narration");
     }
 
     #[test]

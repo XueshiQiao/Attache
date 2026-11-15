@@ -217,6 +217,14 @@ final class AgentChatModel {
         onChange?()
     }
 
+    /// The rows after an `items` event: rows `from`… replaced, or all of
+    /// them on a fresh read. An unreadable row stays as nil so `from` keeps
+    /// counting the way attache-cli counts.
+    nonisolated static func splice(_ rows: [ChatRow?], from: Int, items: [[String: Any]], fresh: Bool) -> [ChatRow?] {
+        let parsed = items.map(ChatRow.init)
+        return fresh ? parsed : Array(rows.prefix(from)) + parsed
+    }
+
     private func startFollow(path: String, kind: String) {
         follow?.cancel()
         followGeneration += 1
@@ -224,7 +232,12 @@ final class AgentChatModel {
         var args = ["follow", kind, path]
         if let before { args += ["--before", String(before)] }
         freshRead = true
-        var fromHere: [ChatRow] = []
+        // Indexed as attache-cli indexes its rows: a row this app cannot read
+        // keeps its place as nil, because `from` counts it. Dropping it
+        // instead made every later `from` land one row early or late, so
+        // rows went missing or showed twice — what a client one release
+        // behind did the day `narration` was added.
+        var fromHere: [ChatRow?] = []
         follow = link.stream(args, onEvent: { [weak self] event in
             guard let self, self.followGeneration == generation else { return }
             self.followRetry.reset()
@@ -243,12 +256,12 @@ final class AgentChatModel {
                 self.freshRead = true
             case "items":
                 let from = event["from"] as? Int ?? 0
-                let parsed = (event["items"] as? [[String: Any]] ?? []).compactMap(ChatRow.init)
-                fromHere = self.freshRead ? parsed : Array(fromHere.prefix(from)) + parsed
+                fromHere = Self.splice(fromHere, from: from, items: event["items"] as? [[String: Any]] ?? [],
+                                       fresh: self.freshRead)
                 self.freshRead = false
                 self.before = nil
                 self.loadingEarlier = false
-                self.publish(fromHere)
+                self.publish(fromHere.compactMap { $0 })
             case "status":
                 self.status = ChatStatus(event)
                 if !self.freshRead { self.onChange?() }

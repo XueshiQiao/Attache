@@ -96,6 +96,24 @@ MainActor.assumeIsolated {
         check(false, "a tool step")
     }
     check(ChatRow(object(#"{"type":"future-kind","key":"z"}"#)) == nil, "an unknown row")
+    // Narration is its own row, and says what it says the way a reply does.
+    let narration = ChatRow(object(#"{"type":"narration","key":"n-1","text":"Built; now the fonts."}"#))
+    check(narration == .narration(key: "n-1", text: "Built; now the fonts.") && narration?.said == "Built; now the fonts.",
+          "a narration row")
+    check(ChatRow(object(#"{"type":"thinking","key":"t","text":"x"}"#))?.said == nil, "thinking is not said")
+
+    // `from` counts every row attache-cli sent, the unreadable ones too: an
+    // unknown row in the middle must not shift what a later update replaces.
+    do {
+        let first = [object(#"{"type":"user","key":"u","text":"hi"}"#),
+                     object(#"{"type":"future-kind","key":"f"}"#),
+                     object(#"{"type":"agent","key":"a","text":"one"}"#)]
+        var rows = AgentChatModel.splice([], from: 0, items: first, fresh: true)
+        rows = AgentChatModel.splice(rows, from: 2, items: [object(#"{"type":"agent","key":"a","text":"one, two"}"#)],
+                                     fresh: false)
+        check(rows.compactMap { $0 } == [.user(key: "u", text: "hi", queued: false), .agent(key: "a", text: "one, two")],
+              "an unknown row keeps its place for the next update")
+    }
     check(ChatRow(object(#"{"type":"user","key":"","text":"x"}"#)) == nil, "a row without a key")
 
     // A sent message is confirmed only by a prompt after the row it was

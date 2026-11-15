@@ -146,7 +146,7 @@ Rows: `user` (`text`, `queued`), `agent` (`text`), `narration` (`text`),
 `thinking` (`text`), `tool` (`name`, `summary`, `detail`, `result`,
 `error`, `diff` as `[kind, text]` pairs), `output` (`text`, `error`, `raw`),
 `note` (`text`); each has a `key` that stays the same across rereads.
-`narration` (0.3.16) is a line the agent wrote to the person along the way
+`narration` (0.3.17) is a line the agent wrote to the person along the way
 that Claude Code files as a thinking block; a client shows it like `agent`,
 not folded with the work. Claude Code keeps its real thinking empty, so a
 Claude conversation has no `thinking` rows; agy's do.

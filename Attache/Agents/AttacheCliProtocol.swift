@@ -349,6 +349,10 @@ nonisolated enum ChatRow: Equatable, Sendable {
 
     case user(key: String, text: String, queued: Bool)
     case agent(key: String, text: String)
+    /// A line the agent wrote to the person along the way that its
+    /// transcript files as thinking (Claude Code's narration): read like
+    /// `agent`, drawn set apart from it.
+    case narration(key: String, text: String)
     case thinking(key: String, text: String)
     case tool(key: String, name: String, summary: String, detail: String,
               result: String?, isError: Bool, diff: [DiffLine])
@@ -357,10 +361,23 @@ nonisolated enum ChatRow: Equatable, Sendable {
 
     var key: String {
         switch self {
-        case .user(let k, _, _), .agent(let k, _), .thinking(let k, _),
+        case .user(let k, _, _), .agent(let k, _), .narration(let k, _), .thinking(let k, _),
              .tool(let k, _, _, _, _, _, _), .output(let k, _, _, _), .note(let k, _):
             k
         }
+    }
+
+    /// What the agent said to the person, as a reply or as narration.
+    var said: String? {
+        switch self {
+        case .agent(_, let t), .narration(_, let t): t
+        default: nil
+        }
+    }
+
+    var isNarration: Bool {
+        if case .narration = self { return true }
+        return false
     }
 
     /// nil for a row type this app does not know yet: attache-cli may add
@@ -371,6 +388,7 @@ nonisolated enum ChatRow: Equatable, Sendable {
         switch o["type"] as? String {
         case "user": self = .user(key: key, text: text, queued: o["queued"] as? Bool ?? false)
         case "agent": self = .agent(key: key, text: text)
+        case "narration": self = .narration(key: key, text: text)
         case "thinking": self = .thinking(key: key, text: text)
         case "tool":
             let diff = (o["diff"] as? [[Any]] ?? []).compactMap { pair -> DiffLine? in

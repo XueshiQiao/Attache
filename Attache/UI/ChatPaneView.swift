@@ -609,8 +609,9 @@ final class ChatPaneView: NSView {
             // so its mark is told rather than the line (and every row after
             // it) rebuilt — a re-render per step, and an opened run's steps
             // shut under the person.
-            if case .reply(let row, let fold) = elements[keep], case .agent(_, let said) = row,
-               let marked = drawn[keep].view as? MarkedReply, marked.rowKey == row.key, marked.text == said {
+            if case .reply(let row, let fold) = elements[keep], let said = row.said,
+               let marked = drawn[keep].view as? MarkedReply, marked.rowKey == row.key, marked.text == said,
+               marked.isNarration == row.isNarration {
                 marked.update(fold)
                 drawn[keep].id = elements[keep].id
                 keep += 1
@@ -634,7 +635,7 @@ final class ChatPaneView: NSView {
                 let folded = WorkFold(fold)
                 folded.onToggle = { [weak self] in self?.toggle(fold: fold.key) }
                 view = folded
-            } else if case .reply(let row, let fold) = element, case .agent(_, let text) = row {
+            } else if case .reply(let row, let fold) = element, let text = row.said {
                 let reply = MarkedReply(row: row, markdown: text, fold: fold, linkContext: context)
                 reply.onToggle = { [weak self] in self?.toggle(fold: fold.key) }
                 view = reply
@@ -867,7 +868,9 @@ final class ChatPaneView: NSView {
                 switch row {
                 case .thinking, .tool:
                     stretch.append(row)
-                case .agent:
+                // Narration carries its run the way a reply does: it is
+                // what the agent said, and only how it is drawn differs.
+                case .agent, .narration:
                     closeRun()
                     items.append(.text(row, run: lead?.run ?? [], key: lead?.key ?? "w:" + row.key))
                     lead = nil
@@ -990,7 +993,7 @@ enum ChatElement {
         switch self {
         case .row(.user(_, let text, _)): .prompt(text)
         case .pending(let p): .prompt(p.text)
-        case .row(.agent), .row(.output): .reply
+        case .row(.agent), .row(.narration), .row(.output): .reply
         case .row(.tool): .tool
         case .reply: .reply
         case .fold(let f) where f.steps > 0: .tool
@@ -1020,6 +1023,9 @@ enum ChatElement {
         switch row {
         case .user(_, let t, let q): h.combine(t); h.combine(q)
         case .agent(_, let t), .thinking(_, let t), .note(_, let t): h.combine(t)
+        // Drawn with a bar: a reply and narration with the same words are
+        // different drawings.
+        case .narration(_, let t): h.combine("narration"); h.combine(t)
         case .tool(_, let n, let s, let d, let r, let e, let diff):
             h.combine(n); h.combine(s); h.combine(d); h.combine(r); h.combine(e)
             for line in diff { h.combine(String(line.mark)); h.combine(line.text) }
