@@ -32,7 +32,7 @@ packages:
     exactVersion: 2.9.6
   AIUsageKit:
     url: https://github.com/XueshiQiao/AIUsageKit.git
-    revision: a08b005087f474ea6987c2be49a1bbcff5926497
+    revision: 7d72c7d4d6f4745e9929fc293504974d4deaae70
   Aptabase:
     url: https://github.com/aptabase/aptabase-swift
     exactVersion: 0.3.11
