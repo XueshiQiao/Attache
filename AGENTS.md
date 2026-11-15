@@ -1041,25 +1041,8 @@ TODO.md was migrated there and deleted on 2026-08-04; its full text — includin
 the record of everything already finished and how it was verified — is in git
 history before that date.
 
-## Android project: APK versioning and naming
+## The Android app
 
-This section is the whole of the `AGENTS.md` this repository had before the two files were merged on 2026-11-15. It was never loaded by Claude Code while `AGENTS.md` sat beside it. `AttacheAndroid/AGENTS.md` has its own, newer version of these rules; where the two disagree, that file is the one being followed.
-
-When building and sending the Android APK from `/Users/joey/Code/AttacheAndroid`:
-
-1. **App Display Name & Package ID**:
-   - Display Name: Always `Attaché` (`app/src/main/res/values/notrans.xml`).
-   - Package ID (`applicationId`): `me.xueshi.attache`.
-2. **Always Increment Version & Build Number**:
-   - Before every new APK build for the user, update `/Users/joey/Code/AttacheAndroid/version.properties` (`VERSION_NAME=<MAJOR>.<MINOR>.<PATCH>`, `BUILD_NUMBER=<N>`):
-     - Always increment `BUILD_NUMBER` by 1.
-     - For normal feature or UX updates, also increment the **minor** version by 1 (`1.1.0` -> `1.2.0` -> `1.3.0` -> `1.4.0`, resetting patch to `0`).
-     - For tiny bug-fix-only builds, increment the **patch** (bug fix) version by 1 (`1.1.1`, `1.1.2`, etc.).
-   - This updates Android `versionCode = 12_000_000 + BUILD_NUMBER` and `versionName = "<VERSION_NAME> (Build <BUILD_NUMBER>)"`, ensuring the Android system installer always recognizes it as an upgrade.
-3. **Fixed APK Filename Format**:
-   - Always name the APK file:
-     `Attache-v<VERSION_NAME>-b<BUILD_NUMBER>-arm64-v8a.apk`
-     (e.g., `Attache-v1.1.0-b36-arm64-v8a.apk`, `Attache-v1.2.0-b37-arm64-v8a.apk`).
-   - Never use unversioned or arbitrary filenames.
-4. **Push to Device Inbox**:
-   - Send via `~/.local/bin/attache-send "/tmp/Attache-v<VERSION_NAME>-b<BUILD_NUMBER>-arm64-v8a.apk"`.
+It lives in `~/Code/AttacheAndroid`, a separate repository. Its own `AGENTS.md`
+has the rules for version numbers, the APK's file name and sending a build to
+the device; read that file before building one. Nothing about them is kept here.
