@@ -572,6 +572,7 @@ final class ChatPaneView: NSView {
         return ChatLinkContext(
             cwd: (cwd?.isEmpty == false) ? cwd : nil,
             pathsAreLocal: model?.link.transport.pathsAreLocal ?? true,
+            cli: model?.link,
             onOpenLink: { [weak self] raw in self?.openChatLink(raw) },
             onLayoutInvalidated: { [weak self] in self?.handleAsyncImageLayout() }
         )

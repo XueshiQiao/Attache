@@ -150,6 +150,9 @@ final class MarkdownTextView: NSView, NSTextViewDelegate {
         ) { [weak self] in
             self?.relayoutAfterImageLoad()
         }
+        MermaidDiagramLoader.hydrate(storage, context: self.linkContext) { [weak self] in
+            self?.relayoutAfterImageLoad()
+        }
     }
 
     @available(*, unavailable)
@@ -201,6 +204,10 @@ final class MarkdownTextView: NSView, NSTextViewDelegate {
     // MARK: - NSTextViewDelegate
 
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        if MermaidDiagramLoader.handleLink(link, in: textView, at: charIndex) {
+            relayoutAfterImageLoad()
+            return true
+        }
         if let target = ChatLinkContext.linkTargetString(from: link) {
             linkContext.open(target)
             return true
@@ -216,6 +223,10 @@ final class MarkdownTextView: NSView, NSTextViewDelegate {
         in cellFrame: NSRect,
         at charIndex: Int
     ) {
+        if MermaidDiagramLoader.handleClick(in: textView, at: charIndex) {
+            relayoutAfterImageLoad()
+            return
+        }
         _ = MarkdownImageLoader.handleAttachmentClick(
             in: textView, at: charIndex, context: linkContext
         )

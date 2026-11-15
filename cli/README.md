@@ -32,6 +32,7 @@ Each runs as its own short process, except `follow`, `agents --watch` and
 | `project open <id> --session <$N>` | clients | a new window in that session, in the folder, running the command in the person's own shell |
 | `project draft <@window>` | clients | what saving that window would start from: its name, its folder, how its agent was started |
 | `project commands [--set <base64>]` | clients | the person's often-used commands, offered when a project is saved; `--set` replaces the list (one command a line) |
+| `mermaid --source <base64> [--dark] [--scale <1-4>] [--inline]` | clients | draws a Mermaid diagram as a PNG, for a ```` ```mermaid ```` block in a reply |
 | `statusline claude` | Claude Code | keeps the status line snapshot, draws the old status line |
 | `send <file>...` (also as `attache-send`) | people, agents | hands files to the phone's inbox |
 
@@ -141,10 +142,28 @@ Protocol 2 (attache-cli 0.2.0) removed `--key` without `--if`.
 {"t":"switched","path":…}              the conversation moved to another file
 ```
 
-Rows: `user` (`text`, `queued`), `agent` (`text`), `thinking` (`text`),
-`tool` (`name`, `summary`, `detail`, `result`, `error`, `diff` as
-`[kind, text]` pairs), `output` (`text`, `error`, `raw`), `note` (`text`);
-each has a `key` that stays the same across rereads.
+Rows: `user` (`text`, `queued`), `agent` (`text`), `narration` (`text`),
+`thinking` (`text`), `tool` (`name`, `summary`, `detail`, `result`,
+`error`, `diff` as `[kind, text]` pairs), `output` (`text`, `error`, `raw`),
+`note` (`text`); each has a `key` that stays the same across rereads.
+`narration` (0.3.16) is a line the agent wrote to the person along the way
+that Claude Code files as a thinking block; a client shows it like `agent`,
+not folded with the work. Claude Code keeps its real thinking empty, so a
+Claude conversation has no `thinking` rows; agy's do.
+
+`mermaid`: one line, `{"mermaid":true,"width","height","scale","path"}`
+or `{"mermaid":false,"why"}`. `path` is a PNG under this program's state
+folder (`mermaid/`, kept a week), for a client that fetches files from the
+host; with `--inline` the line carries `"png"` (base64) in its place and
+nothing is written. `width` and `height` are in points, and the PNG is
+`scale` times that in pixels (2 unless asked), on a transparent ground.
+A refusal is about the source — it cannot be drawn, now or later — so a
+client keeps it and leaves the block as code; no line at all (ssh dropped,
+an attache-cli from before 0.3.15) says nothing about the source and is
+asked again. The text is drawn with the host's own fonts, from a short list
+of files (`src/mermaid.rs`); a host with none of them is refused. Pixels
+and not SVG because merman's SVG needs CSS applied to draw, and neither
+client may use a web view for it.
 
 ## Files
 

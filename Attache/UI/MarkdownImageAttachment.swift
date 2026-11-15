@@ -12,6 +12,10 @@ import ImageIO
 nonisolated struct ChatLinkContext {
     var cwd: String?
     var pathsAreLocal: Bool = true
+    /// How attache-cli is reached on the host this conversation is on, which
+    /// is where a ```mermaid block is laid out. Nil where there is no such
+    /// host to ask (the rail's preview), and the block stays code.
+    var cli: AttacheCliLink?
     var onOpenLink: (@MainActor (String) -> Void)?
     var onLayoutInvalidated: (@MainActor () -> Void)?
 

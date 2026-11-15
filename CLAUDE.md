@@ -163,6 +163,20 @@ the move. The app's plist still exists and holds one thing: the window frames
 AppKit writes through `setFrameAutosaveName`, which are not ours and have no
 supported redirect.
 
+**No web view, anywhere, for anything.** No `WKWebView`, no `import WebKit`,
+no Android `WebView`, not as a renderer for one widget and not "only as a
+drawing engine with JavaScript off". The owner ruled this on 2026-11-15 and
+put it this way: the chat page is exactly the kind of view a web view suits,
+and it was built natively on purpose — so a web view will not come in through
+the side door for a diagram, a table, a preview or anything else. A feature
+that can only be had with one is a feature this app does not have. What
+prompted the ruling is the worked example: Mermaid diagrams were first drawn
+by loading attache-cli's SVG into a web view, because AppKit's `NSImage`
+ignores the SVG's `<style>` element; that was thrown out and attache-cli
+draws the PNG itself. When native drawing cannot show something, move the
+rendering to attache-cli and ship pixels, or leave the content as text. The
+same rule holds in the Android app.
+
 **Anything destructive needs a confirmation and separate wording.** Hiding a
 window takes its row out of the rail and sends tmux nothing; killing is a
 different menu item, worded as what it is, and asks first. A window may have an
@@ -508,7 +522,7 @@ touching `Attache/Agents/`:
 swiftc -O -o /tmp/attachecliccheck Attache/Agents/AttacheCliProtocol.swift \
   Attache/Agents/AgentChatModel.swift Attache/Agents/AttacheCliLink.swift \
   Attache/Agents/HostAgents.swift Attache/Agents/AttacheCliInstaller.swift \
-  Attache/Agents/Projects.swift \
+  Attache/Agents/Projects.swift Attache/Agents/MermaidCommand.swift \
   Attache/Tmux/TmuxTransport.swift Attache/Tmux/TmuxSocket.swift \
   Attache/Tmux/PipeRead.swift Tools/AttacheCliCheck/main.swift
 /tmp/attachecliccheck

@@ -182,7 +182,9 @@ enum ConversationMarkdown {
         case paragraph(String)
         case listItem(bullet: String, text: String, depth: Int)
         case table(rows: [[String]], hasHeader: Bool)
-        case code([String])
+        /// `diagram` is the block's source when it is a ```mermaid block
+        /// whose closing fence has arrived, and nil otherwise.
+        case code([String], diagram: String?)
         case rule
         case blank
     }
@@ -196,6 +198,7 @@ enum ConversationMarkdown {
         var tableHasHeader = false
         var inTable = false
         var code: [String]?
+        var codeLanguage = ""
 
         func closeTable() {
             if inTable, !tableRows.isEmpty {
@@ -211,8 +214,20 @@ enum ConversationMarkdown {
             let stripped = line.trimmingCharacters(in: .whitespaces)
 
             if stripped.hasPrefix("```") {
-                if let body = code { blocks.append(.code(body)); code = nil }
-                else { closeTable(); code = [] }
+                if let body = code {
+                    // Only here, at the closing fence, is a block a diagram.
+                    // A reply still being written ends inside its fence, and
+                    // drawing that would be asking for a picture of half a
+                    // diagram on every token.
+                    let diagram = codeLanguage == "mermaid" ? body.joined(separator: "\n") : nil
+                    blocks.append(.code(body, diagram: diagram?.isEmpty == false ? diagram : nil))
+                    code = nil
+                } else {
+                    closeTable()
+                    code = []
+                    codeLanguage = stripped.drop { $0 == "`" }
+                        .trimmingCharacters(in: .whitespaces).lowercased()
+                }
                 continue
             }
             if code != nil { code?.append(line); continue }
@@ -254,7 +269,7 @@ enum ConversationMarkdown {
             }
             blocks.append(.paragraph(stripped))
         }
-        if let body = code { blocks.append(.code(body)) }
+        if let body = code { blocks.append(.code(body, diagram: nil)) }
         closeTable()
         return blocks
     }
@@ -278,6 +293,18 @@ enum ConversationMarkdown {
     // MARK: - Drawing
 
     private static func draw(_ block: Block, style: Style, afterList: Bool) -> NSAttributedString {
+        let drawn = drawPlain(block, style: style, afterList: afterList)
+        // A diagram is drawn as the code it is, and marked: the views that
+        // can show a picture swap it in when one arrives
+        // (`MermaidDiagramLoader`); everywhere else it simply stays code.
+        guard case let .code(_, diagram?) = block, drawn.length > 0 else { return drawn }
+        let marked = NSMutableAttributedString(attributedString: drawn)
+        marked.addAttribute(.markdownDiagram, value: MarkdownDiagramSpec(source: diagram),
+                            range: NSRange(location: 0, length: marked.length))
+        return marked
+    }
+
+    private static func drawPlain(_ block: Block, style: Style, afterList: Bool) -> NSAttributedString {
         if style.look == .guides, let drawn = Guides.draw(block, style: style, afterList: afterList) {
             return drawn
         }
@@ -294,7 +321,7 @@ enum ConversationMarkdown {
             return drawListItem(bullet: bullet, text: text, depth: depth, style: style)
         case let .table(rows, hasHeader):
             return drawTable(rows: rows, hasHeader: hasHeader, style: style)
-        case let .code(body):
+        case let .code(body, _):
             return drawCode(body, style: style)
         }
     }
@@ -1175,7 +1202,7 @@ extension ConversationMarkdown {
                 return finished(inline(text, style: style), p)
             case let .listItem(bullet, text, depth):
                 return item(bullet: bullet, text: text, depth: depth, style: style)
-            case let .code(body):
+            case let .code(body, _):
                 return code(body, style: style)
             case .table, .rule:
                 return nil

@@ -177,5 +177,51 @@ MainActor.assumeIsolated {
     }
 }
 
+// MARK: - Mermaid
+
+do {
+    // The smallest thing `answer` takes for a picture: a PNG signature.
+    let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3])
+    let b64 = png.base64EncodedString()
+    check(MermaidCommand.answer([#"{"mermaid":true,"width":320.5,"height":200,"scale":2,"png":"\#(b64)"}"#])
+        == .picture(png, width: 320.5, height: 200), "a drawn diagram is its PNG and its size in points")
+    check(MermaidCommand.answer([#"{"mermaid":false,"why":"no Mermaid diagram in this source"}"#])
+        == .refused("no Mermaid diagram in this source"), "a refusal carries attache-cli's reason")
+    // The distinction the type exists for: none of these says anything about
+    // the source, so none may be kept as "this diagram cannot be drawn".
+    check(MermaidCommand.answer(nil) == .unanswered, "a command that could not run is no answer")
+    check(MermaidCommand.answer([]) == .unanswered, "an attache-cli from before `mermaid` prints no line")
+    check(MermaidCommand.answer(["Usage:", #"{"saved":true}"#]) == .unanswered, "another command's answer is no answer")
+    check(MermaidCommand.answer([#"{"mermaid":true,"width":10,"height":10}"#]) == .unanswered, "drawn with no picture is no answer")
+    check(MermaidCommand.answer([#"{"mermaid":true,"width":10,"height":10,"path":"/tmp/x.png"}"#]) == .unanswered,
+          "a path, which is the phone's answer, is not a picture here")
+    check(MermaidCommand.answer([#"{"mermaid":true,"width":10,"height":10,"png":"aGVsbG8="}"#]) == .unanswered,
+          "bytes that are not a PNG are no answer")
+    check(MermaidCommand.answer([#"{"mermaid":true,"width":0,"height":10,"png":"\#(b64)"}"#]) == .unanswered
+        && MermaidCommand.answer([#"{"mermaid":true,"height":10,"png":"\#(b64)"}"#]) == .unanswered
+        && MermaidCommand.answer([#"{"mermaid":true,"width":1e9,"height":10,"png":"\#(b64)"}"#]) == .unanswered,
+          "a picture with no sane size is no answer")
+    check(MermaidCommand.answer(["noise", #"{"mermaid":false,"why":"the renderer failed on this diagram"}"#])
+        == .refused("the renderer failed on this diagram"), "a panic's refusal is read past noise")
+
+    let argv = MermaidCommand.argv(source: "flowchart TD\n  A[\"每 5 分钟\"] --> B", dark: true, scale: 2)
+    check(argv.map { Array($0.prefix(2)) + Array($0.dropFirst(3)) }
+        == ["mermaid", "--source", "--scale", "2", "--inline", "--dark"], "argv, dark")
+    check(argv.flatMap { Data(base64Encoded: $0[2]) }.map { String(decoding: $0, as: UTF8.self) }
+        == "flowchart TD\n  A[\"每 5 分钟\"] --> B", "the source travels as base64 and reads back")
+    check(MermaidCommand.argv(source: "flowchart TD", dark: false, scale: 3)?.last == "--inline", "argv, light")
+    check(MermaidCommand.argv(source: "", dark: false, scale: 2) == nil, "nothing to draw is not asked")
+    check(MermaidCommand.argv(source: "flowchart TD", dark: false, scale: 0) == nil
+        && MermaidCommand.argv(source: "flowchart TD", dark: false, scale: 5) == nil, "a scale attache-cli refuses is not asked")
+    check(MermaidCommand.argv(source: String(repeating: "x", count: MermaidCommand.maxSource + 1), dark: false, scale: 2) == nil,
+          "a block past attache-cli's limit is not put on a command line")
+
+    let key = MermaidCommand.key(source: "flowchart TD", dark: false, scale: 2)
+    check(key.count == 64 && key == MermaidCommand.key(source: "flowchart TD", dark: false, scale: 2), "the key is stable")
+    check(key != MermaidCommand.key(source: "flowchart TD", dark: true, scale: 2), "dark is another picture")
+    check(key != MermaidCommand.key(source: "flowchart TD", dark: false, scale: 3), "another scale is another picture")
+    check(key != MermaidCommand.key(source: "flowchart LR", dark: false, scale: 2), "another source is another picture")
+}
+
 print(failures == 0 ? "\(cases) cases, all pass" : "\(failures) of \(cases) cases fail")
 exit(failures == 0 ? 0 : 1)
