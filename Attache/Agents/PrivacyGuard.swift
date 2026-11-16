@@ -302,6 +302,122 @@ nonisolated enum GuardCommands {
     }
 }
 
+/// The real values behind the placeholders in one host's conversations, so
+/// this app's own views can show the value where the model saw the
+/// placeholder (the owner's choice, 2026-11-16).
+///
+/// Memory only, never a file or a log: the vault on the host is the one
+/// place a value is kept. Per host because a placeholder is an HMAC under
+/// that host's own key — the same text on another host stands for something
+/// else, or nothing. A page full of placeholders asks once: every token
+/// wanted in the same turn of the main queue goes in one `guard reveal`.
+@MainActor
+final class GuardValues {
+    typealias Runner = (_ args: [String], _ done: @escaping @MainActor ([String]?) -> Void) -> Void
+
+    private static var byHost: [String: (link: AttacheCliLink, values: GuardValues)] = [:]
+
+    static func shared(for link: AttacheCliLink) -> GuardValues {
+        let key = link.transport.hostLabel
+        if let existing = byHost[key], existing.link == link { return existing.values }
+        let made = GuardValues(run: { args, done in link.run(args, completion: done) })
+        byHost[key] = (link, made)
+        return made
+    }
+
+    /// A token the host had no value for (made on another host, forgotten),
+    /// or that could not be asked, is asked again after this long rather
+    /// than on every redraw.
+    static let retryAfter: TimeInterval = 60
+    /// Tokens per command, so a long page never makes one huge argv.
+    static let batch = 64
+
+    private let run: Runner
+    private let schedule: (@escaping @MainActor () -> Void) -> Void
+    private let now: () -> Date
+
+    private var known: [String: String] = [:]
+    private var notBefore: [String: Date] = [:]
+    private var queued: [String] = []
+    private var asking = Set<String>()
+    private var waiters: [(tokens: Set<String>, then: @MainActor (Bool) -> Void)] = []
+    private var flushPending = false
+
+    init(run: @escaping Runner,
+         schedule: @escaping (@escaping @MainActor () -> Void) -> Void = { f in DispatchQueue.main.async { MainActor.assumeIsolated(f) } },
+         now: @escaping () -> Date = Date.init) {
+        self.run = run
+        self.schedule = schedule
+        self.now = now
+    }
+
+    func value(_ token: String) -> String? { known[token] }
+
+    /// Asks the host for each of `tokens` not known yet. False when nothing
+    /// was asked (all known, or all asked too recently): `then` will not
+    /// run. Otherwise `then` runs exactly once — with true after an answer
+    /// that brought at least one of them, with false once every one of them
+    /// was answered without a value or not answered at all.
+    @discardableResult
+    func want(_ tokens: [String], then: @escaping @MainActor (_ learned: Bool) -> Void) -> Bool {
+        let t = now()
+        var seen = Set<String>()
+        let tokens = tokens.filter { seen.insert($0).inserted }
+        let unknown = Set(tokens.filter { known[$0] == nil && GuardCommands.isToken($0) })
+        let fresh = unknown.filter { !asking.contains($0) && !queued.contains($0) && (notBefore[$0].map { $0 <= t } ?? true) }
+        let waiting = unknown.filter { asking.contains($0) || queued.contains($0) || fresh.contains($0) }
+        guard !waiting.isEmpty else { return false }
+        queued += tokens.filter { fresh.contains($0) }
+        waiters.append((waiting, then))
+        if !fresh.isEmpty, !flushPending {
+            flushPending = true
+            schedule { [weak self] in self?.flush() }
+        }
+        return true
+    }
+
+    /// Values the owner told the host to forget: gone from here too.
+    func forget(_ tokens: [String]) {
+        for token in tokens { known[token] = nil }
+    }
+
+    func forgetAll() { known.removeAll() }
+
+    private func flush() {
+        flushPending = false
+        while !queued.isEmpty {
+            let chunk = Array(queued.prefix(Self.batch))
+            queued.removeFirst(chunk.count)
+            asking.formUnion(chunk)
+            guard let argv = GuardCommands.reveal(chunk) else { answered(chunk, lines: nil); continue }
+            run(argv) { [weak self] lines in self?.answered(chunk, lines: lines) }
+        }
+    }
+
+    private func answered(_ chunk: [String], lines: [String]?) {
+        let values = GuardCommands.object(lines)?["values"] as? [String: String] ?? [:]
+        var learned = Set<String>()
+        for token in chunk {
+            asking.remove(token)
+            if let value = values[token] {
+                known[token] = value
+                notBefore[token] = nil
+                learned.insert(token)
+            } else {
+                notBefore[token] = now().addingTimeInterval(Self.retryAfter)
+            }
+        }
+        let pending = asking.union(queued)
+        var ready: [(then: @MainActor (Bool) -> Void, learned: Bool)] = []
+        waiters.removeAll { w in
+            if !w.tokens.isDisjoint(with: learned) { ready.append((w.then, true)); return true }
+            if w.tokens.isDisjoint(with: pending) { ready.append((w.then, false)); return true }
+            return false
+        }
+        ready.forEach { $0.then($0.learned) }
+    }
+}
+
 /// One host's guard, as the settings page shows it: what was last read, and
 /// the commands that change it. Every change reads back what attache-cli
 /// then holds; nothing here is believed until the host says so.
@@ -490,11 +606,17 @@ final class HostGuard: ObservableObject {
         }
     }
 
+    // The values shown in conversations are dropped at once, not when the
+    // host answers: a forget that failed costs one more `guard reveal`.
     func forget(_ tokens: [String]) {
+        GuardValues.shared(for: link).forget(tokens)
+        for token in tokens { revealed[token] = nil }
         ask(GuardCommands.forget(tokens)) { [weak self] _ in self?.refreshVault() }
     }
 
     func forgetAll() {
+        GuardValues.shared(for: link).forgetAll()
+        revealed.removeAll()
         ask(GuardCommands.forgetAll) { [weak self] _ in self?.refreshVault() }
     }
 

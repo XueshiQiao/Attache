@@ -140,12 +140,19 @@ model sees them and are put back only when a command runs or a file is
 written, on that host (issue #43). The rules, the vault of real values,
 the events and the agents' hooks or mod all live on the host and only
 attache-cli touches them; the Privacy Guard settings page (`HostGuard`,
-`PrivacyGuardPage`) and the chat's placeholder chips (`GuardChips`) only
-name commands. A real value is shown only where the owner pressed Show,
-through `guard reveal`, which refuses inside an agent's environment — so
-`AttacheCliLink` starts attache-cli without those variables, in case the
-app itself was started from an agent's shell. Chips keep the placeholder's
-own text: a reply copied back to the agent must still carry it.
+`PrivacyGuardPage`) and the chat's placeholder display (`GuardChips`,
+`GuardValues`) only name commands. Every view of a conversation — chat
+rows, tool steps, docks, the rail — shows the real value on a tint where
+the model saw a placeholder, with the placeholder in the tooltip, and
+copying copies the value (the owner's choice, 2026-11-16). Values come
+from `guard reveal` on the conversation's own host, are held in memory
+only, and are never logged. `guard reveal` refuses inside an agent's
+environment — so `AttacheCliLink` starts attache-cli without those
+variables, in case the app itself was started from an agent's shell. A
+new label that can carry agent text goes through `ChatRowViews.guarded`
+(or `GuardChips.bind`), or it shows the bare placeholder. And since the
+app now draws real values, an agent's screenshot of a chat page carries
+them into that agent's conversation: check before taking one.
 
 **No key reaches an agent on the strength of what this app was shown.** Every
 key and message goes through `attache-cli input`, which names the screen it is

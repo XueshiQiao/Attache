@@ -464,6 +464,7 @@ final class ChatPaneView: NSView {
             return
         }
         let agent = model.agent
+        header.guardContext = ChatLinkContext(cli: model.link)
         header.show(title: Self.title(of: agent), chips: Self.chips(agent: agent, status: model.status))
 
         let following = followsBottom
@@ -482,6 +483,14 @@ final class ChatPaneView: NSView {
 
         let phase = agent?.phase
         working.isHidden = !(phase == .working && !model.agentExited)
+        // The docks show what the agent wrote too, placeholders included.
+        let guardContext = ChatLinkContext(cli: model.link,
+                                           onLayoutInvalidated: { [weak self] in self?.handleAsyncImageLayout() })
+        working.guardContext = guardContext
+        approval.guardContext = guardContext
+        questionDock.guardContext = guardContext
+        panel.guardContext = guardContext
+        tip.guardContext = guardContext
         working.show(model.activity, since: agent?.since)
         approval.show(model.approval)
         approval.isHidden = model.approval == nil
@@ -632,7 +641,7 @@ final class ChatPaneView: NSView {
         for (i, element) in elements.enumerated().dropFirst(keep) {
             let view: NSView
             if case .fold(let fold) = element {
-                let folded = WorkFold(fold)
+                let folded = WorkFold(fold, linkContext: context)
                 folded.onToggle = { [weak self] in self?.toggle(fold: fold.key) }
                 view = folded
             } else if case .reply(let row, let fold) = element, let text = row.said {
@@ -686,7 +695,7 @@ final class ChatPaneView: NSView {
         }
         guard let window else { return }
         let alert = NSAlert()
-        alert.messageText = "“\(option.label)”"
+        alert.messageText = "“\(GuardChips.revealed(option.label, cli: model?.link))”"
         alert.informativeText = "This answer \(risk)."
         alert.addButton(withTitle: "Answer")
         alert.addButton(withTitle: "Cancel")
@@ -1257,6 +1266,7 @@ final class ChatMinimapView: NSView {
 /// The hint beside the minimap: how a prompt began.
 final class MinimapTip: NSView {
     private let label = NSTextField(labelWithString: "")
+    var guardContext = ChatLinkContext.localDefault
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -1289,6 +1299,7 @@ final class MinimapTip: NSView {
 
     func show(_ text: String) {
         label.stringValue = text.replacingOccurrences(of: "\n", with: " ")
+        ChatRowViews.guarded(label, guardContext)
         isHidden = false
         needsDisplay = true
     }

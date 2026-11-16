@@ -19,23 +19,24 @@ enum ChatRowViews {
     ) -> NSView {
         switch element {
         case .row(.user(_, let text, let queued)):
-            return UserBubble(text: text, caption: queued ? "Sent while it was working" : nil, faded: false)
+            return UserBubble(text: text, caption: queued ? "Sent while it was working" : nil, faded: false,
+                              linkContext: linkContext)
         case .row(.agent(_, let text)):
             return AgentReply(markdown: text, linkContext: linkContext)
         case .row(.narration(_, let text)), .row(.thinking(_, let text)):
             return BarredReply(text: text, linkContext: linkContext)
         case .row(.output(_, let text, let isError, _)):
-            return OutputCard(text: text, isError: isError)
+            return OutputCard(text: text, isError: isError, linkContext: linkContext)
         case .row(.note(_, let text)), .note(_, let text):
-            return Note(text: text)
+            return Note(text: text, linkContext: linkContext)
         case .row(.tool):
-            return ToolCard(steps: [element.rowValue].compactMap { $0 })
+            return ToolCard(steps: [element.rowValue].compactMap { $0 }, linkContext: linkContext)
         case .pending(let message):
             return UserBubble(text: message.text,
                               caption: message.unconfirmed ? "Not confirmed yet — check the terminal" : "Sending…",
-                              faded: true)
+                              faded: true, linkContext: linkContext)
         case .fold(let fold):
-            return WorkFold(fold)
+            return WorkFold(fold, linkContext: linkContext)
         case .reply(let row, let fold):
             guard let text = row.said else { return NSView() }
             return MarkedReply(row: row, markdown: text, fold: fold, linkContext: linkContext)
@@ -50,6 +51,24 @@ enum ChatRowViews {
         label.translatesAutoresizingMaskIntoConstraints = false
         label.giveWayHorizontally()
         return label
+    }
+
+    /// A label whose placeholders show as the real values, from the
+    /// conversation's host (`GuardChips.bind`).
+    @discardableResult
+    static func guarded(_ field: NSTextField, _ context: ChatLinkContext, accent: NSColor? = nil,
+                        then extra: (@MainActor () -> Void)? = nil) -> NSTextField {
+        let after = context.onLayoutInvalidated
+        GuardChips.bind(field, cli: context.cli, accent: accent, onAsyncUpdate: { extra?(); after?() })
+        return field
+    }
+
+    /// Every label under `view` that holds a placeholder, guarded: for the
+    /// docks, whose rows are built in many places, so that one added later
+    /// is covered without anyone remembering this.
+    static func guardAll(in view: NSView, _ context: ChatLinkContext) {
+        if let field = view as? NSTextField, field.stringValue.contains("⟦") { guarded(field, context) }
+        for child in view.subviews { guardAll(in: child, context) }
     }
 
     static func pin(_ child: NSView, in parent: NSView, insets: NSEdgeInsets) {
@@ -127,7 +146,7 @@ final class ClosureButton: NSButton {
 /// What the person said, on the right: a tint of the accent with ordinary
 /// text, or the accent itself with white text, by `ChatStyle`.
 private final class UserBubble: NSView {
-    init(text: String, caption: String?, faded: Bool) {
+    init(text: String, caption: String?, faded: Bool, linkContext: ChatLinkContext = .localDefault) {
         super.init(frame: .zero)
         let theme = ChromeTheme.current
         let solid = ChatStyle.current.userBubbleIsSolid
@@ -139,6 +158,8 @@ private final class UserBubble: NSView {
         let body = ChatRowViews.label(text, font: .systemFont(ofSize: ChatRowViews.size),
                                       colour: solid ? theme.onAccent : theme.text)
         if faded, !solid { body.alphaValue = 0.7 }
+        // The accent tint would vanish on a bubble filled with the accent.
+        ChatRowViews.guarded(body, linkContext, accent: solid ? theme.onAccent : nil)
         ChatRowViews.pin(body, in: bubble, insets: NSEdgeInsets(top: 7, left: 12, bottom: 7, right: 12))
         bubble.translatesAutoresizingMaskIntoConstraints = false
         addSubview(bubble)
@@ -254,7 +275,7 @@ final class WorkFold: NSView {
     var onToggle: (() -> Void)?
     private var pressed = false
 
-    init(_ fold: ChatFold) {
+    init(_ fold: ChatFold, linkContext: ChatLinkContext = .localDefault) {
         super.init(frame: .zero)
         let theme = ChromeTheme.current
         let size = ChatRowViews.size - 1.5
@@ -311,6 +332,7 @@ final class WorkFold: NSView {
         head.trailingAnchor.constraint(lessThanOrEqualTo: column.trailingAnchor).isActive = true
         ChatRowViews.pin(column, in: self, insets: NSEdgeInsets(top: 0, left: 20, bottom: 0, right: 24))
         toolTip = fold.open ? "Click to fold the work away" : "Click to show the thinking and every step"
+        ChatRowViews.guardAll(in: column, linkContext)
     }
 
     @available(*, unavailable)
@@ -341,6 +363,7 @@ final class MarkedReply: NSView {
     let isNarration: Bool
     private let mark: FoldMark
     private let running: NSTextField
+    private let linkContext: ChatLinkContext
     private var hoverArea: NSTrackingArea?
 
     /// The text stops this far from the right edge, clear of the column the
@@ -352,6 +375,7 @@ final class MarkedReply: NSView {
         rowKey = row.key
         text = markdown
         isNarration = row.isNarration
+        self.linkContext = linkContext
         mark = FoldMark(fold)
         running = ChatRowViews.label("", font: .monospacedSystemFont(ofSize: ChatRowViews.size - 2.5, weight: .regular),
                                      colour: ChromeTheme.current.mutedText, selectable: false)
@@ -399,6 +423,7 @@ final class MarkedReply: NSView {
         // be said twice.
         let line = fold.open ? nil : fold.running
         running.stringValue = line.map { "…  " + $0 } ?? ""
+        ChatRowViews.guarded(running, linkContext)
         running.isHidden = line == nil
     }
 
@@ -526,7 +551,8 @@ private final class Expandable: NSView {
     private let toggle: ClosureButton
     private var measuredWidth: CGFloat = -1
 
-    init(text: String, font: NSFont, lines: Int, colour: NSColor, insets: NSEdgeInsets? = nil) {
+    init(text: String, font: NSFont, lines: Int, colour: NSColor, insets: NSEdgeInsets? = nil,
+         linkContext: ChatLinkContext = .localDefault) {
         // Selectable from the start: opening it used to be a click on the
         // text itself, which left nothing in it to select until it was open.
         body = ChatRowViews.label(text, font: font, colour: colour)
@@ -536,6 +562,12 @@ private final class Expandable: NSView {
         super.init(frame: .zero)
         body.maximumNumberOfLines = lines
         body.lineBreakMode = .byTruncatingTail
+        // A value is usually longer than its placeholder, so the text may
+        // now be cut at the same width: measure again.
+        ChatRowViews.guarded(body, linkContext) { [weak self] in
+            self?.measuredWidth = -1
+            self?.needsLayout = true
+        }
         toggle.isBordered = false
         toggle.contentTintColor = ChromeTheme.current.accent
         toggle.font = .systemFont(ofSize: max(10, font.pointSize - 0.5))
@@ -577,6 +609,7 @@ private final class Expandable: NSView {
         open.toggle()
         body.maximumNumberOfLines = open ? 0 : lines
         body.lineBreakMode = open ? .byWordWrapping : .byTruncatingTail
+        GuardChips.followLineBreak(body)
         toggle.title = open ? "Show less" : "Show all"
         needsLayout = true
     }
@@ -584,7 +617,7 @@ private final class Expandable: NSView {
 
 /// A command's output: monospaced, in a card, thirty lines until opened.
 private final class OutputCard: NSView {
-    init(text: String, isError: Bool) {
+    init(text: String, isError: Bool, linkContext: ChatLinkContext = .localDefault) {
         super.init(frame: .zero)
         let theme = ChromeTheme.current
         let card = NSView()
@@ -593,7 +626,8 @@ private final class OutputCard: NSView {
         card.layer?.backgroundColor = theme.hover.cgColor
         if isError { card.layer?.borderColor = NSColor.systemRed.withAlphaComponent(0.6).cgColor; card.layer?.borderWidth = 1 }
         let body = Expandable(text: text, font: .monospacedSystemFont(ofSize: ChatRowViews.size - 2, weight: .regular),
-                              lines: 30, colour: theme.text, insets: NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0))
+                              lines: 30, colour: theme.text, insets: NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0),
+                              linkContext: linkContext)
         ChatRowViews.pin(body, in: card, insets: NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10))
         ChatRowViews.pin(card, in: self, insets: NSEdgeInsets(top: 0, left: 18, bottom: 0, right: 24))
     }
@@ -604,11 +638,12 @@ private final class OutputCard: NSView {
 
 /// A line of the page's own or the transcript's: an interruption, a `/clear`.
 private final class Note: NSView {
-    init(text: String) {
+    init(text: String, linkContext: ChatLinkContext = .localDefault) {
         super.init(frame: .zero)
         let label = ChatRowViews.label(text, font: .systemFont(ofSize: 11), colour: ChromeTheme.current.faintText,
                                        selectable: false)
         label.alignment = .center
+        ChatRowViews.guarded(label, linkContext)
         ChatRowViews.pin(label, in: self, insets: NSEdgeInsets(top: 2, left: 40, bottom: 2, right: 40))
     }
 
@@ -620,7 +655,7 @@ private final class Note: NSView {
 /// the left with a dot per step, consecutive steps joining up — or inside a
 /// bordered card, by `ChatStyle`.
 private final class ToolCard: NSView {
-    init(steps: [ChatRow]) {
+    init(steps: [ChatRow], linkContext: ChatLinkContext = .localDefault) {
         super.init(frame: .zero)
         let theme = ChromeTheme.current
         let layout = ChatStyle.current.toolLayout
@@ -639,7 +674,8 @@ private final class ToolCard: NSView {
         for step in steps {
             guard case .tool(_, let name, let summary, let detail, let result, let isError, let diff) = step else { continue }
             let row = ToolStep(name: name, summary: summary, detail: detail, result: result,
-                               isError: isError, diff: diff, mark: layout == .card, quiet: layout == .quiet)
+                               isError: isError, diff: diff, mark: layout == .card, quiet: layout == .quiet,
+                               linkContext: linkContext)
             let shown: NSView = timeline ? TimelineRow(content: row, state: result == nil ? .running : isError ? .failed : .done) : row
             card.addArrangedSubview(shown)
             shown.widthAnchor.constraint(equalTo: card.widthAnchor, constant: layout == .card ? -20 : 0).isActive = true
@@ -690,7 +726,7 @@ private final class ToolStep: NSView {
     private let hasMore: Bool
 
     init(name: String, summary: String, detail: String, result: String?, isError: Bool,
-         diff: [ChatRow.DiffLine], mark: Bool, quiet: Bool = false) {
+         diff: [ChatRow.DiffLine], mark: Bool, quiet: Bool = false, linkContext: ChatLinkContext = .localDefault) {
         let theme = ChromeTheme.current
         // Mock-up A: 11.5 against the replies' 13.5.
         let size = ChatRowViews.size - (quiet ? 2.5 : 1)
@@ -711,11 +747,13 @@ private final class ToolStep: NSView {
         }
         let head: NSView
         if quiet {
-            head = Self.quietHead(name: name, summary: summary, result: result, isError: isError, size: size)
+            head = Self.quietHead(name: name, summary: summary, result: result, isError: isError, size: size,
+                                  linkContext: linkContext)
         } else {
             let field = NSTextField(labelWithAttributedString: line)
             field.lineBreakMode = .byTruncatingTail
             field.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+            ChatRowViews.guarded(field, linkContext)
             head = field
         }
         head.translatesAutoresizingMaskIntoConstraints = false
@@ -727,12 +765,14 @@ private final class ToolStep: NSView {
         more.translatesAutoresizingMaskIntoConstraints = false
         let mono = NSFont.monospacedSystemFont(ofSize: size - 1, weight: .regular)
         if !detail.isEmpty, detail != summary {
-            more.addArrangedSubview(ChatRowViews.label(detail, font: mono, colour: theme.mutedText))
+            more.addArrangedSubview(ChatRowViews.guarded(ChatRowViews.label(detail, font: mono, colour: theme.mutedText),
+                                                         linkContext))
         }
-        if !diff.isEmpty { more.addArrangedSubview(DiffView(lines: diff, font: mono)) }
+        if !diff.isEmpty { more.addArrangedSubview(DiffView(lines: diff, font: mono, linkContext: linkContext)) }
         if let result, !result.isEmpty {
             let shown = result.split(separator: "\n", omittingEmptySubsequences: false).prefix(40).joined(separator: "\n")
-            more.addArrangedSubview(ChatRowViews.label(shown, font: mono, colour: isError ? .systemRed : theme.text))
+            more.addArrangedSubview(ChatRowViews.guarded(
+                ChatRowViews.label(shown, font: mono, colour: isError ? .systemRed : theme.text), linkContext))
         }
         hasMore = !more.arrangedSubviews.isEmpty
         super.init(frame: .zero)
@@ -771,7 +811,7 @@ private final class ToolStep: NSView {
     /// monospaced tag in a column of its own, what it did in grey, and its
     /// outcome last.
     private static func quietHead(name: String, summary: String, result: String?, isError: Bool,
-                                  size: CGFloat) -> NSView {
+                                  size: CGFloat, linkContext: ChatLinkContext) -> NSView {
         let theme = ChromeTheme.current
         // The numbers are mock-up A's (`docs/chat-hierarchy-designs.html`):
         // a 10.5 monospaced tag in the faint ink, 34pt wide; the summary in
@@ -789,6 +829,7 @@ private final class ToolStep: NSView {
         what.textColor = theme.mutedText.withAlphaComponent(0.85)
         what.lineBreakMode = .byTruncatingTail
         what.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        ChatRowViews.guarded(what, linkContext)
         let outcome = NSTextField(labelWithString: result == nil ? "…" : (isError ? "✗" : "✓"))
         outcome.font = .systemFont(ofSize: size - 1.5)
         outcome.textColor = result == nil ? theme.faintText : (isError ? .systemRed : NSColor.systemGreen.withAlphaComponent(0.6))
@@ -825,7 +866,7 @@ private final class BarredReply: NSView {
 
 /// Removed lines on red, added on green, `…` for what was left out.
 private final class DiffView: NSView {
-    init(lines: [ChatRow.DiffLine], font: NSFont) {
+    init(lines: [ChatRow.DiffLine], font: NSFont, linkContext: ChatLinkContext = .localDefault) {
         super.init(frame: .zero)
         let text = NSMutableAttributedString()
         let theme = ChromeTheme.current
@@ -846,6 +887,7 @@ private final class DiffView: NSView {
         // Keeps the bands and the mono font when clicked; see AgentReply.
         label.allowsEditingTextAttributes = true
         label.lineBreakMode = .byCharWrapping
+        ChatRowViews.guarded(label, linkContext)
         ChatRowViews.pin(label, in: self, insets: NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0))
     }
 
@@ -925,8 +967,12 @@ final class ChatHeaderView: NSView {
         title.textColor = ChromeTheme.current.text
     }
 
+    /// The conversation's host, for the values behind placeholders.
+    var guardContext = ChatLinkContext.localDefault
+
     func show(title: String, chips: [Chip]) {
         self.title.stringValue = title
+        ChatRowViews.guarded(self.title, guardContext)
         self.chips.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for chip in chips { self.chips.addArrangedSubview(ChipView(chip)) }
     }
@@ -1000,6 +1046,7 @@ final class SolidCard: NSView {
 /// Claude's `✻ Verb… (13s · ↓ 649 tokens)`, and Stop.
 final class ChatWorkingBar: NSView {
     var onStop: (() -> Void)?
+    var guardContext = ChatLinkContext.localDefault
     private let line = NSTextField(labelWithString: "")
     private lazy var stop = ChatRowViews.button("Stop") { [weak self] in self?.onStop?() }
 
@@ -1054,6 +1101,7 @@ final class ChatWorkingBar: NSView {
         let elapsed = since.map { "for \(Self.elapsed(Int(Date().timeIntervalSince1970) - $0))" }
         line.stringValue = "✻ " + [activity?.verb ?? "Working…", activity?.detail ?? elapsed]
             .compactMap { $0 }.joined(separator: "  ")
+        ChatRowViews.guarded(line, guardContext)
     }
 
     private static func elapsed(_ s: Int) -> String {
@@ -1065,6 +1113,8 @@ final class ChatWorkingBar: NSView {
 /// with its number and, when it needs a second click, why.
 final class ChatApprovalDock: NSView {
     var onAnswer: ((ApprovalMenu.Option) -> Void)?
+    /// The conversation's host, for the values behind placeholders.
+    var guardContext = ChatLinkContext.localDefault
     private let stack = NSStackView()
     private var shown: ApprovalMenu?
 
@@ -1102,6 +1152,7 @@ final class ChatApprovalDock: NSView {
             stack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
+        ChatRowViews.guardAll(in: stack, guardContext)
     }
 }
 
@@ -1112,6 +1163,7 @@ final class ChatApprovalDock: NSView {
 /// the terminal.
 final class ChatQuestionDock: NSView {
     var onChoose: ((QuestionMenu.Option) -> Void)?
+    var guardContext = ChatLinkContext.localDefault
     var onSubmitChoices: (() -> Void)?
     var onShowTerminal: (() -> Void)?
     private let card = SolidCard()
@@ -1231,6 +1283,7 @@ final class ChatQuestionDock: NSView {
             row.spacing = 8
             add(row, true)
         }
+        ChatRowViews.guardAll(in: stack, guardContext)
     }
 
     /// A step: "1 Card position ✓", the current one in the accent.
@@ -1425,6 +1478,7 @@ final class ChatUnreadableDock: NSView {
 /// panel, so none is offered.
 final class ChatPanelDock: NSView {
     var onKey: ((String) -> Void)?
+    var guardContext = ChatLinkContext.localDefault
     private let text = NSTextField(wrappingLabelWithString: "")
 
     override init(frame: NSRect) {
@@ -1458,6 +1512,7 @@ final class ChatPanelDock: NSView {
     func show(_ rows: [String]?) {
         text.textColor = ChromeTheme.current.text
         text.stringValue = (rows ?? []).suffix(24).joined(separator: "\n")
+        ChatRowViews.guarded(text, guardContext)
     }
 }
 

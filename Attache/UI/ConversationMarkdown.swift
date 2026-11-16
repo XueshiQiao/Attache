@@ -645,15 +645,34 @@ enum ConversationMarkdown {
 
         // Truncation has to happen on the rendered text, not the source, or a
         // cut through `**` leaves a stray marker on screen.
+        // A privacy-guard placeholder is kept whole or left out: half of one
+        // matches nothing, so the view could not show its value.
         var kept = ""
         var used = 0
-        for character in visibleText(raw) {
-            let step = displayWidth(String(character))
+        for atom in atoms(visibleText(raw)) {
+            let step = displayWidth(atom)
             if used + step > width - 1 { break }
-            kept.append(character)
+            kept += atom
             used += step
         }
         return (kept + "\u{2026}", max(0, width - used - 1), true)
+    }
+
+    private static let placeholder = try? NSRegularExpression(pattern: #"⟦[a-z0-9]{1,12}:[0-9a-f]{6,20}⟧"#)
+
+    /// The characters of `text`, except that each placeholder is one piece.
+    static func atoms(_ text: String) -> [String] {
+        guard text.contains("⟦"), let placeholder else { return text.map(String.init) }
+        var out: [String] = []
+        var at = text.startIndex
+        for match in placeholder.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range, in: text) else { continue }
+            out += text[at..<range.lowerBound].map(String.init)
+            out.append(String(text[range]))
+            at = range.upperBound
+        }
+        out += text[at...].map(String.init)
+        return out
     }
 
     /// Split a row on its separators — the ones that are actually separators.

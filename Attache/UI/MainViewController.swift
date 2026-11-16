@@ -2013,6 +2013,7 @@ final class MainViewController: NSSplitViewController {
 
         let window = windowID.flatMap { id in connection?.windows.first { $0.id == id } }
         let stats = agentPane.flatMap { connection?.agentStats(forPane: $0) }
+        conversation.guardLink = currentHost.map { HostAgents.shared(for: $0.transport).link }
         conversation.show(
             conversation: conversations.conversation,
             header: ConversationSidebarView.Header(

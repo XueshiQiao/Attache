@@ -282,5 +282,50 @@ do {
           "attache-cli never inherits an agent's marks from this app")
 }
 
+// The values shown in place of placeholders: one command for a whole page,
+// never a second ask for a token already being asked, and a token the host
+// has no value for is not asked again on every redraw.
+MainActor.assumeIsolated {
+    var asked: [[String]] = []
+    var answers: [@MainActor ([String]?) -> Void] = []
+    var scheduled: [@MainActor () -> Void] = []
+    var clock = Date(timeIntervalSince1970: 1_000)
+    let values = GuardValues(run: { args, done in asked.append(args); answers.append(done) },
+                             schedule: { scheduled.append($0) }, now: { clock })
+    let a = "⟦ip:aaaaaa⟧", b = "⟦ip:bbbbbb⟧", c = "⟦email:cccccc⟧"
+    var fired = [String]()
+    values.want([a, b, a], then: { fired.append("first \($0)") })
+    values.want([b, c, "$(id)"], then: { fired.append("second \($0)") })
+    check(asked.isEmpty && scheduled.count == 1, "asks are gathered until the main queue turns, and scheduled once")
+    scheduled.removeFirst()()
+    check(asked == [["guard", "reveal", a, b, c]], "one reveal for every token wanted that turn; a non-token never reaches it")
+    values.want([a], then: { fired.append("third \($0)") })
+    check(asked.count == 1 && scheduled.isEmpty, "a token already being asked is not asked twice")
+    answers[0]([#"{"values":{"⟦ip:aaaaaa⟧":"192.0.2.1","⟦email:cccccc⟧":"user@example.com"}}"#])
+    check(values.value(a) == "192.0.2.1" && values.value(c) == "user@example.com" && values.value(b) == nil, "values learned")
+    check(fired == ["first true", "second true", "third true"], "everyone waiting on a value that arrived is told, once")
+    fired = []
+    check(!values.want([b], then: { fired.append("again \($0)") }), "a token the host had no value for is not asked again at once")
+    check(scheduled.isEmpty && fired.isEmpty, "and nobody is told anything")
+    clock = clock.addingTimeInterval(GuardValues.retryAfter + 1)
+    check(values.want([b], then: { fired.append("later \($0)") }), "but is asked again later")
+    scheduled.removeFirst()()
+    check(asked.last == ["guard", "reveal", b], "as itself")
+    answers[1](nil)
+    check(fired == ["later false"], "a host that did not answer ends the wait, saying nothing was learned")
+    fired = []
+    check(!values.want([a, c], then: { fired.append("known \($0)") }), "known values need no ask")
+    check(scheduled.isEmpty && fired.isEmpty, "and no callback")
+    values.forget([a])
+    check(values.value(a) == nil && values.value(c) != nil, "a forgotten value is gone from memory")
+    values.forgetAll()
+    check(values.value(c) == nil, "all of them")
+    let many = (0..<(GuardValues.batch + 5)).map { String(format: "⟦ip:%06x⟧", $0) }
+    values.want(many, then: { _ in })
+    scheduled.removeFirst()()
+    check(asked.count == 4 && asked[2].count == GuardValues.batch + 2 && asked[3].count == 5 + 2,
+          "a long page is asked in pieces")
+}
+
 print(failures == 0 ? "\(cases) cases, all pass" : "\(failures) of \(cases) cases fail")
 exit(failures == 0 ? 0 : 1)

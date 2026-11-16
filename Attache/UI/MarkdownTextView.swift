@@ -150,7 +150,26 @@ final class MarkdownTextView: NSView, NSTextViewDelegate {
         ) { [weak self] in
             self?.relayoutAfterImageLoad()
         }
+        // Before the diagrams: a diagram drawn from the cache at once keeps
+        // the text it replaced as its source view, which should already
+        // show the values. The picture itself is drawn from the
+        // placeholders, which is all attache-cli is ever sent.
+        showGuardValues()
         MermaidDiagramLoader.hydrate(storage, context: self.linkContext) { [weak self] in
+            self?.relayoutAfterImageLoad()
+        }
+    }
+
+    /// The values behind the placeholders in the text, now and as they
+    /// arrive. Also after a diagram turns back into its source, which may
+    /// have been kept before the values came.
+    private func showGuardValues() {
+        if let accent = text.linkTextAttributes?[.foregroundColor] as? NSColor {
+            storage.beginEditing()
+            GuardChips.decorate(storage, accent: accent, size: ChatRowViews.size)
+            storage.endEditing()
+        }
+        GuardChips.hydrate(storage, cli: linkContext.cli) { [weak self] in
             self?.relayoutAfterImageLoad()
         }
     }
@@ -227,6 +246,7 @@ final class MarkdownTextView: NSView, NSTextViewDelegate {
         at charIndex: Int
     ) {
         if MermaidDiagramLoader.handleClick(in: textView, at: charIndex) {
+            showGuardValues()
             relayoutAfterImageLoad()
             return
         }

@@ -33,6 +33,11 @@ final class ConversationSidebarView: NSView {
     // MARK: - State
 
     private var conversation: AgentConversation?
+    /// How the conversation's host is reached, for the real values behind
+    /// the privacy guard's placeholders. Set before `show`.
+    var guardLink: AttacheCliLink? {
+        didSet { if guardLink != oldValue, conversation != nil { rebuild() } }
+    }
     /// Ids of the prompts whose turns are open. Survives snapshots, which is
     /// the point: the file grows while the person is reading it, and a
     /// re-render that closed everything would make the sidebar unusable exactly
@@ -395,9 +400,22 @@ final class ConversationSidebarView: NSView {
                 )
             }
         }
+        showValues(in: stack)
         // Frames are not final until layout runs; the header is placed on the
         // first scroll or layout after this.
         DispatchQueue.main.async { [weak self] in self?.updateStickyHeader() }
+    }
+
+    /// Every label under `view` that holds a placeholder shows the value
+    /// instead (`GuardChips.bind`). A walk rather than a parameter on each
+    /// row: the rows are built in four places, and a label added later is
+    /// covered without anyone remembering this.
+    private func showValues(in view: NSView) {
+        guard let link = guardLink else { return }
+        if let field = view as? NSTextField, field.stringValue.contains("⟦") {
+            GuardChips.bind(field, cli: link) { [weak self] in self?.needsLayout = true }
+        }
+        for child in view.subviews { showValues(in: child) }
     }
 
     /// Pin the prompt of the turn the viewport is inside — *while that turn is
@@ -470,6 +488,7 @@ final class ConversationSidebarView: NSView {
 
         stickyHeader.isHidden = false
         stickyHeader.show(prompt: current.prompt, replyCount: current.replyCount)
+        showValues(in: stickyHeader)
         pinnedTurnID = current.id
     }
 

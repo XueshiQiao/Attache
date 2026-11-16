@@ -305,6 +305,9 @@ private final class TableGridView: NSView, NSTextViewDelegate {
                     ) { [weak self] in
                         self?.onIntrinsicHeightChange?()
                     }
+                    GuardChips.hydrate(entry.storage, cli: linkContext.cli) { [weak self] in
+                        self?.onIntrinsicHeightChange?()
+                    }
                     return entry
                 }
             }
