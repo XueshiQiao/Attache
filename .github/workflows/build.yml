@@ -38,9 +38,9 @@ env:
   # The toolchain this app is developed with, which CI must match exactly so
   # what ships is what was tested. Change all three together when the local
   # Xcode moves; the Verify toolchain step fails the build otherwise.
-  XCODE_VERSION: "27.1"
-  XCODE_BUILD: "27A9275"
-  MACOS_SDK: "27.0"
+  XCODE_VERSION: "27.2"
+  XCODE_BUILD: "27B52"
+  MACOS_SDK: "27.2"
   # attache-cli (cli/) is built here, not committed, and the app bundles
   # every build of it. The Rust it is developed with, for the same reason
   # the Xcode above is pinned.
@@ -75,7 +75,7 @@ jobs:
         with:
           # Not `latest-stable`: on 2026-10-24 that picked the 27.2 release
           # candidate and built against the 27.2 SDK, so what shipped would
-          # not have been what was tested. A version here selects any 27.1.x
+          # not have been what was tested. A version here selects any 27.2.x
           # and checks no build number, so the next step is what pins it.
           xcode-version: ${{ env.XCODE_VERSION }}
 
