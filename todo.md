@@ -4,6 +4,21 @@
 
 发现时间：2026-11-17。
 
+**已修复（2026-11-23，attache-cli 0.3.21）。** 用的是下面「可以考虑的修法」里的第 1 种，具体做法：
+
+```
+钩子（在沙箱外面）读到规则后：
+    把规则写成 ~/.local/state/attache/guard/rules-<sha256>.json（0600，和保险库放在一起）
+    把命令改写成 attache-cli guard run --agent agy --rules-snapshot <sha256> --sh <原命令>
+guard run（在沙箱里面）：
+    按 sha256 读这份副本，不再读 ~/.config/attache-guard.toml
+    如果 副本不存在，或者内容算出的 sha256 和参数对不上：拒绝执行
+```
+
+当时查清的事实：agy 1.5.14 每条命令生成的沙箱规则禁止读整个 `~/.config`，那里只单独放开了 `~/.config/bat`；`~/.local/state` 可以读，而且这份规则允许读写整个家目录，所以副本要靠 sha256 防止被改。验证：`agy --sandbox` 下执行 `head`、`git log` 等命令都成功；在抓到的 agy 沙箱规则下执行 `git log --format=%ae`，邮箱被遮成占位符；`cli/tests/guard_sandbox.rs` 用 `sandbox-exec` 测这个场景，去掉修复后这个测试会失败。
+
+下面是发现问题时的记录。
+
 ### 现象
 
 用 `agy --sandbox` 运行 Gemini，并且隐私防护对 agy 生效时，Gemini 的每一条 shell 命令都不会执行，退出码是 125，报错原文：

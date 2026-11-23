@@ -288,7 +288,17 @@ pub fn now() -> u64 {
 
 impl Engine {
     pub fn load() -> Result<Engine, String> {
-        Engine::new(super::rules::Rules::load()?, vault::key()?, Vault::load()?)
+        Engine::with_rules(super::rules::Rules::load()?)
+    }
+
+    /// With rules from somewhere other than the rules file: the copy a hook
+    /// left for a sandboxed `guard run` (`Rules::snapshot`).
+    pub fn with_rules(rules: Rules) -> Result<Engine, String> {
+        Engine::new(rules, vault::key()?, Vault::load()?)
+    }
+
+    pub fn rules(&self) -> &Rules {
+        &self.rules
     }
 
     pub fn new(rules: Rules, key: Vec<u8>, vault: Vault) -> Result<Engine, String> {

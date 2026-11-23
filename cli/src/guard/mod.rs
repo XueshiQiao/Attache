@@ -94,7 +94,7 @@ pub fn run(args: &[String]) -> i32 {
         "pause" => pause(rest),
         _ => {
             eprintln!(
-                "Usage:\n  attache-cli guard mask [--json] [--agent A] [--where W]   (stdin)\n  attache-cli guard restore [--json | --sh <text>] [--agent A]\n  attache-cli guard run [--agent A] --sh <command> | -- <argv>...\n  attache-cli guard hook <claude-pre|claude-post|codex-pre|codex-post|codex-prompt|agy-pre>\n  attache-cli guard test --text <base64>\n  attache-cli guard rules [--set <base64 json>]\n  attache-cli guard events [--limit N] [--clear]\n  attache-cli guard reveal <placeholder>...\n  attache-cli guard vault [--forget <placeholder>... | --forget-all]\n  attache-cli guard status\n  attache-cli guard install|uninstall <claude|codex|agy>\n  attache-cli guard pause <minutes>   (0 resumes)"
+                "Usage:\n  attache-cli guard mask [--json] [--agent A] [--where W]   (stdin)\n  attache-cli guard restore [--json | --sh <text>] [--agent A]\n  attache-cli guard run [--agent A] [--rules-snapshot <sha256>] --sh <command> | -- <argv>...\n  attache-cli guard hook <claude-pre|claude-post|codex-pre|codex-post|codex-prompt|agy-pre>\n  attache-cli guard test --text <base64>\n  attache-cli guard rules [--set <base64 json>]\n  attache-cli guard events [--limit N] [--clear]\n  attache-cli guard reveal <placeholder>...\n  attache-cli guard vault [--forget <placeholder>... | --forget-all]\n  attache-cli guard status\n  attache-cli guard install|uninstall <claude|codex|agy>\n  attache-cli guard pause <minutes>   (0 resumes)"
             );
             2
         }
@@ -168,7 +168,16 @@ fn run_command(args: &[String], agent: &str) -> i32 {
     } else {
         return refuse("run needs --sh <command> or -- <argv>");
     };
-    match Engine::load() {
+    // A hook that wraps a command which will run inside the agent's sandbox
+    // names a copy of the rules instead (agy: see `Rules::snapshot`); with
+    // the copy missing or changed this refuses, as for an unreadable file.
+    let engine = match flag(args, "--rules-snapshot") {
+        Some(digest) => Rules::load_snapshot(digest).and_then(Engine::with_rules),
+        // Named with no digest after it: not quietly the rules file instead.
+        None if has(args, "--rules-snapshot") => Err("--rules-snapshot names no copy".into()),
+        None => Engine::load(),
+    };
+    match engine {
         Ok(engine) => run::run(engine, command, agent),
         Err(why) => {
             eprintln!("Attaché privacy guard: {why}. The command was not run.");

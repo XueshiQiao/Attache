@@ -13,8 +13,11 @@
 use crate::fsutil::write_atomic;
 use crate::paths;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -212,6 +215,125 @@ impl Rules {
     pub fn allows(&self, value: &str) -> bool {
         self.allow.iter().any(|a| a.trim().eq_ignore_ascii_case(value))
     }
+
+    /// Writes these rules where a sandboxed `guard run` can read them, and
+    /// returns the name to hand it: the SHA-256 of the bytes written.
+    ///
+    /// agy's `--sandbox` denies reads of everything under `~/.config`, with a
+    /// fixed list of exceptions built into agy (measured 2026-11-23 on agy
+    /// 1.5.14: the profile it writes for each command opens `~/.config/bat`
+    /// and nothing else there, while `~/.local/state` stays readable). The
+    /// hook runs outside that sandbox and the command it wraps runs inside,
+    /// so the hook reads the rules and leaves this copy beside the vault.
+    /// Only the digest goes into the command, so the rules' words are not in
+    /// the text the model is shown. That is all it buys: the copy, like the
+    /// vault, sits where the sandbox can read, and a command that encodes a
+    /// file (base64) gets it past the output mask. The guard keeps values
+    /// out of what an agent is handed; it does not hold off a model trying
+    /// to get round it.
+    ///
+    /// The digest is also the check. The sandbox lets the model's commands
+    /// write the home folder, so a copy could be edited — to switch the guard
+    /// off, say — or swapped for a link or a pipe. `load_snapshot` refuses
+    /// bytes that do not hash to the name the hook put in the command, and
+    /// the hook rewrites a copy that is not exactly what it would write.
+    pub fn snapshot(&self) -> Result<String, String> {
+        let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        let digest = super::vault::hex(&Sha256::digest(&bytes));
+        let path = snapshot_path(&digest);
+        super::vault::private_dir().map_err(|e| e.to_string())?;
+        // Kept fresh so pruning keeps the copies in use; a copy that cannot
+        // be freshened is written again rather than left to be pruned.
+        let fresh = match open_copy(&path, true) {
+            Ok((f, on_disk)) => on_disk == bytes && f.set_modified(SystemTime::now()).is_ok(),
+            Err(_) => false,
+        };
+        if !fresh {
+            // The rename replaces whatever is at the path, link or pipe
+            // included, never what a link points to.
+            write_atomic(&path, &bytes).map_err(|e| e.to_string())?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+        }
+        prune_snapshots(&digest);
+        Ok(digest)
+    }
+
+    /// The rules a hook wrote with `snapshot`. `Err` when the copy is gone,
+    /// or its bytes no longer hash to `digest`: the caller refuses to run.
+    pub fn load_snapshot(digest: &str) -> Result<Rules, String> {
+        if !is_digest(digest) {
+            return Err("the rules snapshot is not named by a digest".into());
+        }
+        let (_, bytes) = open_copy(&snapshot_path(digest), false)
+            .map_err(|e| format!("the rules snapshot could not be read: {e}"))?;
+        if super::vault::hex(&Sha256::digest(&bytes)) != digest {
+            return Err("the rules snapshot was changed after the hook wrote it".into());
+        }
+        serde_json::from_slice(&bytes).map_err(|e| format!("the rules snapshot is damaged: {e}"))
+    }
+}
+
+/// How many rule copies to keep. A copy is used within a moment of being
+/// written; the extra ones only cover commands still starting while the
+/// rules were edited several times in a row.
+const SNAPSHOTS_KEPT: usize = 8;
+
+/// Far larger than any rules file; a copy past it is not one the hook wrote.
+const SNAPSHOT_MAX: u64 = 4 << 20;
+
+fn is_digest(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn snapshot_path(digest: &str) -> PathBuf {
+    super::vault::dir().join(format!("rules-{digest}.json"))
+}
+
+/// Opens a rule copy and reads it, refusing anything but a plain file of a
+/// sane size: the sandbox can put a link to `/dev/zero` or a pipe nobody
+/// writes in its place, and the hook outside must neither follow the one
+/// nor wait on the other.
+fn open_copy(path: &std::path::Path, write: bool) -> std::io::Result<(fs::File, Vec<u8>)> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = fs::File::options()
+        .read(true)
+        .write(write)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let meta = f.metadata()?;
+    if !meta.is_file() || meta.len() > SNAPSHOT_MAX {
+        return Err(std::io::Error::other("not a rules copy"));
+    }
+    let mut bytes = Vec::new();
+    (&f).take(SNAPSHOT_MAX + 1).read_to_end(&mut bytes)?;
+    Ok((f, bytes))
+}
+
+/// Removes the oldest rule copies past `SNAPSHOTS_KEPT`, never `keep`. Only
+/// names this program writes, `rules-<64 hex>.json`, are counted, and a time
+/// in the future counts as the oldest: otherwise a few files the sandbox
+/// dated ahead would have every copy in use pruned on each run.
+fn prune_snapshots(keep: &str) {
+    let Ok(dir) = fs::read_dir(super::vault::dir()) else { return };
+    let now = SystemTime::now();
+    let mut copies: Vec<(SystemTime, String)> = dir
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let digest = name.strip_prefix("rules-")?.strip_suffix(".json")?;
+            if !is_digest(digest) || digest == keep {
+                return None;
+            }
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((if modified > now { SystemTime::UNIX_EPOCH } else { modified }, name))
+        })
+        .collect();
+    copies.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let dir = super::vault::dir();
+    for (_, name) in copies.into_iter().skip(SNAPSHOTS_KEPT - 1) {
+        let _ = fs::remove_file(dir.join(name));
+    }
 }
 
 /// A placeholder kind as the rules may name one.
@@ -259,6 +381,130 @@ mod tests {
     #[test]
     fn a_broken_file_is_an_error_not_defaults() {
         assert!(Rules::parse("enabled = maybe").is_err());
+    }
+
+    fn with_home<T>(f: impl FnOnce() -> T) -> T {
+        let dir = tempfile::tempdir().unwrap();
+        paths::TEST_HOME.with(|h| *h.borrow_mut() = Some(dir.path().to_path_buf()));
+        let out = f();
+        paths::TEST_HOME.with(|h| *h.borrow_mut() = None);
+        out
+    }
+
+    fn named(word: &str) -> Rules {
+        Rules { words: vec![WordRule { text: word.into(), ..Default::default() }], ..Default::default() }
+    }
+
+    #[test]
+    fn a_snapshot_reads_back_as_the_same_rules_and_is_private() {
+        with_home(|| {
+            let rules = named("studio-mac");
+            let digest = rules.snapshot().unwrap();
+            assert_eq!(Rules::load_snapshot(&digest).unwrap(), rules);
+            let mode = fs::metadata(snapshot_path(&digest)).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+            assert_eq!(rules.snapshot().unwrap(), digest, "the same rules, the same copy");
+        });
+    }
+
+    #[test]
+    fn an_edited_snapshot_is_refused_and_the_hook_puts_it_back() {
+        with_home(|| {
+            let rules = named("studio-mac");
+            let digest = rules.snapshot().unwrap();
+            let off = Rules { enabled: false, ..rules.clone() };
+            fs::write(snapshot_path(&digest), serde_json::to_vec(&off).unwrap()).unwrap();
+            assert!(Rules::load_snapshot(&digest).is_err());
+            assert_eq!(rules.snapshot().unwrap(), digest);
+            assert_eq!(Rules::load_snapshot(&digest).unwrap(), rules);
+        });
+    }
+
+    #[test]
+    fn a_snapshot_is_named_by_a_digest_and_nothing_else() {
+        with_home(|| {
+            assert!(Rules::load_snapshot("../../.config/attache-guard").is_err());
+            assert!(Rules::load_snapshot("abc").is_err());
+            assert!(Rules::load_snapshot(&"0".repeat(64)).is_err(), "a digest with no copy");
+            let digest = named("x").snapshot().unwrap();
+            assert!(Rules::load_snapshot(&digest.to_uppercase()).is_err(), "upper-case hex is not a name we write");
+        });
+    }
+
+    fn date(path: &std::path::Path, when: SystemTime) {
+        fs::File::options().write(true).open(path).unwrap().set_modified(when).unwrap();
+    }
+
+    #[test]
+    fn the_oldest_snapshots_by_time_are_pruned_and_the_current_one_kept() {
+        with_home(|| {
+            let now = SystemTime::now();
+            // Written directly: `snapshot` would prune while they are made.
+            super::super::vault::private_dir().unwrap();
+            let digests: Vec<String> = (0..12)
+                .map(|i| {
+                    let bytes = serde_json::to_vec(&named(&format!("word-{i}"))).unwrap();
+                    let d = super::super::vault::hex(&Sha256::digest(&bytes));
+                    fs::write(snapshot_path(&d), bytes).unwrap();
+                    d
+                })
+                .collect();
+            // Dated against the order they were made: word-0 the newest.
+            for (i, d) in digests.iter().enumerate() {
+                date(&snapshot_path(d), now - std::time::Duration::from_secs(60 * (i as u64 + 1)));
+            }
+            named("word-11").snapshot().unwrap();
+            for (i, d) in digests.iter().enumerate() {
+                let kept = snapshot_path(d).exists();
+                assert_eq!(kept, i < SNAPSHOTS_KEPT - 1 || i == 11, "word-{i}");
+            }
+        });
+    }
+
+    #[test]
+    fn files_dated_ahead_cannot_push_the_copies_in_use_out() {
+        with_home(|| {
+            let in_use: Vec<String> = (0..3).map(|i| named(&format!("word-{i}")).snapshot().unwrap()).collect();
+            let dir = super::super::vault::dir();
+            let ahead = SystemTime::now() + std::time::Duration::from_secs(86_400);
+            for i in 0..SNAPSHOTS_KEPT {
+                let fake = dir.join(format!("rules-{:064x}.json", i + 1));
+                fs::write(&fake, "{}").unwrap();
+                date(&fake, ahead);
+            }
+            fs::write(dir.join("rules-not-a-digest.json"), "{}").unwrap();
+            named("word-3").snapshot().unwrap();
+            for d in &in_use {
+                assert!(Rules::load_snapshot(d).is_ok());
+            }
+            assert!(dir.join("rules-not-a-digest.json").exists(), "a name we never write is not ours to remove");
+        });
+    }
+
+    #[test]
+    fn a_link_or_a_pipe_in_place_of_a_copy_is_refused_and_replaced() {
+        with_home(|| {
+            let rules = named("studio-mac");
+            let digest = rules.snapshot().unwrap();
+            let path = snapshot_path(&digest);
+            let elsewhere = super::super::vault::dir().join("../elsewhere.json");
+            fs::write(&elsewhere, serde_json::to_vec(&rules).unwrap()).unwrap();
+            date(&elsewhere, SystemTime::UNIX_EPOCH);
+
+            fs::remove_file(&path).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+            assert!(Rules::load_snapshot(&digest).is_err(), "a link is not followed");
+            assert_eq!(rules.snapshot().unwrap(), digest);
+            assert!(!fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+            assert_eq!(fs::metadata(&elsewhere).unwrap().modified().unwrap(), SystemTime::UNIX_EPOCH, "what the link named was not touched");
+
+            fs::remove_file(&path).unwrap();
+            let c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+            assert!(Rules::load_snapshot(&digest).is_err(), "a pipe is refused, not waited on");
+            assert_eq!(rules.snapshot().unwrap(), digest);
+            assert_eq!(Rules::load_snapshot(&digest).unwrap(), rules);
+        });
     }
 
     #[test]

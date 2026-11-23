@@ -36,7 +36,7 @@ fn vault_path() -> PathBuf {
     dir().join("vault.json")
 }
 
-fn private_dir() -> std::io::Result<()> {
+pub(super) fn private_dir() -> std::io::Result<()> {
     let d = dir();
     fs::create_dir_all(&d)?;
     fs::set_permissions(&d, fs::Permissions::from_mode(0o700))

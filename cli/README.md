@@ -42,7 +42,7 @@ Each runs as its own short process, except `follow`, `agents --watch` and
 | `guard install \| uninstall <claude\|codex\|agy>` | clients | wires the guard into that agent, or takes it out (see below) |
 | `guard pause <minutes>` | clients | stands the guard aside for a while; `0` resumes |
 | `guard mask [--json]` / `guard restore [--json \| --sh <text>]` | the Claude Code mod | swaps values for placeholders, or back |
-| `guard run --agent <a> --sh <command>` | Codex and agy hooks | puts the values back in its own memory, runs the command, masks its output as it streams |
+| `guard run --agent <a> [--rules-snapshot <sha256>] --sh <command>` | Codex and agy hooks | puts the values back in its own memory, runs the command, masks its output as it streams; with `--rules-snapshot`, reads the copy of the rules the hook left in the state folder instead of `~/.config` |
 | `guard hook <name>` | agents' hooks | one JSON event in, the agent's answer out (`claude-pre`, `claude-post`, `codex-pre`, `codex-post`, `codex-prompt`, `agy-pre`) |
 | `statusline claude` | Claude Code | keeps the status line snapshot, draws the old status line |
 | `send <file>...` (also as `attache-send`) | people, agents | hands files to the phone's inbox |
@@ -228,6 +228,21 @@ only with `permissionDecision: allow`, but runs its own approval on the
 rewritten command afterwards; commands are wrapped where Codex asks no
 approval, or where one carries a placeholder. Codex's own session file
 keeps output that was not wrapped; agy's prompts have no hook at all.
+
+agy started with `--sandbox` runs each command under a macOS sandbox
+profile that denies every read under `~/.config` but a fixed few agy names
+itself (`~/.config/bat`, measured on agy 1.5.14, 2026-11-23), while its hooks
+run outside it. So `guard run` inside could not read the rules and refused
+every command. The agy hook now writes the rules it read to
+`<state>/guard/rules-<sha256>.json` (0600, beside the vault, which the
+sandbox can read) and names the digest in the wrapper; `guard run` refuses a
+copy that is missing or no longer hashes to that name, since the sandbox
+lets the model's commands write the home folder. Only the digest is in the
+command the model sees, never the rules' words. The eight most recently
+used copies are kept. A command is left unwrapped only when it is exactly
+the wrapper the hook would write — the wrapper, then one quoted word, and
+nothing after it; anything else (a command chained after a wrapper, a
+wrapper naming another copy) is wrapped again, for Codex too.
 
 Processes never talk to each other, only through these files: each is
 replaced by rename, never edited in place, and every read-modify-write takes

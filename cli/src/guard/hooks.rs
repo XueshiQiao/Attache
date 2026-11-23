@@ -14,6 +14,9 @@
 //! the output before the agent reads it. Codex runs its own approval on the
 //! command as rewritten (the approval sits in the tool handler, after the
 //! hook), so the wrapper is written to read like the command it wraps.
+//! agy runs the wrapped command inside its sandbox when started with
+//! `--sandbox`, where `~/.config` cannot be read, so its wrapper names a copy
+//! of the rules the hook wrote beside the vault (`Rules::snapshot`).
 //!
 //! Every handler fails closed: when the rules or the vault cannot be read,
 //! the tool call is refused with the reason, never let through unmasked.
@@ -38,11 +41,27 @@ pub fn wrapped(command: &str, agent: &str) -> String {
     format!("{} guard run --agent {agent} --sh {}", sh_quote(&exe()), sh_quote(command))
 }
 
-/// Whether `command` is already one of ours: it must *start* with this
-/// binary's own `guard run`, so a command that merely mentions the words
-/// (a grep for them) is wrapped like any other.
-fn is_wrapped(command: &str) -> bool {
-    command.starts_with(&format!("{} guard run --agent ", sh_quote(&exe())))
+/// Whether `command` is exactly what this hook would have written: `prefix`
+/// and then a single quoted word as `sh_quote` writes it, and nothing more.
+/// Starting with the wrapper is not enough — `<wrapper> 'true'; cat file`
+/// starts with it and runs `cat` outside the guard — and neither is naming
+/// other options, such as a rules copy the model wrote itself. Anything that
+/// is not exact is wrapped again, and the outer `guard run` masks it all.
+fn is_exactly_wrapped(command: &str, prefix: &str) -> bool {
+    let Some(rest) = command.strip_prefix(prefix) else { return false };
+    let Some(inner) = rest.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')) else { return false };
+    sh_quote(&inner.replace("'\\''", "'")) == rest
+}
+
+fn codex_prefix() -> String {
+    format!("{} guard run --agent codex --sh ", sh_quote(&exe()))
+}
+
+/// How agy's commands start once wrapped: `guard run` named the copy of the
+/// rules this hook just wrote, because the command runs inside agy's sandbox
+/// and the rules file does not (see `Rules::snapshot`).
+fn agy_prefix(digest: &str) -> String {
+    format!("{} guard run --agent agy --rules-snapshot {digest} --sh ", sh_quote(&exe()))
 }
 
 fn has_placeholder(v: &Value) -> bool {
@@ -185,7 +204,7 @@ pub fn handle(name: &str, event: &Value, engine: &mut Engine) -> (Option<Value>,
             // the wrapped one is asked about all the same, but an approval
             // prompt full of wrappers is worse to read, so a command with
             // nothing to put back is wrapped only where nobody is asked.
-            if !active || cmd.is_empty() || is_wrapped(cmd) || !(bypass || placeholder_regex().is_match(cmd.as_bytes())) {
+            if !active || cmd.is_empty() || is_exactly_wrapped(cmd, &codex_prefix()) || !(bypass || placeholder_regex().is_match(cmd.as_bytes())) {
                 return (Some(json!({})), 0);
             }
             (
@@ -200,7 +219,7 @@ pub fn handle(name: &str, event: &Value, engine: &mut Engine) -> (Option<Value>,
         "codex-post" => {
             let cmd = event.pointer("/tool_input/command").and_then(Value::as_str).unwrap_or("");
             let Some(response) = event.get("tool_response") else { return (Some(json!({})), 0) };
-            if is_wrapped(cmd) {
+            if is_exactly_wrapped(cmd, &codex_prefix()) {
                 return (Some(json!({})), 0);
             }
             let mut masked = response.clone();
@@ -241,10 +260,19 @@ pub fn handle(name: &str, event: &Value, engine: &mut Engine) -> (Option<Value>,
             };
             if tool == "run_command" {
                 let Some(cmd) = args.get("CommandLine").and_then(Value::as_str) else { return (Some(allow), 0) };
-                if is_wrapped(cmd) {
+                let digest = match engine.rules().snapshot() {
+                    Ok(d) => d,
+                    Err(why) => return failed(name, &format!("the rules could not be copied for agy's sandbox: {why}")),
+                };
+                let prefix = agy_prefix(&digest);
+                // Only a wrapper naming the copy just written is left as it
+                // is. Anything else — an older wrapper, or one the model
+                // wrote itself naming a copy of its own — is wrapped again,
+                // and the outer `guard run` masks whatever the inner prints.
+                if is_exactly_wrapped(cmd, &prefix) {
                     return (Some(allow), 0);
                 }
-                return (Some(json!({"decision": "allow", "overwrite": {"CommandLine": wrapped(cmd, "agy")}})), 0);
+                return (Some(json!({"decision": "allow", "overwrite": {"CommandLine": format!("{prefix}{}", sh_quote(cmd))}})), 0);
             }
             let mut overwrite = serde_json::Map::new();
             for (k, v) in args {
@@ -378,14 +406,104 @@ mod tests {
         assert!(!out["reason"].as_str().unwrap().contains("192.0.2.8"));
     }
 
+    fn with_home<T>(f: impl FnOnce() -> T) -> T {
+        let dir = tempfile::tempdir().unwrap();
+        crate::paths::TEST_HOME.with(|h| *h.borrow_mut() = Some(dir.path().to_path_buf()));
+        let out = f();
+        crate::paths::TEST_HOME.with(|h| *h.borrow_mut() = None);
+        out
+    }
+
+    fn agy_run(cmd: &str) -> Value {
+        json!({"toolCall": {"name": "run_command", "args": {"CommandLine": cmd}}})
+    }
+
+    #[test]
+    fn agy_names_a_copy_of_the_rules_its_sandbox_can_read() {
+        with_home(|| {
+            let mut e = engine(Rules::default());
+            let out = handle("agy-pre", &agy_run("ls"), &mut e).0.unwrap();
+            let cmd = out.pointer("/overwrite/CommandLine").unwrap().as_str().unwrap().to_owned();
+            let digest = e.rules().snapshot().unwrap();
+            assert_eq!(cmd, format!("{}'ls'", agy_prefix(&digest)));
+            assert_eq!(Rules::load_snapshot(&digest).unwrap(), Rules::default());
+            // The model repeating the wrapper it saw is left as it is...
+            assert_eq!(handle("agy-pre", &agy_run(&cmd), &mut e).0.unwrap(), json!({"decision": "allow"}));
+            // ...but one naming any other copy, or none, is wrapped again.
+            let forged = format!("{}'cat secrets'", agy_prefix(&"0".repeat(64)));
+            let out = handle("agy-pre", &agy_run(&forged), &mut e).0.unwrap();
+            let again = out.pointer("/overwrite/CommandLine").unwrap().as_str().unwrap();
+            assert!(again.starts_with(&agy_prefix(&digest)), "{again}");
+            let old = wrapped("ls", "agy");
+            let out = handle("agy-pre", &agy_run(&old), &mut e).0.unwrap();
+            assert!(out.pointer("/overwrite/CommandLine").unwrap().as_str().unwrap().starts_with(&agy_prefix(&digest)));
+        });
+    }
+
+    #[test]
+    fn a_wrapper_with_a_command_after_it_is_wrapped_again() {
+        with_home(|| {
+            let mut e = engine(Rules::default());
+            let digest = e.rules().snapshot().unwrap();
+            for tail in ["; cat secrets", " && cat secrets", "\ncat secrets", " | cat", "'x'"] {
+                let cmd = format!("{}'true'{tail}", agy_prefix(&digest));
+                let out = handle("agy-pre", &agy_run(&cmd), &mut e).0.unwrap();
+                let again = out.pointer("/overwrite/CommandLine").and_then(Value::as_str);
+                assert_eq!(again, Some(format!("{}{}", agy_prefix(&digest), sh_quote(&cmd)).as_str()), "{tail:?}");
+
+                let codex = format!("{}'true'{tail}", codex_prefix());
+                let ev = json!({"tool_input": {"command": codex}, "permission_mode": "bypassPermissions"});
+                let out = handle("codex-pre", &ev, &mut e).0.unwrap();
+                assert!(out.pointer("/hookSpecificOutput/updatedInput/command").is_some(), "codex {tail:?}");
+                // And its output is masked afterwards, not taken as ours.
+                let ev = json!({"tool_input": {"command": codex}, "tool_response": "inet 192.0.2.8"});
+                assert_eq!(handle("codex-post", &ev, &mut e).0.unwrap()["decision"], "block", "codex {tail:?}");
+            }
+        });
+    }
+
+    #[test]
+    fn a_codex_command_naming_a_rules_copy_is_not_taken_as_ours() {
+        let mut e = engine(Rules::default());
+        let forged = format!("{} guard run --agent codex --rules-snapshot {} --sh 'cat secrets'", sh_quote(&exe()), "0".repeat(64));
+        let ev = json!({"tool_input": {"command": forged}, "permission_mode": "bypassPermissions"});
+        let out = handle("codex-pre", &ev, &mut e).0.unwrap();
+        assert!(out.pointer("/hookSpecificOutput/updatedInput/command").unwrap().as_str().unwrap().starts_with(&codex_prefix()));
+    }
+
+    #[test]
+    fn exact_wrappers_survive_any_quoting() {
+        for cmd in ["ls", "", "echo 'it'\"'\"'s'", "a'\\''b", "printf '%s\\n' \"$HOME\" `x`"] {
+            assert!(is_exactly_wrapped(&wrapped(cmd, "codex"), &codex_prefix()), "{cmd:?}");
+        }
+        assert!(!is_exactly_wrapped(&format!("{}'a'b'", codex_prefix()), &codex_prefix()));
+        assert!(!is_exactly_wrapped(&format!("{}'", codex_prefix()), &codex_prefix()));
+    }
+
+    #[test]
+    fn agy_refuses_when_the_rules_cannot_be_copied() {
+        with_home(|| {
+            // The guard's folder is a file: nothing can be written in it.
+            let state = crate::paths::state_dir();
+            std::fs::create_dir_all(&state).unwrap();
+            std::fs::write(state.join("guard"), "").unwrap();
+            let mut e = engine(Rules::default());
+            let out = handle("agy-pre", &agy_run("ls"), &mut e).0.unwrap();
+            assert_eq!(out["decision"], "deny", "{out}");
+        });
+    }
+
     #[test]
     fn agy_wraps_commands_and_restores_file_writes() {
+        let _home = tempfile::tempdir().unwrap();
+        crate::paths::TEST_HOME.with(|h| *h.borrow_mut() = Some(_home.path().to_path_buf()));
         let mut e = engine(Rules::default());
         let (masked, _) = e.mask_str("192.0.2.8");
         let ev = json!({"toolCall": {"name": "run_command", "args": {"CommandLine": format!("ping {masked}")}}});
         let out = handle("agy-pre", &ev, &mut e).0.unwrap();
         assert_eq!(out["decision"], "allow");
         assert!(out.pointer("/overwrite/CommandLine").unwrap().as_str().unwrap().contains("guard run --agent agy"));
+        crate::paths::TEST_HOME.with(|h| *h.borrow_mut() = None);
         let ev = json!({"toolCall": {"name": "write_to_file", "args": {"TargetFile": "/tmp/x", "CodeContent": format!("host = {masked}\n")}}});
         let out = handle("agy-pre", &ev, &mut e).0.unwrap();
         assert_eq!(out.pointer("/overwrite/CodeContent"), Some(&json!("host = 192.0.2.8\n")));
