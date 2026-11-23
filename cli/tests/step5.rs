@@ -399,7 +399,11 @@ fn watch_pushes_the_pane_when_its_screen_changes_and_ends_with_stdin() {
     s.show("menu");
     let v = next("screen");
     assert!(v["approval"]["fingerprint"].is_string(), "{v}");
-    // Nothing more while nothing changes.
+    // tmux renames the window after the program it respawned about half a
+    // second later (`automatic-rename`, on a timer of its own); that is a
+    // change and is sent. Then nothing more while nothing changes.
+    std::thread::sleep(Duration::from_millis(1200));
+    while rx.try_recv().is_ok() {}
     assert!(rx.recv_timeout(Duration::from_millis(1500)).is_err());
     drop(child.stdin.take());
     let deadline = Instant::now() + Duration::from_secs(3);

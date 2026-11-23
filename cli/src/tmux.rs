@@ -49,19 +49,37 @@ pub fn lines(args: &[&str]) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Where tmux is. An SSH command runs with the system's bare PATH
-/// (`/usr/bin:/bin:/usr/sbin:/sbin` on macOS), which holds no Homebrew, so
-/// `tmux` alone was not found and every list came back empty: the phone's
-/// agent list, read over an exec channel since protocol 2, showed nothing
-/// (seen 2026-11-06). Reached through tmux's own `run-shell` it had worked,
-/// because that runs with the server's PATH. The usual places are tried
-/// after PATH.
+/// Where tmux is, as a full path, found once.
+///
+/// A full path, because a bare `tmux` is looked up by `posix_spawnp`,
+/// which tries every PATH folder in turn, and on macOS every try that
+/// finds nothing still makes a process and throws it away: on the owner's
+/// Mac, with tmux in the 19th of 42 folders, one `tmux` run cost 19
+/// processes, and the kernel's pidversion counter (see `host::darwin`)
+/// moved 19 for it. Measured 2026-11-23: a list watch starting ~3 tmux a
+/// second forked ~52 times a second, and stopping it took ~58/s off the
+/// whole machine's count.
+///
+/// The PATH search is done here instead, then. An SSH command runs with
+/// the system's bare PATH (`/usr/bin:/bin:/usr/sbin:/sbin` on macOS),
+/// which holds no Homebrew, so `tmux` alone was not found and every list
+/// came back empty: the phone's agent list, read over an exec channel
+/// since protocol 2, showed nothing (seen 2026-11-06). Reached through
+/// tmux's own `run-shell` it had worked, because that runs with the
+/// server's PATH. The usual places are tried after PATH.
 fn binary() -> String {
-    let on_path = env::var_os("PATH")
-        .map(|p| env::split_paths(&p).any(|d| d.join("tmux").is_file()))
-        .unwrap_or(false);
-    if on_path {
-        return "tmux".into();
+    static FOUND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FOUND.get_or_init(find).clone()
+}
+
+fn find() -> String {
+    let on_path = env::var_os("PATH").and_then(|p| {
+        env::split_paths(&p)
+            .map(|d| d.join("tmux"))
+            .find(|t| t.is_file() && t.is_absolute())
+    });
+    if let Some(t) = on_path {
+        return t.to_string_lossy().into_owned();
     }
     [
         "/opt/homebrew/bin/tmux",

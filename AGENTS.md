@@ -198,6 +198,36 @@ draws the PNG itself. When native drawing cannot show something, move the
 rendering to attache-cli and ship pixels, or leave the content as text. The
 same rule holds in the Android app.
 
+**Nothing long-running starts processes on a timer; it waits to be told.**
+The owner ruled this on 2026-11-23: a loop that asks again and again whether
+anything changed is not acceptable, however slow its period. On macOS every
+fork and every exec advances the kernel's boot-wide 32-bit pidversion
+counter, and when it passes 2^31 launchd refuses every new process its
+service lookups ("Sandbox restriction") until a reboot — which happened on
+2026-11-20 after 46 days up, with `agents --watch` running `ps`, `list-panes`
+and `capture-pane` every 0.5 s for each of 21 chat pages. `cli/src/watch.rs`
+is the pattern: kqueue on the pane's tty, `/dev`, the processes and the
+agents' own files, and tmux asked only after one of them spoke. A safety-net
+pass may run, once a minute, and must say why it exists. Measure a change
+here by counting the processes a quiet watch starts in a minute (kqueue
+`NOTE_FORK` on it is exact); the answer is zero.
+
+**Start every program by its full path.** A bare name goes to `posix_spawnp`,
+which tries each PATH folder in turn, and on macOS each try that misses still
+makes a process and discards it: with tmux in the 19th of 42 PATH folders, one
+`tmux` cost 19 processes (measured 2026-11-23; `tmux::binary` now resolves the
+path once). These dead-on-arrival processes live well under a millisecond, so
+sampling a process's children misses them; count `NOTE_FORK` instead.
+
+**Never attach a long-lived tmux control client just to listen.** tmux answers
+a program's background-colour query (OSC 11) from the first client in its
+list, and a control client answers black (measured on 3.6a: a session with no
+client gives no answer, one with only a control client gives
+`rgb:0000/0000/0000`), so a listener attached to every session would tell
+Claude's `auto` theme "dark" wherever the app is not showing that session.
+The app's own control clients are safe only because they report the real
+colours with `refresh-client -r`.
+
 **Anything destructive needs a confirmation and separate wording.** Hiding a
 window takes its row out of the rail and sends tmux nothing; killing is a
 different menu item, worded as what it is, and asks first. A window may have an

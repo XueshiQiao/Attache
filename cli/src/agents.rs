@@ -442,6 +442,12 @@ pub fn run_seen(args: &[String]) -> i32 {
     if write_atomic(&path, json!({ "at": at }).to_string().as_bytes()).is_err() {
         return 1;
     }
+    // A running `agents --watch` hears of this through the state folder
+    // itself: the file above is two folders down, out of its sight.
+    let _ = write_atomic(
+        &paths::state_dir().join("seen.changed"),
+        at.to_string().as_bytes(),
+    );
     println!(
         "{}",
         json!({ "kind": kind, "conversation": conversation, "seen": at })
@@ -482,10 +488,17 @@ pub fn run(args: &[String], host: &dyn Host) -> i32 {
 ///
 /// The first of each is sent at once. Like `follow`, it runs until stdin
 /// ends (the SSH channel closed) and writes a byte to stderr every 15 s to
-/// find a channel that went without saying so. The host does the asking:
-/// a list every 1.5 s, one pane every 0.5 s, which on this machine is a
-/// `ps`, a `list-panes` and a read of Claude's session folder each time.
+/// find a channel that went without saying so.
+///
+/// On macOS the work is done when the kernel says something changed (see
+/// `watch`). Elsewhere, or with `ATTACHE_WATCH=poll`, the host does the
+/// asking: a list every 1.5 s, one pane every 0.5 s, each time the process
+/// table, a `list-panes` and a read of Claude's session folder.
 fn run_watch(host: &dyn Host, only: Option<&str>) -> i32 {
+    #[cfg(target_os = "macos")]
+    if let Some(code) = crate::watch::run(only) {
+        return code;
+    }
     use std::io::Write;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -897,6 +910,7 @@ mod tests {
                 window_name: "w".into(),
                 command: command.into(),
                 path: "/w".into(),
+                tty: String::new(),
                 renamed: false,
                 title: "t".into(),
             });

@@ -23,6 +23,8 @@ mod statusline;
 mod time;
 mod tmux;
 mod usage;
+#[cfg(target_os = "macos")]
+mod watch;
 mod projects;
 
 use serde_json::json;
