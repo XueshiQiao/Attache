@@ -65,9 +65,30 @@ final class AgentChatModel {
     var onChange: (() -> Void)?
 
     /// Whether the page is in front of the person: only then does an agent
-    /// that finished count as seen.
+    /// that finished count as seen, and only then does the pane's
+    /// `agents --watch --pane` run.
+    ///
+    /// The watch is a loop in attache-cli that runs `ps`, `tmux list-panes`
+    /// and `tmux capture-pane` (and `lsof` for agy) every 0.5 s whether or
+    /// not anything changed. A session view keeps its last eight pages, so
+    /// pages nobody was looking at kept 21 of those loops going (measured
+    /// 2026-11-23). On macOS every process started advances the kernel's
+    /// 32-bit pidversion counter; on 2026-11-20 it passed 2^31 after 46 days
+    /// up, and from that second launchd refused every new process its
+    /// service lookups ("Sandbox restriction") until a reboot. A page off
+    /// screen needs none of it: the conversation still comes from `follow`,
+    /// which only reads the transcript file, and a watch started again
+    /// sends the agent and the screen at once.
     var isOnScreen = false {
-        didSet { if isOnScreen { markSeen() } }
+        didSet {
+            if isOnScreen { markSeen() }
+            guard isOnScreen != oldValue, !stopped else { return }
+            if isOnScreen {
+                if watch == nil { startWatch() }
+            } else {
+                pauseWatch()
+            }
+        }
     }
 
     private var watch: AttacheCliStream?
@@ -99,8 +120,16 @@ final class AgentChatModel {
 
     func start() {
         stopped = false
-        startWatch()
+        if isOnScreen { startWatch() }
         if let path = agent?.transcript, let kind = agent?.kind { followTranscript(path, kind: kind) }
+    }
+
+    /// Ends the watch and drops its pending restart, the same way `stop`
+    /// does, but leaves the conversation followed.
+    private func pauseWatch() {
+        watchGeneration += 1
+        watch?.cancel()
+        watch = nil
     }
 
     func stop() {
