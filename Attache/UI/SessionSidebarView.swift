@@ -1037,6 +1037,19 @@ final class SessionSidebarView: NSView {
         rename.representedObject = target
         menu.addItem(rename)
         let tags = NSMenuItem(title: "Tags", action: nil, keyEquivalent: "")
+        // The window's tags as dots after the word, so what it carries is
+        // seen without opening the submenu.
+        let carried = entry(session)?.decorations[id]?.tags ?? []
+        if !carried.isEmpty {
+            let font = NSFont.menuFont(ofSize: 0)
+            let title = NSMutableAttributedString(string: "Tags  ", attributes: [.font: font])
+            for tag in carried {
+                title.append(NSAttributedString(
+                    string: "●", attributes: [.foregroundColor: TagPalette.color(tag.color), .font: font]
+                ))
+            }
+            tags.attributedTitle = title
+        }
         tags.submenu = tagsMenu(forWindow: id, in: session)
         menu.addItem(tags)
         menu.addItem(.separator())
@@ -1105,7 +1118,7 @@ final class SessionSidebarView: NSView {
         for tag in all {
             let item = NSMenuItem(title: tag.name, action: #selector(toggleTagFromMenu(_:)), keyEquivalent: "")
             item.target = self
-            item.image = TagPalette.swatch(tag.color)
+            item.attributedTitle = TagPalette.menuTitle(tag.name, color: tag.color)
             item.state = carried.contains(tag.id) ? .on : .off
             item.representedObject = TagTarget(session: session, tag: tag.id, window: window)
             menu.addItem(item)
@@ -1127,7 +1140,7 @@ final class SessionSidebarView: NSView {
         editMenu.autoenablesItems = false
         for tag in all {
             let row = NSMenuItem(title: tag.name, action: nil, keyEquivalent: "")
-            row.image = TagPalette.swatch(tag.color)
+            row.attributedTitle = TagPalette.menuTitle(tag.name, color: tag.color)
             let actions = NSMenu()
             actions.autoenablesItems = false
             let rename = NSMenuItem(title: "Rename…", action: #selector(renameTagFromMenu(_:)), keyEquivalent: "")
@@ -1142,7 +1155,7 @@ final class SessionSidebarView: NSView {
                     title: name.capitalized, action: #selector(recolorTagFromMenu(_:)), keyEquivalent: ""
                 )
                 swatch.target = self
-                swatch.image = TagPalette.swatch(name)
+                swatch.attributedTitle = TagPalette.menuTitle(name.capitalized, color: name)
                 swatch.state = name == tag.color ? .on : .off
                 swatch.representedObject = TagTarget(session: session, tag: tag.id, color: name)
                 colors.addItem(swatch)

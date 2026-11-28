@@ -19,7 +19,9 @@ enum TagForm {
         let colors = NSPopUpButton(frame: .zero, pullsDown: false)
         for color in TagCommands.colors {
             colors.addItem(withTitle: color.capitalized)
-            colors.lastItem?.image = TagPalette.swatch(color)
+            colors.lastItem?.attributedTitle = TagPalette.menuTitle(
+                color.capitalized, color: color, font: colors.font ?? .menuFont(ofSize: 0)
+            )
             colors.lastItem?.representedObject = color
         }
         // Gray is the fallback colour, so a new tag starts on the next one.

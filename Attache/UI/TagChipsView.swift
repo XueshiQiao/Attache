@@ -22,14 +22,19 @@ enum TagPalette {
         }
     }
 
-    /// A round swatch for a menu item.
-    static func swatch(_ name: String, size: CGFloat = 10) -> NSImage {
-        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
-            color(name).setFill()
-            NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5)).fill()
-            return true
-        }
-        return image
+    /// A menu item's title with a dot in the colour in front of it.
+    ///
+    /// In the title, not in `image`: measured on macOS 27.0.1 with a probe
+    /// app, a context menu draws no item image at all — a drawn image, a
+    /// bitmap and a tinted SF Symbol all came out as blank space — while a
+    /// coloured character in an attributed title shows. The first version
+    /// set `image` and every tag in every menu was colourless.
+    static func menuTitle(_ text: String, color name: String, font: NSFont = .menuFont(ofSize: 0)) -> NSAttributedString {
+        let title = NSMutableAttributedString(
+            string: "●  ", attributes: [.foregroundColor: color(name), .font: font]
+        )
+        title.append(NSAttributedString(string: text, attributes: [.font: font]))
+        return title
     }
 }
 
