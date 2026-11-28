@@ -763,6 +763,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
                 actions.addItem(item)
             }
             row.submenu = actions
+            // Clicking the row itself opens the project — the common case
+            // without walking into the submenu. Measured on macOS 27: a
+            // row with a submenu still sends its action on click, and the
+            // submenu still opens on hover. A missing folder leaves the row
+            // without an action rather than disabled, since a disabled row
+            // would take Edit and Remove with it.
+            if project.exists {
+                row.action = #selector(openProject(_:))
+                row.target = self
+                row.representedObject = project.id
+            }
             menu.addItem(row)
         }
         if saved.isEmpty {

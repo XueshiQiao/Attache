@@ -588,15 +588,19 @@ final class SidebarPillButton: NSView {
     }
 }
 
-/// An integrated, borderless deck (Scheme 2) that groups all active provider
-/// rate-limit sections into a unified translucent capsule, separated by
-/// subtle hairline dividers.
+/// The rail's rate limits, one card per provider, stacked with a small gap.
+///
+/// Each provider gets a card of its own (the section's `.cardA` look) rather
+/// than sharing one capsule split by hairlines: three providers' bars in one
+/// box read as one list, and the name that says whose bar it is was the
+/// faint part. The deck itself paints nothing; it only stacks the cards.
 final class UsageDeckView: NSView {
     let grokSection = UsageProviderSectionView(provider: .grok, scheme: .cardA)
     let claudeSection = UsageProviderSectionView(provider: .claude, scheme: .cardA)
     let geminiSection = UsageProviderSectionView(provider: .gemini, scheme: .cardA)
 
-    private var dividers = [NSView]()
+    /// The space between two cards.
+    private static let gap: CGFloat = 6
 
     override var isFlipped: Bool { true }
 
@@ -605,19 +609,14 @@ final class UsageDeckView: NSView {
     }
 
     var visibleSections: [UsageProviderSectionView] {
-        allSections.filter { !$0.isHidden && $0.compactHeight > 0 }
+        allSections.filter { !$0.isHidden && $0.preferredHeight > 0 }
     }
 
     init() {
         super.init(frame: .zero)
-        wantsLayer = true
-        layer?.cornerRadius = 8
-        layer?.borderWidth = 0
-        layer?.masksToBounds = false
         isHidden = true
-
         for s in allSections {
-            s.hideCardBackground = true
+            s.hideCardBackground = false
             addSubview(s)
         }
         applyTheme()
@@ -627,17 +626,7 @@ final class UsageDeckView: NSView {
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 
     func applyTheme() {
-        let theme = ChromeTheme.current
-        layer?.backgroundColor = theme.hover.withAlphaComponent(0.40).cgColor
-
-        for s in allSections {
-            s.applyTheme()
-            s.hideCardBackground = true
-        }
-
-        for d in dividers {
-            d.layer?.backgroundColor = theme.separator.withAlphaComponent(0.35).cgColor
-        }
+        for s in allSections { s.applyTheme() }
         needsLayout = true
     }
 
@@ -660,8 +649,7 @@ final class UsageDeckView: NSView {
     }
 
     private func syncVisibility() {
-        let active = visibleSections
-        let shouldHide = active.isEmpty
+        let shouldHide = visibleSections.isEmpty
         if isHidden != shouldHide {
             isHidden = shouldHide
         }
@@ -671,58 +659,18 @@ final class UsageDeckView: NSView {
     var preferredHeight: CGFloat {
         let active = visibleSections
         guard !active.isEmpty else { return 0 }
-        let topPad: CGFloat = 8
-        let bottomPad: CGFloat = 8
-        let gap: CGFloat = 7
-        var total: CGFloat = topPad + bottomPad
-        for (idx, section) in active.enumerated() {
-            total += section.compactHeight
-            if idx < active.count - 1 {
-                total += gap + 1
-            }
-        }
-        return total
+        let cards = active.reduce(0) { $0 + $1.preferredHeight }
+        return cards + Self.gap * CGFloat(active.count - 1)
     }
 
     override func layout() {
         super.layout()
-        let active = visibleSections
-        guard !active.isEmpty else {
-            for d in dividers { d.isHidden = true }
-            return
-        }
-
-        let theme = ChromeTheme.current
-        let topPad: CGFloat = 8
-        let gap: CGFloat = 7
-        let insetX: CGFloat = 9
-        let contentW = max(0, bounds.width - insetX * 2)
-
-        let neededDividers = max(0, active.count - 1)
-        while dividers.count < neededDividers {
-            let d = NSView()
-            d.wantsLayer = true
-            d.layer?.backgroundColor = theme.separator.withAlphaComponent(0.35).cgColor
-            dividers.append(d)
-            addSubview(d)
-        }
-        for (i, d) in dividers.enumerated() {
-            d.isHidden = (i >= neededDividers)
-        }
-
-        var y: CGFloat = topPad
-        for (idx, section) in active.enumerated() {
-            let h = section.compactHeight
-            section.frame = CGRect(x: insetX, y: y, width: contentW, height: h)
+        var y: CGFloat = 0
+        for section in visibleSections {
+            let h = section.preferredHeight
+            section.frame = CGRect(x: 0, y: y, width: bounds.width, height: h)
             section.needsLayout = true
-            y += h
-
-            if idx < active.count - 1 {
-                y += floor(gap / 2)
-                dividers[idx].frame = CGRect(x: insetX, y: y, width: contentW, height: 1)
-                y += 1 + ceil(gap / 2)
-            }
+            y += h + Self.gap
         }
     }
 }
-

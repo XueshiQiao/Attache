@@ -815,8 +815,7 @@ final class SessionSidebarView: NSView {
             width: max(0, width - halfWidth - buttonGap), height: buttonHeight
         )
 
-        // An integrated, borderless deck holding visible provider rate-limits
-        // sits above the footer buttons.
+        // The provider rate-limit cards sit above the footer buttons.
         if !usageDeck.isHidden {
             let h = usageDeck.preferredHeight
             if h > 0 {
@@ -1158,6 +1157,13 @@ final class SessionSidebarView: NSView {
                 actions.addItem(item)
             }
             row.submenu = actions
+            // The row opens the project on a click, as the Projects menu in
+            // the menu bar does; see the note there.
+            if project.exists {
+                row.action = #selector(openProjectFromMenu(_:))
+                row.target = self
+                row.representedObject = WindowTarget(session: session, id: project.id)
+            }
             menu.addItem(row)
         }
         return menu
