@@ -89,6 +89,20 @@ final class SessionSidebarView: NSView {
     var onOpenProject: ((String, String) -> Void)?
     var onEditProject: ((String, String) -> Void)?
     var onRemoveProject: ((String, String) -> Void)?
+    /// Window tags. The list is the host's (attache-cli's), handed over when
+    /// a menu is built, like `projects`; what a window carries arrives in its
+    /// decoration. Every callback carries the session the menu was opened on.
+    var tagList: ((String) -> [WindowTag])?
+    /// Session, window, and the ids the window should carry from now on.
+    var onSetWindowTags: ((String, String, [String]) -> Void)?
+    /// Session and window: make a tag and put it on that window.
+    var onNewTag: ((String, String) -> Void)?
+    /// Session and tag id.
+    var onRenameTag: ((String, String) -> Void)?
+    /// Session, tag id and colour name.
+    var onRecolorTag: ((String, String, String) -> Void)?
+    /// Session and tag id. The receiver asks first.
+    var onDeleteTag: ((String, String) -> Void)?
     var onRestoreHidden: ((String) -> Void)?
     /// A down host's row was clicked: try its connection again now.
     var onHostRetry: ((String) -> Void)?
@@ -260,6 +274,15 @@ final class SessionSidebarView: NSView {
         /// The session's id.
         let session: String
         let id: String
+    }
+
+    /// What a Tags menu item acts on: a tag, and the window or colour the
+    /// item is about where it is about one.
+    private struct TagTarget {
+        let session: String
+        let tag: String
+        var window: String?
+        var color: String?
     }
 
     /// A row, and the session it belongs to.
@@ -1008,6 +1031,9 @@ final class SessionSidebarView: NSView {
         rename.target = self
         rename.representedObject = target
         menu.addItem(rename)
+        let tags = NSMenuItem(title: "Tags", action: nil, keyEquivalent: "")
+        tags.submenu = tagsMenu(forWindow: id, in: session)
+        menu.addItem(tags)
         menu.addItem(.separator())
 
         let isRemote = entry(session).flatMap { entry in
@@ -1061,6 +1087,104 @@ final class SessionSidebarView: NSView {
         menu.addItem(ordered[1])
 
         menu.popUp(positioning: nil, at: point, in: row)
+    }
+
+    /// One item per tag, ticked where the window carries it; a click puts it
+    /// on or takes it off. Below them, making a tag and the ways to change
+    /// one, each tag leading to its own Rename, Color and Delete.
+    private func tagsMenu(forWindow window: String, in session: String) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let all = tagList?(session) ?? []
+        let carried = Set(entry(session)?.decorations[window]?.tags.map(\.id) ?? [])
+        for tag in all {
+            let item = NSMenuItem(title: tag.name, action: #selector(toggleTagFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.image = TagPalette.swatch(tag.color)
+            item.state = carried.contains(tag.id) ? .on : .off
+            item.representedObject = TagTarget(session: session, tag: tag.id, window: window)
+            menu.addItem(item)
+        }
+        if all.isEmpty {
+            let empty = NSMenuItem(title: "No Tags Yet", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        }
+        menu.addItem(.separator())
+        let new = NSMenuItem(title: "New Tag…", action: #selector(newTagFromMenu(_:)), keyEquivalent: "")
+        new.target = self
+        new.representedObject = WindowTarget(session: session, id: window)
+        menu.addItem(new)
+        guard !all.isEmpty else { return menu }
+
+        let edit = NSMenuItem(title: "Edit Tags", action: nil, keyEquivalent: "")
+        let editMenu = NSMenu()
+        editMenu.autoenablesItems = false
+        for tag in all {
+            let row = NSMenuItem(title: tag.name, action: nil, keyEquivalent: "")
+            row.image = TagPalette.swatch(tag.color)
+            let actions = NSMenu()
+            actions.autoenablesItems = false
+            let rename = NSMenuItem(title: "Rename…", action: #selector(renameTagFromMenu(_:)), keyEquivalent: "")
+            rename.target = self
+            rename.representedObject = TagTarget(session: session, tag: tag.id)
+            actions.addItem(rename)
+            let color = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
+            let colors = NSMenu()
+            colors.autoenablesItems = false
+            for name in TagCommands.colors {
+                let swatch = NSMenuItem(
+                    title: name.capitalized, action: #selector(recolorTagFromMenu(_:)), keyEquivalent: ""
+                )
+                swatch.target = self
+                swatch.image = TagPalette.swatch(name)
+                swatch.state = name == tag.color ? .on : .off
+                swatch.representedObject = TagTarget(session: session, tag: tag.id, color: name)
+                colors.addItem(swatch)
+            }
+            color.submenu = colors
+            actions.addItem(color)
+            actions.addItem(.separator())
+            let delete = NSMenuItem(title: "Delete Tag…", action: #selector(deleteTagFromMenu(_:)), keyEquivalent: "")
+            delete.target = self
+            delete.representedObject = TagTarget(session: session, tag: tag.id)
+            actions.addItem(delete)
+            row.submenu = actions
+            editMenu.addItem(row)
+        }
+        edit.submenu = editMenu
+        menu.addItem(edit)
+        return menu
+    }
+
+    @objc private func toggleTagFromMenu(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? TagTarget, let window = target.window else { return }
+        let carried = Set(entry(target.session)?.decorations[window]?.tags.map(\.id) ?? [])
+        let wanted = carried.symmetricDifference([target.tag])
+        // In the list's order, so the chips on the row do not reshuffle
+        // depending on which tag was put on first.
+        let ordered = (tagList?(target.session) ?? []).map(\.id).filter(wanted.contains)
+        onSetWindowTags?(target.session, window, ordered)
+    }
+
+    @objc private func newTagFromMenu(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? WindowTarget else { return }
+        onNewTag?(target.session, target.id)
+    }
+
+    @objc private func renameTagFromMenu(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? TagTarget else { return }
+        onRenameTag?(target.session, target.tag)
+    }
+
+    @objc private func recolorTagFromMenu(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? TagTarget, let color = target.color else { return }
+        onRecolorTag?(target.session, target.tag, color)
+    }
+
+    @objc private func deleteTagFromMenu(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? TagTarget else { return }
+        onDeleteTag?(target.session, target.tag)
     }
 
     @objc private func renameFromMenu(_ sender: NSMenuItem) {

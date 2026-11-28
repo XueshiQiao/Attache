@@ -327,5 +327,35 @@ MainActor.assumeIsolated {
           "a long page is asked in pieces")
 }
 
+// Window tags: what reaches tmux is built from ids alone, and the ids read
+// back out of a window option are exactly the ones put in.
+do {
+    check(TagCommands.ids(in: "a1,b2,a1,,bad id,c-3") == ["a1", "b2", "c-3"],
+          "a window option reads as its ids, in order, without repeats or anything that is not an id")
+    check(TagCommands.ids(in: "") == [], "an unset option is no tags")
+    check(TagCommands.setWindowTags(window: "@25", ids: ["a1", "b2"])
+              == "set-option -w -t @25 @attache_tags a1,b2", "tags go on by window id")
+    check(TagCommands.setWindowTags(window: "@25", ids: [])
+              == "set-option -wu -t @25 @attache_tags", "no tags unsets the option")
+    check(TagCommands.setWindowTags(window: "@25", ids: ["x y", "a1;kill-server"])
+              == "set-option -wu -t @25 @attache_tags", "text that is not an id never reaches the command")
+    check(TagCommands.setWindowTags(window: "Dev", ids: ["a1"]) == nil, "a window named, not id'd, is refused")
+    check(TagCommands.save(id: nil, name: "持续跟进", color: "orange")
+              == ["tag", "save", "--name", Data("持续跟进".utf8).base64EncodedString(), "--color", "orange"],
+          "a name goes base64-encoded")
+    check(TagCommands.save(id: nil, name: "A", color: "mauve") == nil, "an unknown colour is refused here")
+    check(TagCommands.save(id: "x y", name: "A", color: "red") == nil, "so is a bad id")
+    let list = TagCommands.parse([#"{"tags":[{"id":"a1","name":"Daily","color":"blue"},{"id":"b2","name":"X","color":"mauve"},{"id":"bad id","name":"Y"}],"colors":[]}"#])
+    check(list?.map(\.id) == ["a1", "b2"] && list?.last?.color == "gray",
+          "the list reads its tags, an unknown colour as gray, and drops a bad id")
+    check(TagCommands.parse([]) == nil, "no answer is not an empty list")
+    check(TagCommands.parse([#"{"tags":[],"colors":[]}"#]) == [], "but an empty answer is")
+    if case .failure(let f) = TagCommands.answer(["usage"], flag: "saved") {
+        check(f.message.contains("0.3.22"), "an attache-cli that does not know tags says which one does")
+    } else {
+        check(false, "an attache-cli that does not know tags is a failure")
+    }
+}
+
 print(failures == 0 ? "\(cases) cases, all pass" : "\(failures) of \(cases) cases fail")
 exit(failures == 0 ? 0 : 1)

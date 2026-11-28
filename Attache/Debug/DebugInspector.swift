@@ -916,14 +916,24 @@
             let currentPath: String?
             /// The window's agent badge, flattened to `kind/state`, or nil.
             let agent: String?
+            /// The ids in the window's `@attache_tags` as the subscription last
+            /// reported them, and the names the host's list resolves them to
+            /// — the two halves of a tag, so a chip missing from the rail can
+            /// be told apart as "tmux never said" or "the list does not know".
+            let tagIDs: [String]
+            let tags: [String]
 
             init(
                 window: TmuxWindow,
                 isHiddenFromSidebar: Bool,
                 currentPath: String? = nil,
-                agent: AgentBadge? = nil
+                agent: AgentBadge? = nil,
+                tagIDs: [String] = [],
+                tags: [String] = []
             ) {
                 self.currentPath = currentPath
+                self.tagIDs = tagIDs
+                self.tags = tags
                 self.agent = agent.map {
                     "\($0.kind ?? "?")/\($0.state?.rawValue ?? "no-state")"
                 }
@@ -1003,7 +1013,11 @@
                         currentPath: connection.pathByWindow[$0.id],
                         // What the rail draws: attache-cli's row for the window.
                         agent: HostAgents.shared(for: connection.transport)
-                            .agent(inWindow: $0.id).map(AgentBadge.init(row:))
+                            .agent(inWindow: $0.id).map(AgentBadge.init(row:)),
+                        tagIDs: connection.tagsByWindow[$0.id] ?? [],
+                        tags: (connection.tagsByWindow[$0.id] ?? []).compactMap {
+                            HostTags.shared(for: connection.transport).tag(id: $0)?.name
+                        }
                     )
                 },
                 surfaces: []

@@ -26,6 +26,7 @@ mod usage;
 #[cfg(target_os = "macos")]
 mod watch;
 mod projects;
+mod tags;
 
 use serde_json::json;
 
@@ -79,6 +80,8 @@ fn dispatch(args: &[String]) -> i32 {
         "usage" => usage::run(rest),
         "projects" => projects::run_list(rest),
         "project" => projects::run(rest),
+        "tags" => tags::run_list(rest),
+        "tag" => tags::run(rest),
         "mermaid" => mermaid::run(rest),
         "guard" => guard::run(rest),
         "setup" => setup::run_setup(),

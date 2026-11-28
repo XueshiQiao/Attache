@@ -530,6 +530,8 @@ final class SidebarWindowRow: NSView, SidebarEditableRow {
     /// resuming means re-uploading the context. Words, not icons — the same
     /// reasoning as `agentLabel`.
     private let cacheLabel = NSTextField(labelWithString: "")
+    /// The window's tags, on the first line between the name and the agent.
+    private let tagChips = TagChipsView()
     private var isHovering = false
     private var trackingArea: NSTrackingArea?
     private var dragOrigin: NSPoint?
@@ -623,6 +625,9 @@ final class SidebarWindowRow: NSView, SidebarEditableRow {
         contextBar.addSubview(contextFill)
         addSubview(contextBar)
 
+        tagChips.show(decoration.tags, onAccent: isActive)
+        addSubview(tagChips)
+
         applyStatus(window: window)
         applyColors()
     }
@@ -689,6 +694,10 @@ final class SidebarWindowRow: NSView, SidebarEditableRow {
         }
 
         agentLabel.stringValue = agentWord ?? ""
+
+        if !decoration.tags.isEmpty {
+            tips.append("Tags: " + decoration.tags.map(\.name).joined(separator: ", "))
+        }
 
         if let cache = decoration.cache {
             cacheLabel.stringValue = Self.cacheText(for: cache, now: Date())
@@ -1129,6 +1138,21 @@ final class SidebarWindowRow: NSView, SidebarEditableRow {
         return .systemGreen
     }
 
+    /// Puts the tag chips against `right` and gives back the new right edge
+    /// for the name. The name keeps at least 60pt: past that the chips turn
+    /// into bare dots rather than push the window's name out of its row.
+    private func placeTags(left: CGFloat, right: CGFloat, y: CGFloat) -> CGFloat {
+        guard !tagChips.isEmpty else { return right }
+        let width = tagChips.fit(right - left - 60)
+        guard width > 0 else {
+            tagChips.isHidden = true
+            return right
+        }
+        tagChips.isHidden = false
+        tagChips.frame = CGRect(x: right - width, y: y, width: width, height: TagChipsView.height)
+        return right - width - 6
+    }
+
     override func layout() {
         super.layout()
         let dotSize = dotStyle.size
@@ -1151,6 +1175,7 @@ final class SidebarWindowRow: NSView, SidebarEditableRow {
                 right -= dotSize + 6
             }
             let left = indexLabel.frame.maxX + 10
+            right = placeTags(left: left, right: right, y: (band - TagChipsView.height) / 2)
             label.frame = CGRect(
                 x: left, y: (band - 15) / 2,
                 width: max(0, right - left), height: 15
@@ -1186,6 +1211,7 @@ final class SidebarWindowRow: NSView, SidebarEditableRow {
         } else {
             agentLabel.isHidden = true
         }
+        right = placeTags(left: left, right: right, y: 3.5)
         label.frame = CGRect(x: left, y: 3, width: max(0, right - left), height: 15)
 
         // The stats are measured and given exactly what they need; the branch

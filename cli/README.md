@@ -32,6 +32,9 @@ Each runs as its own short process, except `follow`, `agents --watch` and
 | `project open <id> --session <$N>` | clients | a new window in that session, in the folder, running the command in the person's own shell |
 | `project draft <@window>` | clients | what saving that window would start from: its name, its folder, how its agent was started |
 | `project commands [--set <base64>]` | clients | the person's often-used commands, offered when a project is saved; `--set` replaces the list (one command a line) |
+| `tags` | clients | the window tags there are, and the colours a tag may have |
+| `tag save [--id <id>] --name <base64> --color <colour>` | clients | keeps a tag (a name and a colour); with `--id`, changes that one |
+| `tag remove <id>` | clients | forgets it and takes it off every window that carries it |
 | `mermaid --source <base64> [--dark] [--scale <1-4>] [--inline]` | clients | draws a Mermaid diagram as a PNG, for a ```` ```mermaid ```` block in a reply |
 | `guard status` | clients | the privacy guard on this host: on, paused, and whether each agent (Claude Code, Codex, agy) is wired up, with what that does and does not cover |
 | `guard rules [--set <base64 json>]` | clients | the guard's rules as JSON (`{"rules","errors","path"}`); `--set` replaces them and answers `{"saved":…}` |
@@ -89,6 +92,22 @@ person has written a list, it is the commands their saved projects run.
 That line is always the last, so an answer without it was cut short; it
 carries `commands_why` when the list in the file cannot be edited from a
 client (written over several lines).
+
+`tags`: one line, `{"tags":[{"id","name","color"},…],"colors":[…]}`, the
+tags in the file's order and the colour names (`gray`, `red`, `orange`,
+`yellow`, `green`, `teal`, `blue`, `purple`, `pink`; a colour written in
+the file that is not one of them reads as `gray`). `tag save` answers the
+tag with `"saved":true`, or `{"saved":false,"why"}` — a name another tag
+already has (letter case aside) is refused. `tag remove` answers
+`{"removed":true,"id","windows"}`, `windows` being how many windows it
+was taken off. Which window carries which tag is not kept here: it is the
+window's tmux option `@attache_tags`, tag ids separated by commas, which a
+client sets itself (`set-option -w -t @N @attache_tags <ids>`, `-wu` for
+none) and reads with `#{@attache_tags}`; it goes when the window goes.
+Every save and remove also sets the global option `@attache_tags_rev` on
+the default tmux server to a new value, so a client subscribed to it
+(`refresh-client -B 'name::#{@attache_tags_rev}'`) reads the list again
+instead of asking on a timer.
 
 Nothing in it is worked out or asked here. AIUsageKit
 (github.com/XueshiQiao/AIUsageKit) asks each provider's own CLI and keeps
@@ -201,6 +220,12 @@ folder; left alone when a new file is already there). It is theirs to edit by ha
 rewrites only the values of those four keys in the block it is changing,
 writes through a link to the file it points at, and a block written
 without an `id` works as it is.
+
+Window tags too: `~/.config/attache-tags.toml`, one `[[tag]]` block each
+(`id`, `name`, `color`), rewritten the same way — only those three keys'
+values in the block being changed, through a link to the file it points
+at. A block written without an `id` works under one worked out from its
+name.
 
 The privacy guard's rules are the person's too:
 `~/.config/attache-guard.toml` (`enabled`, `paused_until`, `allow = [...]`,

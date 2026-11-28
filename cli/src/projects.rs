@@ -60,36 +60,36 @@ impl Project {
 }
 
 /// One `key = "value"` line inside a block.
-struct KeyLine {
-    key: String,
-    line: usize,
+pub(crate) struct KeyLine {
+    pub(crate) key: String,
+    pub(crate) line: usize,
     /// Byte range of the value, quotes included, within the line.
-    span: (usize, usize),
-    value: String,
+    pub(crate) span: (usize, usize),
+    pub(crate) value: String,
 }
 
-struct Block {
-    header: usize,
+pub(crate) struct Block {
+    pub(crate) header: usize,
     /// One past the block's last key line (the header's own, if it has none).
-    end: usize,
-    keys: Vec<KeyLine>,
+    pub(crate) end: usize,
+    pub(crate) keys: Vec<KeyLine>,
     /// One of the four keys this program knows is written in a way it does
     /// not read: a multi-line string, a number, the same key twice. The
     /// block is then the person's alone — not listed, so never edited or
     /// removed from a client. Listing it with that key taken for absent
     /// would run a plain shell where a command was written, and a save
     /// would add the key a second time, which is not TOML any more.
-    unreadable: bool,
+    pub(crate) unreadable: bool,
 }
 
 const KNOWN: [&str; 4] = ["id", "name", "path", "command"];
 
 impl Block {
-    fn get(&self, key: &str) -> Option<&KeyLine> {
+    pub(crate) fn get(&self, key: &str) -> Option<&KeyLine> {
         self.keys.iter().find(|k| k.key == key)
     }
 
-    fn text(&self, key: &str) -> String {
+    pub(crate) fn text(&self, key: &str) -> String {
         self.get(key).map(|k| k.value.clone()).unwrap_or_default()
     }
 
@@ -129,7 +129,7 @@ fn derived_id(name: &str, path: &str, command: &str) -> String {
 /// Reads a TOML basic (`"…"`) or literal (`'…'`) string at the start of
 /// `s`: the text and how many bytes it took. Multi-line strings are not
 /// read; such a key is left alone as one this program does not know.
-fn parse_string(s: &str) -> Option<(String, usize)> {
+pub(crate) fn parse_string(s: &str) -> Option<(String, usize)> {
     if s.starts_with("\"\"\"") || s.starts_with("'''") {
         return None;
     }
@@ -171,7 +171,7 @@ fn parse_string(s: &str) -> Option<(String, usize)> {
     }
 }
 
-fn encode_string(s: &str) -> String {
+pub(crate) fn encode_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -190,14 +190,14 @@ fn encode_string(s: &str) -> String {
 
 /// A line with its comment taken off, for telling headers apart. Only used
 /// on lines that start with `[`, where a `#` cannot be inside a string.
-fn bare(line: &str) -> &str {
+pub(crate) fn bare(line: &str) -> &str {
     line.split('#').next().unwrap_or("").trim()
 }
 
 /// Where a multi-line string that opens in `value` (the text after `=`)
 /// closes: `Some(None)` on the same line, `Some(Some(delimiter))` on a later
 /// one, `None` when `value` opens no such string.
-fn opens_multiline(value: &str) -> Option<Option<&'static str>> {
+pub(crate) fn opens_multiline(value: &str) -> Option<Option<&'static str>> {
     let delimiter = if value.starts_with("\"\"\"") {
         "\"\"\""
     } else if value.starts_with("'''") {
@@ -209,6 +209,14 @@ fn opens_multiline(value: &str) -> Option<Option<&'static str>> {
 }
 
 fn parse_blocks(lines: &[&str]) -> Vec<Block> {
+    parse_blocks_of(lines, HEADER, &KNOWN)
+}
+
+/// The `header` tables in `lines`, with `known` the keys whose values the
+/// caller reads: one of those written in a way this does not read makes the
+/// block unreadable. Shared with the tag list (`tags.rs`), which keeps its
+/// file the same way.
+pub(crate) fn parse_blocks_of(lines: &[&str], header: &str, known: &[&str]) -> Vec<Block> {
     let mut blocks: Vec<Block> = Vec::new();
     let mut inside = false;
     // The delimiter a multi-line string is waiting for. Its lines are
@@ -226,7 +234,7 @@ fn parse_blocks(lines: &[&str]) -> Vec<Block> {
         }
         let line = raw.trim_start();
         if line.starts_with('[') {
-            inside = bare(line) == HEADER;
+            inside = bare(line) == header;
             if inside {
                 blocks.push(Block { header: i, end: i + 1, keys: Vec::new(), unreadable: false });
             }
@@ -261,12 +269,12 @@ fn parse_blocks(lines: &[&str]) -> Vec<Block> {
             rest.is_empty() || rest.starts_with('#')
         });
         let Some((value, used)) = read else {
-            block.unreadable |= KNOWN.contains(&key);
+            block.unreadable |= known.contains(&key);
             continue;
         };
         // A key written twice is not TOML; which one a reader takes is
         // anyone's guess, so the block is left alone too.
-        block.unreadable |= KNOWN.contains(&key) && block.keys.iter().any(|k| k.key == key);
+        block.unreadable |= known.contains(&key) && block.keys.iter().any(|k| k.key == key);
         block.keys.push(KeyLine {
             key: key.to_owned(),
             line: i,
@@ -661,7 +669,7 @@ fn is_full_path(path: &str) -> bool {
     path.starts_with('/') || path == "~" || path.starts_with("~/")
 }
 
-fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     let mut bytes = [0u8; 4];
     let random = fs::File::open("/dev/urandom")
         .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes))

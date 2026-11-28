@@ -285,6 +285,13 @@ final class TmuxSessionConnection {
     /// Agent state, per pane. Pane scope, because a window with four panes can
     /// have an agent in any of them and the row has to speak for all of them.
     private static let agentSubscription = "attache-agent"
+    /// Each window's tag ids, from its `@attache_tags` option. See `HostTags`.
+    private static let tagsSubscription = "attache-tags"
+    /// The host's tag list revision, a global option attache-cli sets anew on
+    /// every save or remove. Session scope: measured on tmux 3.6a, a global
+    /// option asked at session scope fires on `set-option -g`, with `-` for
+    /// the window (`%subscription-changed rev $0 - - - : 123`).
+    private static let tagRevisionSubscription = "attache-tags-rev"
     private var subscribedToActivity = false
 
     /// The active pane's path for each window, keyed by window id. Not on
@@ -302,6 +309,12 @@ final class TmuxSessionConnection {
     private(set) var seenByWindow = [String: TimeInterval]()
     /// The agent badge for each pane that has one, keyed by pane id.
     private(set) var agentByPane = [String: AgentBadge]()
+    /// The tag ids each window carries, keyed by window id. Windows with none
+    /// are absent.
+    private(set) var tagsByWindow = [String: [String]]()
+    /// `@attache_tags_rev` as tmux last reported it; nil before the first
+    /// report or when no tag was ever saved on this server.
+    private(set) var tagRevision: String?
 
     /// What each pane has told us, before any strategy has had an opinion.
     ///
@@ -651,6 +664,19 @@ final class TmuxSessionConnection {
         client.send(
             "refresh-client -B '\(Self.agentSubscription):%*:\(AgentDetector.paneFormat)'"
         )
+        client.send(
+            "refresh-client -B '\(Self.tagsSubscription):@*:#{\(TagCommands.windowOption)}'"
+        )
+        client.send(
+            "refresh-client -B '\(Self.tagRevisionSubscription)::#{\(TagCommands.revisionOption)}'"
+        )
+    }
+
+    /// Makes the window carry exactly these tags. Nothing changes here until
+    /// tmux reports the option back through the subscription.
+    func setTags(windowID: String, ids: [String]) {
+        guard let command = TagCommands.setWindowTags(window: windowID, ids: ids) else { return }
+        client.send(command)
     }
 
     /// Files this connection has written for a paste and not yet cleaned up.
@@ -1794,6 +1820,20 @@ final class TmuxSessionConnection {
                     ? pathByWindow.removeValue(forKey: window) != nil
                     : pathByWindow.updateValue(value, forKey: window) != value
                 if changed || seenChanged { notifyModelChanged() }
+
+            case Self.tagsSubscription:
+                guard let window else { return }
+                let ids = TagCommands.ids(in: value)
+                let changed = ids.isEmpty
+                    ? tagsByWindow.removeValue(forKey: window) != nil
+                    : tagsByWindow.updateValue(ids, forKey: window) != ids
+                if changed { notifyModelChanged() }
+
+            case Self.tagRevisionSubscription:
+                let revision = value.isEmpty ? nil : value
+                guard revision != tagRevision else { return }
+                tagRevision = revision
+                notifyModelChanged()
 
             case Self.agentSubscription:
                 guard let pane else { return }

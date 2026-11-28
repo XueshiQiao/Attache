@@ -43,8 +43,12 @@ struct WindowDecoration: Equatable {
     /// `CacheStatusService` — deliberately *not* from the status payload,
     /// so it works with nothing installed.
     var cache: PromptCacheEstimate?
+    /// The tags the window carries (its `@attache_tags`), resolved against
+    /// the host's list, in that list's order.
+    var tags: [WindowTag] = []
 
     var isEmpty: Bool {
         git == nil && agent == nil && stats == nil && cache == nil && !isNotARepository
+            && tags.isEmpty
     }
 }

@@ -574,6 +574,22 @@ final class MainViewController: NSSplitViewController {
         sidebar.onRemoveProject = { [weak self] session, id in
             self?.removeProject(id: id, inSession: session)
         }
+        sidebar.tagList = { [weak self] session in self?.tagList(forSession: session) ?? [] }
+        sidebar.onSetWindowTags = { [weak self] session, window, ids in
+            self?.connection(id: session)?.setTags(windowID: window, ids: ids)
+        }
+        sidebar.onNewTag = { [weak self] session, window in
+            self?.newTag(onWindow: window, inSession: session)
+        }
+        sidebar.onRenameTag = { [weak self] session, id in
+            self?.renameTag(id: id, inSession: session)
+        }
+        sidebar.onRecolorTag = { [weak self] session, id, color in
+            self?.recolorTag(id: id, color: color, inSession: session)
+        }
+        sidebar.onDeleteTag = { [weak self] session, id in
+            self?.deleteTag(id: id, inSession: session)
+        }
 
         aiQuotaService.onChange = { [weak self] in
             self?.refreshSidebar()
@@ -796,6 +812,89 @@ final class MainViewController: NSSplitViewController {
             return
         }
         action(controller)
+    }
+
+    // MARK: - Window tags
+
+    private func tagStore(forSession session: String) -> HostTags? {
+        host(ofComposite: session).map { HostTags.shared(for: $0.transport) }
+    }
+
+    /// The list a menu is built from: what was last read, with a fresh read
+    /// started too. A change on another client normally arrives through
+    /// `@attache_tags_rev`, but attache-cli sets that on the default tmux
+    /// socket only, so on a `tmux_socket` server opening the menu is what
+    /// notices it.
+    func tagList(forSession session: String) -> [WindowTag] {
+        guard let store = tagStore(forSession: session) else { return [] }
+        store.refresh()
+        return store.tags
+    }
+
+    /// Makes the tag and, once attache-cli has confirmed it, puts it on the
+    /// window. A refused name (one already taken) says why.
+    private func newTag(onWindow window: String, inSession session: String) {
+        guard let store = tagStore(forSession: session), let entered = TagForm.askNew() else { return }
+        store.save(id: nil, name: entered.name, color: entered.color) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let failure):
+                showStatus("Tag not created", detail: failure.message)
+            case .success(let tag):
+                guard let connection = connection(id: session) else { return }
+                let carried = connection.tagsByWindow[window] ?? []
+                let wanted = Set(carried + [tag.id])
+                let ordered = store.tags.map(\.id).filter(wanted.contains)
+                connection.setTags(windowID: window, ids: ordered)
+            }
+        }
+    }
+
+    private func renameTag(id: String, inSession session: String) {
+        guard let store = tagStore(forSession: session), let tag = store.tag(id: id),
+              let name = TagForm.askRename(tag.name) else { return }
+        store.save(id: id, name: name, color: tag.color) { [weak self] result in
+            if case .failure(let failure) = result {
+                self?.showStatus("Tag not renamed", detail: failure.message)
+            }
+        }
+    }
+
+    private func recolorTag(id: String, color: String, inSession session: String) {
+        guard let store = tagStore(forSession: session), let tag = store.tag(id: id),
+              tag.color != color else { return }
+        store.save(id: id, name: tag.name, color: color) { [weak self] result in
+            if case .failure(let failure) = result {
+                self?.showStatus("Tag color not changed", detail: failure.message)
+            }
+        }
+    }
+
+    /// Asks first, and says how many windows lose the tag: attache-cli takes
+    /// it off every window on the host's default tmux server, and there is no
+    /// undo. The windows themselves are untouched.
+    private func deleteTag(id: String, inSession session: String) {
+        guard let store = tagStore(forSession: session), let tag = store.tag(id: id),
+              let host = host(ofComposite: session) else { return }
+        let carrying = host.server.sessionIDs.reduce(0) { count, sessionID in
+            let windows = host.server.connection(id: sessionID)?.tagsByWindow ?? [:]
+            return count + windows.values.filter { $0.contains(id) }.count
+        }
+        let alert = NSAlert()
+        alert.messageText = "Delete the tag “\(tag.name)”?"
+        alert.informativeText = carrying == 0
+            ? "No window carries it. The windows themselves are not affected."
+            : "It comes off the \(carrying == 1 ? "window" : "\(carrying) windows") that carry it."
+                + " The windows themselves are not affected."
+        alert.addButton(withTitle: "Delete Tag")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        store.remove(id: id) { [weak self] result in
+            if case .failure(let failure) = result {
+                self?.showStatus("Tag not deleted", detail: failure.message)
+            }
+        }
     }
 
     // MARK: - Saved projects
@@ -1656,6 +1755,23 @@ final class MainViewController: NSSplitViewController {
         return agents
     }
 
+    /// The host's tag list, told the newest `@attache_tags_rev` any of its
+    /// sessions has reported so a change made on another client is read.
+    /// Every session of a server reports the same global value; the largest
+    /// stands in for a session whose report has not arrived yet.
+    private func tags(on host: HostContext) -> HostTags {
+        let store = HostTags.shared(for: host.transport)
+        // Later, not now, for the reason `watchedAgents` gives.
+        store.onChange = { [weak self] in
+            DispatchQueue.main.async { self?.refreshSidebar() }
+        }
+        let revisions = host.server.sessionIDs.compactMap {
+            host.server.connection(id: $0)?.tagRevision
+        }
+        store.note(revision: revisions.max { (Int($0) ?? 0) < (Int($1) ?? 0) })
+        return store
+    }
+
     private func refreshSidebar() {
         discardControllersForVanishedSessions()
 
@@ -1677,6 +1793,8 @@ final class MainViewController: NSSplitViewController {
             // because the conversation rail picks its pane from it too.
             let agents = hostContext.server.sessionIDs.isEmpty ? nil : watchedAgents(on: hostContext)
             if agents != nil { watchedHosts.insert(hostContext.id) }
+            // The same condition: reading the list installs attache-cli.
+            let tagStore = hostContext.server.sessionIDs.isEmpty ? nil : tags(on: hostContext)
             for session in hostContext.server.sessionIDs {
                 guard let connection = hostContext.server.connection(id: session) else { continue }
                 let id = SessionKey(host: hostContext.id, session: session).composite
@@ -1685,6 +1803,9 @@ final class MainViewController: NSSplitViewController {
                 for window in connection.windows where !hidden.contains(window.id) {
                     var decoration = WindowDecoration()
                     decoration.path = connection.pathByWindow[window.id]
+                    if let tagStore, let ids = connection.tagsByWindow[window.id] {
+                        decoration.tags = tagStore.resolve(ids)
+                    }
                     if AppSettings.sidebarShowsAgent {
                         let row = agents?.agent(inWindow: window.id)
                         decoration.agent = row.map(AgentBadge.init(row:))

@@ -133,6 +133,21 @@ attache-cli, on the host, hands them to tmux (`project open`). The menus
 are built from `HostProjects`, a cache of the last read; nothing about a
 project is authored or kept here.
 
+**Window tags live in tmux and on the host, never here.** A tag ("Follow
+up", "Daily") marks a window worth coming back to; a window with none is one
+that can be closed when it is done. The owner's "session" means an agent
+conversation, which is a tmux *window*, so tags are on windows, not on tmux
+sessions. Which tags exist (id, name, colour) is attache-cli's, in the
+host's `~/.config/attache-tags.toml`, so the phone lists the same ones.
+Which window carries which is the window's own option `@attache_tags`, tag
+ids joined by commas: it goes when the window goes, and only ids are ever
+written there, so the app sets it through its control client
+(`TagCommands.setWindowTags`) with nothing to quote. The rail reads it by a
+window-scoped subscription, and reads the list again when the global
+`@attache_tags_rev` changes — attache-cli sets that on every save and
+remove, so a change on the phone arrives without anything asking on a
+timer. `HostTags` is the cache the rail draws from.
+
 **The privacy guard is attache-cli's too, per host.** It keeps IP
 addresses, email addresses, keys and words the owner names out of every
 agent's conversation: values become placeholders (`⟦ip:7f3a9c⟧`) before a
@@ -573,7 +588,8 @@ touching `Attache/Agents/`:
 swiftc -O -o /tmp/attachecliccheck Attache/Agents/AttacheCliProtocol.swift \
   Attache/Agents/AgentChatModel.swift Attache/Agents/AttacheCliLink.swift \
   Attache/Agents/HostAgents.swift Attache/Agents/AttacheCliInstaller.swift \
-  Attache/Agents/Projects.swift Attache/Agents/MermaidCommand.swift \
+  Attache/Agents/Projects.swift Attache/Agents/Tags.swift \
+  Attache/Agents/MermaidCommand.swift \
   Attache/Agents/PrivacyGuard.swift \
   Attache/Tmux/TmuxTransport.swift Attache/Tmux/TmuxSocket.swift \
   Attache/Tmux/PipeRead.swift Tools/AttacheCliCheck/main.swift
