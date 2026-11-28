@@ -607,6 +607,11 @@ final class SessionSidebarView: NSView {
                         // badge's `isSettled` is a bucket.
                         + "|\(decoration?.stats.map { "\($0.shortModel ?? "-")/\($0.contextPercent ?? -1)/\($0.costCents ?? -1)" } ?? "-")"
                         + "|\(decoration?.cache.map { $0.signature(now: signatureNow) } ?? "-")"
+                        // Name and colour as well as the id, so a rename or a
+                        // recolour on any client repaints the chips. Left out
+                        // at first, a tick in the Tags menu reached the row
+                        // only when something else on it changed.
+                        + "|\(decoration?.tags.map { "\($0.id)/\($0.name)/\($0.color)" }.joined(separator: ",") ?? "")"
                 )
             }
             parts.append("hidden:\(entry.hiddenIDs.count)")

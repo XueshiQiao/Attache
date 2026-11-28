@@ -677,7 +677,27 @@ final class TmuxSessionConnection {
     func setTags(windowID: String, ids: [String]) {
         guard let command = TagCommands.setWindowTags(window: windowID, ids: ids) else { return }
         client.send(command)
+        // Asked straight back rather than left to the subscription: tmux
+        // checks subscriptions once a second, so a tick in the menu took
+        // 0.5–1 s to reach the row (measured on 3.6a against an isolated
+        // server: set at .349, reported at .855; .098 → .857; .826 → .859).
+        // This is still tmux's value, read after tmux applied the change,
+        // so nothing is drawn that tmux has not confirmed.
+        client.run("display-message -p -t \(windowID) '#{\(TagCommands.windowOption)}'") { [weak self] lines, failed in
+            guard let self, !failed else { return }
+            noteTags(window: windowID, value: lines.first ?? "")
+        }
         client.send(TagCommands.windowRevisionBump())
+    }
+
+    /// A window's `@attache_tags` as tmux reported it, from the subscription
+    /// or from the read `setTags` makes.
+    private func noteTags(window: String, value: String) {
+        let ids = TagCommands.ids(in: value)
+        let changed = ids.isEmpty
+            ? tagsByWindow.removeValue(forKey: window) != nil
+            : tagsByWindow.updateValue(ids, forKey: window) != ids
+        if changed { notifyModelChanged() }
     }
 
     /// Files this connection has written for a paste and not yet cleaned up.
@@ -1824,11 +1844,7 @@ final class TmuxSessionConnection {
 
             case Self.tagsSubscription:
                 guard let window else { return }
-                let ids = TagCommands.ids(in: value)
-                let changed = ids.isEmpty
-                    ? tagsByWindow.removeValue(forKey: window) != nil
-                    : tagsByWindow.updateValue(ids, forKey: window) != ids
-                if changed { notifyModelChanged() }
+                noteTags(window: window, value: value)
 
             case Self.tagRevisionSubscription:
                 let revision = value.isEmpty ? nil : value
