@@ -45,6 +45,12 @@ nonisolated enum TagCommands {
     static let windowOption = "@attache_tags"
     /// The global option attache-cli sets anew on every change to the list.
     static let revisionOption = "@attache_tags_rev"
+    /// The global option a client sets anew whenever it changes a window's
+    /// tags. This app does not need it — it subscribes to every window of
+    /// every session — but the phone does: its one control client sits in
+    /// one session, and a `@*` subscription covers only that session's
+    /// windows, while a global option's subscription fires from any.
+    static let windowRevisionOption = "@attache_window_tags_rev"
 
     /// The colour names attache-cli accepts, in the order a menu offers them.
     static let colors = ["gray", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"]
@@ -88,6 +94,12 @@ nonisolated enum TagCommands {
         let kept = ids.filter(isID)
         if kept.isEmpty { return "set-option -wu -t \(window) \(windowOption)" }
         return "set-option -w -t \(window) \(windowOption) \(kept.joined(separator: ","))"
+    }
+
+    /// Tells every client that some window's tags changed; sent after
+    /// `setWindowTags`. Milliseconds, so two changes within a second differ.
+    static func windowRevisionBump(at date: Date = Date()) -> String {
+        "set-option -g \(windowRevisionOption) \(Int64(date.timeIntervalSince1970 * 1000))"
     }
 
     /// The `{"tags":[…]}` line that is the whole answer to `tags`; nil when

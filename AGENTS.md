@@ -146,7 +146,11 @@ written there, so the app sets it through its control client
 window-scoped subscription, and reads the list again when the global
 `@attache_tags_rev` changes — attache-cli sets that on every save and
 remove, so a change on the phone arrives without anything asking on a
-timer. `HostTags` is the cache the rail draws from.
+timer. Whoever changes a window's tags also sets the global
+`@attache_window_tags_rev`: the app does not need it, the phone does — its
+one control client sits in one session, a `@*` subscription covers only
+that session's windows, and a global option's subscription fires from any.
+`HostTags` is the cache the rail draws from.
 
 **The privacy guard is attache-cli's too, per host.** It keeps IP
 addresses, email addresses, keys and words the owner names out of every

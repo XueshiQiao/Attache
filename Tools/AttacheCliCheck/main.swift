@@ -340,6 +340,8 @@ do {
     check(TagCommands.setWindowTags(window: "@25", ids: ["x y", "a1;kill-server"])
               == "set-option -wu -t @25 @attache_tags", "text that is not an id never reaches the command")
     check(TagCommands.setWindowTags(window: "Dev", ids: ["a1"]) == nil, "a window named, not id'd, is refused")
+    check(TagCommands.windowRevisionBump(at: Date(timeIntervalSince1970: 1.5))
+              == "set-option -g @attache_window_tags_rev 1500", "the window revision is in milliseconds")
     check(TagCommands.save(id: nil, name: "持续跟进", color: "orange")
               == ["tag", "save", "--name", Data("持续跟进".utf8).base64EncodedString(), "--color", "orange"],
           "a name goes base64-encoded")

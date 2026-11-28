@@ -677,6 +677,7 @@ final class TmuxSessionConnection {
     func setTags(windowID: String, ids: [String]) {
         guard let command = TagCommands.setWindowTags(window: windowID, ids: ids) else { return }
         client.send(command)
+        client.send(TagCommands.windowRevisionBump())
     }
 
     /// Files this connection has written for a paste and not yet cleaned up.

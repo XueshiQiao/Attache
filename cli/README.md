@@ -107,7 +107,11 @@ none) and reads with `#{@attache_tags}`; it goes when the window goes.
 Every save and remove also sets the global option `@attache_tags_rev` on
 the default tmux server to a new value, so a client subscribed to it
 (`refresh-client -B 'name::#{@attache_tags_rev}'`) reads the list again
-instead of asking on a timer.
+instead of asking on a timer. A client that changes a window's tags sets
+the global `@attache_window_tags_rev` the same way, for clients that cannot
+subscribe to every window: a `@*` subscription covers only the windows of
+the session a control client sits in, while a global option's fires from
+any session.
 
 Nothing in it is worked out or asked here. AIUsageKit
 (github.com/XueshiQiao/AIUsageKit) asks each provider's own CLI and keeps
